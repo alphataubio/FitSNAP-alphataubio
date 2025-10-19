@@ -47,14 +47,15 @@ def process_chunk(args):
             # Extract data from atoms.info
             data_id = atoms.info.get('data_id', '')
             charge = atoms.info.get('charge', '')
+            spin = atoms.info.get('spin', '')
             num_atoms = atoms.info.get('num_atoms', '')
             composition = atoms.info.get('composition', '')
             
             data_rows.append({
-                'index': i,
                 'data_id': data_id,
                 'elements': elements_str,
                 'charge': charge,
+                'spin': spin,
                 'num_atoms': num_atoms,
                 'composition': composition
             })
@@ -104,14 +105,26 @@ def process_neutral_val(db_path):
     
     print(f"Processed all {dataset_size} entries", file=sys.stderr)
     
-    # Sort by index to maintain original order
-    all_data_rows.sort(key=lambda x: x['index'])
-    
     # Create DataFrame
     df = pd.DataFrame(all_data_rows)
     
+    # Group by composition/charge/spin and aggregate
+    print("Aggregating by composition/charge/spin...", file=sys.stderr)
+    df_grouped = df.groupby(['data_id', 'composition', 'charge', 'spin'], dropna=False).agg({
+        'elements': 'first',
+        'num_atoms': 'first'
+    }).reset_index()
+    
+    # Add count column
+    df_grouped['count'] = df.groupby(['data_id', 'composition', 'charge', 'spin'], dropna=False).size().values
+    
+    # Reorder columns
+    df_grouped = df_grouped[['data_id', 'elements', 'charge', 'spin', 'num_atoms', 'composition', 'count']]
+    
+    print(f"Reduced to {len(df_grouped)} unique combinations (from {len(df)} total entries)", file=sys.stderr)
+    
     # Group by data_id
-    data_ids = df['data_id'].unique()
+    data_ids = df_grouped['data_id'].unique()
     print(f"Found {len(data_ids)} unique data_id values", file=sys.stderr)
     
     # Use last part of db_path for output filename
@@ -122,7 +135,7 @@ def process_neutral_val(db_path):
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
         for data_id in sorted(data_ids):
             # Filter data for this data_id
-            df_subset = df[df['data_id'] == data_id].reset_index(drop=True)
+            df_subset = df_grouped[df_grouped['data_id'] == data_id].reset_index(drop=True)
             
             # Use data_id as sheet name (max 31 chars for Excel)
             sheet_name = str(data_id)[:31]
@@ -145,12 +158,12 @@ def process_neutral_val(db_path):
                 worksheet.column_dimensions[column_letter].width = adjusted_width
     
     print(f"Results saved to {output_file}", file=sys.stderr)
-    print(f"Total entries: {len(df)}", file=sys.stderr)
+    print(f"Total unique combinations: {len(df_grouped)}", file=sys.stderr)
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python process_omat24.py <db_path>", file=sys.stderr)
-        print("Example: python process_omat24.py ~/scratch/neutral_val", file=sys.stderr)
+        print("Usage: python omol25.py <db_path>", file=sys.stderr)
+        print("Example: python omol25.py ~/scratch/neutral_val", file=sys.stderr)
         sys.exit(1)
     
     db_path = sys.argv[1]
