@@ -162,7 +162,7 @@ def get_default_settings(elems,nshell=1.0,return_range=True,apply_shift=False,me
 #uncomment for different examples
 #NOTE for best results, sort elements alphabetically
 #elems = ['H','N','W']
-elems = ['N','W']
+elems = ['H','O']
 #elems = sorted(elems) # sort element types alphabetically
 rc_range,rc_default,lmb_default,rcin_default,drcin_default = get_default_settings(elems,nshell=2.2,return_range=True,apply_shift=False)
 print ('recommended starting hyperparameters\n')
