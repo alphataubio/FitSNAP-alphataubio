@@ -12,7 +12,8 @@ class Scraper(Section):
     def __init__(self, name, config, pt,infile, args):
         super().__init__(name, config, pt, infile,args)
         self.allowedkeys = ['scraper', 'filename', 'save_group_scrape', 'read_group_scrape', 'property_array',
-                           'max_configs_per_rank', 'require_energy', 'require_forces', 'verbose']
+                           'max_configs_per_rank', 'require_energy', 'require_forces', 'verbose',
+                           'data_id', 'charge', 'composition']
         self._check_section()
 
         self.scraper = self.get_value("SCRAPER", "scraper", "JSON")
@@ -20,11 +21,17 @@ class Scraper(Section):
         self.save_group_scrape = self.get_value("SCRAPER", "save_group_scrape", "None", "str")
         self.read_group_scrape = self.get_value("SCRAPER", "read_group_scrape", "None", "str")
         
-        # LMDB-specific options
+        # FIARCHEM-specific options
         self.max_configs_per_rank = self.get_value("SCRAPER", "max_configs_per_rank", None, "int")
         self.require_energy = self.get_value("SCRAPER", "require_energy", 1, "int")
         self.require_forces = self.get_value("SCRAPER", "require_forces", None, "int")  # None means follow calculator.force
+        
         self.verbose = self.get_value("SCRAPER", "verbose", 0, "int")
+        
+        # Filtering options for FAIRCHEM scraper
+        self.data_id = self.get_value("SCRAPER", "data_id", "None", "str")
+        self.charge = self.get_value("SCRAPER", "charge", "None", "str")
+        self.composition = self.get_value("SCRAPER", "composition", "None", "str")
         self.properties = {"Stress": ["pressure", "Metal", "Metal"],
                            "Lattice": ["length", "Metal", "Metal"],
                            "Energy": ["energy", "Metal", "Metal"],
