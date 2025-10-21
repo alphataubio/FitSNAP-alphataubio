@@ -4,6 +4,10 @@ import logging
 import random
 from os import path
 from copy import copy
+import warnings
+
+# Suppress pkg_resources deprecation warning from torchtnt
+warnings.filterwarnings('ignore', message='.*pkg_resources is deprecated.*')
 
 # Suppress logging warnings from PyTorch distributed on macos
 logging.getLogger("torch.distributed.elastic.multiprocessing.redirects").setLevel(logging.ERROR)
@@ -88,15 +92,6 @@ class FAIRChem(Scraper):
         # Split by comma and strip whitespace
         return [item.strip() for item in filter_string.split(',') if item.strip()]
     
-    def _get_composition_string(self, atoms):
-        """Get composition string like 'H80O40' from atoms object."""
-        from collections import Counter
-        symbols = atoms.get_chemical_symbols()
-        composition = Counter(symbols)
-        # Sort by element symbol for consistent ordering
-        sorted_elements = sorted(composition.items())
-        return ''.join(f"{elem}{count}" for elem, count in sorted_elements)
-    
     def scrape_groups(self, group_names=None):
         """
         Open LMDB datasets and identify available configurations.
@@ -124,7 +119,8 @@ class FAIRChem(Scraper):
                 # Build select_args for filtering at database level
                 select_args = self._build_select_args()
                 
-                self.pt.single_print(f"*** select_args {select_args}")
+                if self.rank == 0 and select_args:
+                    self.pt.single_print(f"Database-level filtering active: {select_args}")
 
                 individual_dataset = AseDBDataset(config=dict(src=dataset_path, select_args=select_args))
                 dataset_size = len(individual_dataset)
@@ -143,6 +139,9 @@ class FAIRChem(Scraper):
         try:
             # Build select_args for filtering at database level
             select_args = self._build_select_args()
+            
+            if self.rank == 0 and select_args:
+                self.pt.single_print(f"Applying database-level filters: {select_args}")
             
             # Use fairchem's AseDBDataset with multiple paths
             config_kwargs = {}
@@ -218,6 +217,7 @@ class FAIRChem(Scraper):
         Read and process LMDB configurations assigned to this rank.
         """
         self.data = []
+        filtered_by_elements = 0
         
         try:
             for group_name, config_idx in self.my_configs:
@@ -226,15 +226,10 @@ class FAIRChem(Scraper):
                 if atoms is None:
                     continue
                     
-                # Filter by allowed elements
+                # Filter by allowed elements (composition filtering done at DB level)
                 if not all(symbol in self.allowed_elements for symbol in atoms.get_chemical_symbols()):
+                    filtered_by_elements += 1
                     continue
-                
-                # Filter by composition if specified
-                if self.filter_composition is not None:
-                    composition_str = self._get_composition_string(atoms)
-                    if composition_str not in self.filter_composition:
-                        continue
                 
                 # Group name was already determined in scrape_groups
                 actual_group_name = group_name
@@ -252,6 +247,8 @@ class FAIRChem(Scraper):
         
         if self.rank == 0:
             self.pt.single_print(f"Successfully processed {len(self.data)} configurations")
+            if filtered_by_elements > 0:
+                self.pt.single_print(f"Rank {self.rank}: Filtered {filtered_by_elements} configs by element types")
             
         return self.data
 
@@ -402,8 +399,16 @@ class FAIRChem(Scraper):
                     self.pt.single_print(f"Warning: Multiple charge filtering may not work with select_args. Using first value: {charge[0]}")
                 select_args['charge'] = charge[0]
         
-        # Note: composition filtering is done post-load in scrape_configs
-        # since composition string may not be stored in database metadata
+        # Filter by composition (formula field in database)
+        if self.filter_composition is not None:
+            if len(self.filter_composition) == 1:
+                select_args['formula'] = self.filter_composition[0]
+            else:
+                # Similar limitation - ASE DB doesn't support OR queries
+                if self.rank == 0:
+                    self.pt.single_print(f"Warning: Multiple composition filtering may not work with select_args. Using first value: {self.filter_composition[0]}")
+                    self.pt.single_print(f"To filter multiple compositions, consider loading them as separate groups.")
+                select_args['formula'] = self.filter_composition[0]
         
         return select_args if select_args else None
     
