@@ -72,7 +72,31 @@ class FAIRChem(Scraper):
         
         # Debugging options
         self.verbose = getattr(self.config.sections["SCRAPER"], 'verbose', False)
+        
+        # Filtering options
+        self.filter_data_id = self._parse_list_filter(
+            getattr(self.config.sections["SCRAPER"], 'data_id', 'None'))
+        self.filter_charge = self._parse_list_filter(
+            getattr(self.config.sections["SCRAPER"], 'charge', 'None'))
+        self.filter_composition = self._parse_list_filter(
+            getattr(self.config.sections["SCRAPER"], 'composition', 'None'))
 
+    def _parse_list_filter(self, filter_string):
+        """Parse comma-separated filter string into list, or None if not set."""
+        if filter_string == 'None' or filter_string is None or filter_string == '':
+            return None
+        # Split by comma and strip whitespace
+        return [item.strip() for item in filter_string.split(',') if item.strip()]
+    
+    def _get_composition_string(self, atoms):
+        """Get composition string like 'H80O40' from atoms object."""
+        from collections import Counter
+        symbols = atoms.get_chemical_symbols()
+        composition = Counter(symbols)
+        # Sort by element symbol for consistent ordering
+        sorted_elements = sorted(composition.items())
+        return ''.join(f"{elem}{count}" for elem, count in sorted_elements)
+    
     def scrape_groups(self, group_names=None):
         """
         Open LMDB datasets and identify available configurations.
@@ -97,15 +121,19 @@ class FAIRChem(Scraper):
             
             # Get size of this individual dataset
             try:
-                individual_dataset = AseDBDataset(config=dict(src=dataset_path))
+                # Build select_args for filtering at database level
+                select_args = self._build_select_args()
+                
+                self.pt.single_print(f"*** select_args {select_args}")
+
+                individual_dataset = AseDBDataset(config=dict(src=dataset_path, select_args=select_args))
                 dataset_size = len(individual_dataset)
                 
                 # Track index range for this group
                 self.group_index_ranges[group_name] = (cumulative_size, cumulative_size + dataset_size)
                 cumulative_size += dataset_size
                 
-                if self.rank == 0:
-                    self.pt.single_print(f"Group '{group_name}': {dataset_size} configurations (indices {self.group_index_ranges[group_name][0]}-{self.group_index_ranges[group_name][1]-1})")
+                self.pt.single_print(f"Group '{group_name}': {dataset_size} configurations (indices {self.group_index_ranges[group_name][0]}-{self.group_index_ranges[group_name][1]-1})")
                     
             except Exception as e:
                 if self.rank == 0:
@@ -113,8 +141,13 @@ class FAIRChem(Scraper):
                 continue
             
         try:
+            # Build select_args for filtering at database level
+            select_args = self._build_select_args()
+            
             # Use fairchem's AseDBDataset with multiple paths
             config_kwargs = {}
+            if select_args:
+                config_kwargs['select_args'] = select_args
             # Note: AseDBDataset may not directly support MDB_NOLOCK
             # This might need to be handled at the LMDB environment level
                 
@@ -196,6 +229,12 @@ class FAIRChem(Scraper):
                 # Filter by allowed elements
                 if not all(symbol in self.allowed_elements for symbol in atoms.get_chemical_symbols()):
                     continue
+                
+                # Filter by composition if specified
+                if self.filter_composition is not None:
+                    composition_str = self._get_composition_string(atoms)
+                    if composition_str not in self.filter_composition:
+                        continue
                 
                 # Group name was already determined in scrape_groups
                 actual_group_name = group_name
@@ -331,6 +370,43 @@ class FAIRChem(Scraper):
             logging.warning(f"Failed to extract data from atoms object {config_idx}: {e}")
             return None
 
+    def _build_select_args(self):
+        """Build select_args dict for AseDBDataset filtering."""
+        select_args = {}
+        
+        # Filter by data_id (list of allowed values)
+        if self.filter_data_id is not None:
+            # ASE DB select uses 'in' operator for list matching
+            # For multiple values, we need to construct the query appropriately
+            if len(self.filter_data_id) == 1:
+                select_args['data_id'] = self.filter_data_id[0]
+            else:
+                # For multiple data_id, we'll need to handle this differently
+                # ASE DB doesn't support direct OR queries in select_args
+                # We may need to filter post-load or make multiple dataset calls
+                # For now, log a warning and use first value
+                if self.rank == 0:
+                    self.pt.single_print(f"Warning: Multiple data_id filtering may not work with select_args. Using first value: {self.filter_data_id[0]}")
+                    self.pt.single_print(f"To filter multiple data_id, consider loading them as separate groups.")
+                select_args['data_id'] = self.filter_data_id[0]
+        
+        # Filter by charge (exact match)
+        if self.filter_charge is not None:
+            # Convert to integers
+            charge = [int(c) for c in self.filter_charge]
+            if len(charge) == 1:
+                select_args['charge'] = charge[0]
+            else:
+                # Similar limitation as data_id
+                if self.rank == 0:
+                    self.pt.single_print(f"Warning: Multiple charge filtering may not work with select_args. Using first value: {charge[0]}")
+                select_args['charge'] = charge[0]
+        
+        # Note: composition filtering is done post-load in scrape_configs
+        # since composition string may not be stored in database metadata
+        
+        return select_args if select_args else None
+    
     def __del__(self):
         """
         Clean up resources on destruction.
