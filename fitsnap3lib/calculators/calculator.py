@@ -48,25 +48,44 @@ class Calculator:
         Args:
             data: List of data dictionaries.
         """
+        # Get total number of configs across all ranks on this node
         ncpn = self.pt.get_ncpn(len(data))
 
         self.pt.create_shared_array('number_of_atoms', ncpn, dtype='i')
-        self.pt.slice_array('number_of_atoms')
-
-        # number of dgrad rows serves similar purpose as number of atoms
-        
         self.pt.create_shared_array('number_of_dgrad_rows', ncpn, dtype='i')
-        self.pt.slice_array('number_of_dgrad_rows')
-
-        # number of neighs serves similar purpose as number of atoms for custom calculator
-        
         self.pt.create_shared_array('number_of_neighs_scrape', ncpn, dtype='i')
-        self.pt.slice_array('number_of_neighs_scrape')
 
-        # Loop through data and set sliced number of atoms.
+        # After filtering, ranks may have different numbers of configs
+        # Calculate contiguous chunk offsets for each rank on this node
+        my_nconfigs = len(data)
+        
+        if not self.pt.stubs:
+            # Gather all config counts on this node
+            all_nconfigs = np.zeros(self.pt._sub_size, dtype=int)
+            self.pt._sub_comm.Allgather(
+                np.array([my_nconfigs], dtype=int),
+                all_nconfigs
+            )
+            
+            # Calculate start indices for each rank (exclusive prefix sum)
+            config_offsets = np.zeros(self.pt._sub_size, dtype=int)
+            for rank in range(self.pt._sub_size):
+                config_offsets[rank] = np.sum(all_nconfigs[:rank])
+            
+            my_start_idx = config_offsets[self.pt._sub_rank]
+            
+            # Store config distribution info for later use
+            self.pt.add_2_fitsnap("config_counts_per_rank", all_nconfigs)
+            self.pt.add_2_fitsnap("config_offsets_per_rank", config_offsets)
+        else:
+            my_start_idx = 0
+            self.pt.add_2_fitsnap("config_counts_per_rank", np.array([my_nconfigs]))
+            self.pt.add_2_fitsnap("config_offsets_per_rank", np.array([0]))
+        
+        # Write to contiguous chunk of shared array
         for i, configuration in enumerate(data):
             natoms = np.shape(configuration["Positions"])[0]
-            self.pt.shared_arrays["number_of_atoms"].sliced_array[i] = natoms
+            self.pt.shared_arrays["number_of_atoms"].array[my_start_idx + i] = natoms
 
     def create_a(self):
         """

@@ -664,8 +664,34 @@ class ParallelTools():
             
         sub_a_sizes = np.zeros((self._sub_size, ), dtype=int)
 
-        for i in range(nof):
-            proc_number = i % self._sub_size
+        # Use contiguous config distribution instead of round-robin
+        config_counts = self.fitsnap_dict.get("config_counts_per_rank", None)
+        config_offsets = self.fitsnap_dict.get("config_offsets_per_rank", None)
+        
+        if config_counts is not None and config_offsets is not None:
+            # Contiguous chunks (after filtering)
+            for proc_number in range(self._sub_size):
+                start_idx = config_offsets[proc_number]
+                end_idx = start_idx + config_counts[proc_number]
+                for i in range(start_idx, end_idx):
+                    if self.fitsnap_dict["energy"]:
+                        descriptor_rows = 1
+                        if self.fitsnap_dict["per_atom_energy"]:
+                            descriptor_rows = self.shared_arrays["number_of_atoms"].array[i]
+                        sub_a_sizes[proc_number] += descriptor_rows
+
+                    if (self.fitsnap_dict["force"] and not self.fitsnap_dict["nonlinear"]):
+                        sub_a_sizes[proc_number] += 3 * self.shared_arrays["number_of_atoms"].array[i]
+
+                    if (self.fitsnap_dict["stress"] and not self.fitsnap_dict["nonlinear"]):
+                        sub_a_sizes[proc_number] += 6
+
+                    if self.fitsnap_dict["per_atom_scalar"]:
+                        sub_a_sizes[proc_number] += self.shared_arrays["number_of_atoms"].array[i]
+        else:
+            # Fallback to round-robin (legacy behavior)
+            for i in range(nof):
+                proc_number = i % self._sub_size
             if self.fitsnap_dict["energy"]:
                 descriptor_rows = 1
                 if self.fitsnap_dict["per_atom_energy"]:
@@ -779,11 +805,24 @@ class ParallelTools():
             return
         sub_b_sizes = np.zeros((self._sub_size, ), dtype=int)
 
-        for i in range(nof):
-            proc_number = i % self._sub_size
-            natoms = self.shared_arrays["number_of_atoms"].array[i]
-            if self.fitsnap_dict["energy"]:
-                sub_b_sizes[proc_number] += 1 #3*natoms +1
+        # Use contiguous config distribution
+        config_counts = self.fitsnap_dict.get("config_counts_per_rank", None)
+        config_offsets = self.fitsnap_dict.get("config_offsets_per_rank", None)
+        
+        if config_counts is not None and config_offsets is not None:
+            for proc_number in range(self._sub_size):
+                start_idx = config_offsets[proc_number]
+                end_idx = start_idx + config_counts[proc_number]
+                for i in range(start_idx, end_idx):
+                    if self.fitsnap_dict["energy"]:
+                        sub_b_sizes[proc_number] += 1
+        else:
+            # Fallback to round-robin
+            for i in range(nof):
+                proc_number = i % self._sub_size
+                natoms = self.shared_arrays["number_of_atoms"].array[i]
+                if self.fitsnap_dict["energy"]:
+                    sub_b_sizes[proc_number] += 1 #3*natoms +1
         assert sum(sub_b_sizes) == len(self.shared_arrays['b'].array)
         self.add_2_fitsnap("sub_b_size", sub_b_sizes)
         self._bcast_fitsnap("sub_b_size")
@@ -811,11 +850,25 @@ class ParallelTools():
             return
         sub_c_sizes = np.zeros((self._sub_size, ), dtype=int)
 
-        for i in range(nof):
-            proc_number = i % self._sub_size
-            natoms = self.shared_arrays["number_of_atoms"].array[i]
-            if (self.fitsnap_dict["force"]):
-                sub_c_sizes[proc_number] += 3*natoms
+        # Use contiguous config distribution
+        config_counts = self.fitsnap_dict.get("config_counts_per_rank", None)
+        config_offsets = self.fitsnap_dict.get("config_offsets_per_rank", None)
+        
+        if config_counts is not None and config_offsets is not None:
+            for proc_number in range(self._sub_size):
+                start_idx = config_offsets[proc_number]
+                end_idx = start_idx + config_counts[proc_number]
+                for i in range(start_idx, end_idx):
+                    natoms = self.shared_arrays["number_of_atoms"].array[i]
+                    if (self.fitsnap_dict["force"]):
+                        sub_c_sizes[proc_number] += 3*natoms
+        else:
+            # Fallback to round-robin
+            for i in range(nof):
+                proc_number = i % self._sub_size
+                natoms = self.shared_arrays["number_of_atoms"].array[i]
+                if (self.fitsnap_dict["force"]):
+                    sub_c_sizes[proc_number] += 3*natoms
         assert sum(sub_c_sizes) == len(self.shared_arrays['c'].array)
         self.add_2_fitsnap("sub_c_size", sub_c_sizes)
         self._bcast_fitsnap("sub_c_size")
@@ -842,13 +895,29 @@ class ParallelTools():
             return
         sub_t_sizes = np.zeros((self._sub_size, ), dtype=int)
 
-        for i in range(nof):
-            proc_number = i % self._sub_size
-            if self.fitsnap_dict["energy"]:
-                descriptor_rows = 1
-                if self.fitsnap_dict["per_atom_energy"]:
-                    descriptor_rows = self.shared_arrays["number_of_atoms"].array[i]
-                sub_t_sizes[proc_number] += descriptor_rows
+        # Use contiguous config distribution
+        config_counts = self.fitsnap_dict.get("config_counts_per_rank", None)
+        config_offsets = self.fitsnap_dict.get("config_offsets_per_rank", None)
+        
+        if config_counts is not None and config_offsets is not None:
+            for proc_number in range(self._sub_size):
+                start_idx = config_offsets[proc_number]
+                end_idx = start_idx + config_counts[proc_number]
+                for i in range(start_idx, end_idx):
+                    if self.fitsnap_dict["energy"]:
+                        descriptor_rows = 1
+                        if self.fitsnap_dict["per_atom_energy"]:
+                            descriptor_rows = self.shared_arrays["number_of_atoms"].array[i]
+                        sub_t_sizes[proc_number] += descriptor_rows
+        else:
+            # Fallback to round-robin
+            for i in range(nof):
+                proc_number = i % self._sub_size
+                if self.fitsnap_dict["energy"]:
+                    descriptor_rows = 1
+                    if self.fitsnap_dict["per_atom_energy"]:
+                        descriptor_rows = self.shared_arrays["number_of_atoms"].array[i]
+                    sub_t_sizes[proc_number] += descriptor_rows
 
         assert sum(sub_t_sizes) == len(self.shared_arrays['a'].array)
         self.add_2_fitsnap("sub_t_size", sub_t_sizes)
@@ -877,11 +946,24 @@ class ParallelTools():
             return
         sub_dgrad_sizes = np.zeros((self._sub_size, ), dtype=int)
 
-        for i in range(nof):
-            proc_number = i % self._sub_size
-            natoms = self.shared_arrays["number_of_atoms"].array[i]
-            if (self.fitsnap_dict["force"]):
-                sub_dgrad_sizes[proc_number] += self.shared_arrays["number_of_dgrad_rows"].array[i]
+        # Use contiguous config distribution
+        config_counts = self.fitsnap_dict.get("config_counts_per_rank", None)
+        config_offsets = self.fitsnap_dict.get("config_offsets_per_rank", None)
+        
+        if config_counts is not None and config_offsets is not None:
+            for proc_number in range(self._sub_size):
+                start_idx = config_offsets[proc_number]
+                end_idx = start_idx + config_counts[proc_number]
+                for i in range(start_idx, end_idx):
+                    if (self.fitsnap_dict["force"]):
+                        sub_dgrad_sizes[proc_number] += self.shared_arrays["number_of_dgrad_rows"].array[i]
+        else:
+            # Fallback to round-robin
+            for i in range(nof):
+                proc_number = i % self._sub_size
+                natoms = self.shared_arrays["number_of_atoms"].array[i]
+                if (self.fitsnap_dict["force"]):
+                    sub_dgrad_sizes[proc_number] += self.shared_arrays["number_of_dgrad_rows"].array[i]
         assert sum(sub_dgrad_sizes) == len(self.shared_arrays['dgrad'].array)
         # dbidrj
         self.add_2_fitsnap("sub_dgrad_size", sub_dgrad_sizes)
@@ -911,10 +993,22 @@ class ParallelTools():
             return
         sub_neighlist_sizes = np.zeros((self._sub_size, ), dtype=int)
 
-        for i in range(nof):
-            proc_number = i % self._sub_size
-            natoms = self.shared_arrays["number_of_atoms"].array[i]
-            sub_neighlist_sizes[proc_number] += self.shared_arrays["number_of_neighs_scrape"].array[i]
+        # Use contiguous config distribution
+        config_counts = self.fitsnap_dict.get("config_counts_per_rank", None)
+        config_offsets = self.fitsnap_dict.get("config_offsets_per_rank", None)
+        
+        if config_counts is not None and config_offsets is not None:
+            for proc_number in range(self._sub_size):
+                start_idx = config_offsets[proc_number]
+                end_idx = start_idx + config_counts[proc_number]
+                for i in range(start_idx, end_idx):
+                    sub_neighlist_sizes[proc_number] += self.shared_arrays["number_of_neighs_scrape"].array[i]
+        else:
+            # Fallback to round-robin
+            for i in range(nof):
+                proc_number = i % self._sub_size
+                natoms = self.shared_arrays["number_of_atoms"].array[i]
+                sub_neighlist_sizes[proc_number] += self.shared_arrays["number_of_neighs_scrape"].array[i]
         assert sum(sub_neighlist_sizes) == len(self.shared_arrays['neighlist'].array)
         # sub sizes
         self.add_2_fitsnap("sub_neighlist_size", sub_neighlist_sizes)
