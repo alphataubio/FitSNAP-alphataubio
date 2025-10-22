@@ -335,15 +335,21 @@ class ParallelTools():
             ts = time()
             result = method(*args, **kw)
             te = time()
+            elapsed = te - ts
+            hours = int(elapsed // 3600)
+            minutes = int((elapsed % 3600) // 60)
+            seconds = int(elapsed % 60)
+            milliseconds = int((elapsed % 1) * 1000)
+            formatted_time = f"{hours:02}:{minutes:02}:{seconds:02}.{milliseconds:03}"
             if 'log_time' in kw:
                 name = kw.get('log_name', method.__name__.upper())
-                kw['log_time'][name] = int((te - ts) * 1000)
+                kw['log_time'][name] = formatted_time
             elif self._fp is not None:
-                printf("'{0}' took {1:.2f} ms on rank {2}".format(
-                    method.__name__, (te - ts) * 1000, self._rank), file=self._fp)
+                printf("'{0}' took {1} on rank {2}".format(
+                    method.__name__, formatted_time, self._rank), file=self._fp)
             else:
-                printf("'{0}' took {1:.2f} ms on rank {2}".format(
-                    method.__name__, (te - ts) * 1000, self._rank))
+                printf("'{0}' took {1} on rank {2}".format(
+                    method.__name__, formatted_time, self._rank))
             return result
         return timed
 
