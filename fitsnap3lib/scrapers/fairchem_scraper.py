@@ -34,18 +34,22 @@ class FAIRChem(Scraper):
         super().__init__(name, pt, config)
         self.data = []
         
-        # Get allowed elements from config
-        if "REAXFF" in self.config.sections:
-            allowed_elements = self.config.sections["REAXFF"].elements
+        # Get allowed elements from config - REQUIRED, no defaults
+        if "PYACE" in self.config.sections:
+            allowed_elements = self.config.sections["PYACE"].elements
         elif "ACE" in self.config.sections:
             allowed_elements = self.config.sections["ACE"].types
         elif "BISPECTRUM" in self.config.sections:
             allowed_elements = self.config.sections["BISPECTRUM"].types
         else:
-            # Default to common elements if not specified
-            allowed_elements = ["H", "C", "N", "O"]
+            raise ValueError(
+                "FAIRChem scraper requires element types to be specified in ACE, BISPECTRUM, or PYACE section. "
+                "Example: In [ACE] section, add 'types = H O' for water."
+            )
         
         self.allowed_elements = set(allowed_elements)
+        self.pt.single_print(f"FAIRChem scraper: Allowed elements are {sorted(self.allowed_elements)}")
+        self.pt.single_print(f"FAIRChem scraper: Any configs with other elements will be filtered out")
         
         # LMDB datasets will be determined from group names in scrape_groups
         # No single filename needed since we use multiple subdataset paths
@@ -75,7 +79,7 @@ class FAIRChem(Scraper):
         self.require_forces = getattr(self.config.sections["SCRAPER"], 'require_forces', self.use_forces)
         
         # Debugging options
-        self.verbose = getattr(self.config.sections["SCRAPER"], 'verbose', False)
+        self.verbose = bool(getattr(self.config.sections["SCRAPER"], 'verbose', False))
         
         # Filtering options - applied in-memory after loading
         self.filter_data_id = self._parse_list_filter(
@@ -226,12 +230,26 @@ class FAIRChem(Scraper):
         filtered_by_data_id = 0
         filtered_by_charge = 0
         filtered_by_composition = 0
+        configs_with_disallowed_elements = []  # Track which configs have bad elements
         
         try:
             for group_name, config_idx in self.my_configs:
                 atoms = self._get_atoms_from_index(config_idx)
                 
                 if atoms is None:
+                    continue
+                
+                # Get chemical symbols for this config
+                symbols = atoms.get_chemical_symbols()
+                
+                # Filter by allowed elements - CHECK THIS FIRST
+                disallowed = [s for s in symbols if s not in self.allowed_elements]
+                if disallowed:
+                    filtered_by_elements += 1
+                    if self.verbose and len(configs_with_disallowed_elements) < 5:
+                        configs_with_disallowed_elements.append(
+                            f"{group_name}/{config_idx}: found {set(disallowed)} (allowed: {self.allowed_elements})"
+                        )
                     continue
                 
                 # Filter by data_id if specified
@@ -248,11 +266,6 @@ class FAIRChem(Scraper):
                         filtered_by_charge += 1
                         continue
                 
-                # Filter by allowed elements
-                if not all(symbol in self.allowed_elements for symbol in atoms.get_chemical_symbols()):
-                    filtered_by_elements += 1
-                    continue
-                
                 # Filter by composition if specified
                 if self.filter_composition is not None:
                     composition_str = self._get_composition_string(atoms)
@@ -267,9 +280,19 @@ class FAIRChem(Scraper):
                 data_dict = self._extract_data_from_atoms(atoms, actual_group_name, config_idx)
                 
                 if data_dict is not None:
+                    # Double-check elements in extracted data as a safety measure
+                    if not all(symbol in self.allowed_elements for symbol in data_dict["AtomTypes"]):
+                        if self.verbose:
+                            bad_elements = [s for s in data_dict["AtomTypes"] if s not in self.allowed_elements]
+                            self.pt.single_print(
+                                f"WARNING: Config {config_idx} passed filter but has disallowed elements {set(bad_elements)}. "
+                                f"This should not happen! Skipping config."
+                            )
+                        filtered_by_elements += 1
+                        continue
                     self.data.append(data_dict)
                 elif self.verbose and self.rank == 0:
-                    self.pt.single_print(f"Skipped configuration {config_idx} (missing required data or elements)")
+                    self.pt.single_print(f"Skipped configuration {config_idx} (missing required data)")
                     
         except Exception as e:
             raise RuntimeError(f"Error reading LMDB configurations: {e}")
@@ -277,14 +300,18 @@ class FAIRChem(Scraper):
         # Report statistics
         if self.rank == 0:
             self.pt.single_print(f"Rank {self.rank}: Successfully processed {len(self.data)} configurations")
+            if filtered_by_elements > 0:
+                self.pt.single_print(f"Rank {self.rank}: Filtered {filtered_by_elements} configs by element types")
+                if self.verbose and configs_with_disallowed_elements:
+                    self.pt.single_print(f"Rank {self.rank}: Examples of filtered configs:")
+                    for example in configs_with_disallowed_elements:
+                        self.pt.single_print(f"  {example}")
             if filtered_by_data_id > 0:
                 self.pt.single_print(f"Rank {self.rank}: Filtered {filtered_by_data_id} configs by data_id")
             if filtered_by_charge > 0:
                 self.pt.single_print(f"Rank {self.rank}: Filtered {filtered_by_charge} configs by charge")
             if filtered_by_composition > 0:
                 self.pt.single_print(f"Rank {self.rank}: Filtered {filtered_by_composition} configs by composition")
-            if filtered_by_elements > 0:
-                self.pt.single_print(f"Rank {self.rank}: Filtered {filtered_by_elements} configs by element types")
             
         return self.data
 
@@ -366,13 +393,19 @@ class FAIRChem(Scraper):
                     stress = atoms.info.get('stress', None)
             
             # Create lattice matrix (3x3)
-            lattice = cell.array.copy() if hasattr(cell, 'array') else np.array(cell)
+            # ASE returns cell vectors as rows, but FitSNAP/LAMMPS expects them as columns
+            # So we need to transpose the cell matrix
+            cell_array = cell.array.copy() if hasattr(cell, 'array') else np.array(cell)
             
-            # Ensure we have a proper 3x3 lattice
-            if lattice.shape != (3, 3):
+            # Check if we need to create a box for non-periodic/molecular systems
+            # This happens when the cell is not 3x3 OR when it's effectively zero
+            if cell_array.shape != (3, 3) or np.allclose(cell_array, 0.0, atol=1e-6):
                 # Create a large box for non-periodic systems
                 max_coord = np.max(np.abs(positions)) + 10.0
-                lattice = np.diag([max_coord * 2, max_coord * 2, max_coord * 2])
+                cell_array = np.diag([max_coord * 2, max_coord * 2, max_coord * 2])
+            
+            # Transpose to convert from ASE format (rows) to FitSNAP format (columns)
+            lattice = cell_array.T
             
             # Create data dictionary compatible with FitSNAP
             data_dict = {
