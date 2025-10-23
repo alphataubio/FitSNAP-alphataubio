@@ -354,9 +354,9 @@ class FAIRChem(Scraper):
             
             # Energy (required)
             energy = None
-            if hasattr(atoms, 'get_potential_energy'):
+            if hasattr(atoms, 'get_total_energy'):
                 try:
-                    energy = atoms.get_potential_energy()
+                    energy = atoms.get_total_energy()
                 except:
                     energy = atoms.info.get('energy', None)
             else:
