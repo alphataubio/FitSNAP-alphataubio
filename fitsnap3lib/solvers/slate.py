@@ -166,7 +166,10 @@ class SLATE(SlateCommon):
             
             # Compute SSE (sum of squared errors) across all ranks
             # Use weighted data consistently: residual = bw - aw @ coef
-            local_pred = aw[local_slice] @ coef_
+            
+            with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
+                local_pred = aw[local_slice] @ coef_
+                
             local_residual = bw[local_slice] - local_pred
             local_sse = np.sum(local_residual**2)  # Already weighted, don't apply weights again
             sse_ = pt._comm.allreduce(local_sse, op=MPI.SUM)
@@ -248,6 +251,22 @@ class SLATE(SlateCommon):
                 pyace_section = self.config.sections["PYACE"]
                 if hasattr(pyace_section, 'ctilde_basis'):
                     feature_ranks = []
+                    
+                    # If bzeroflag is False, there are offset columns at the beginning
+                    # We need to account for these in feature_ranks
+                    if not pyace_section.bzeroflag:
+                        # Determine number of offset columns
+                        # For PACE, this is typically numtypes (per-element offsets)
+                        # But let's be precise by checking the actual number
+                        n_offset_cols = n - sum(
+                            len(list(element_basis_rank1_functions)) for element_basis_rank1_functions in pyace_section.ctilde_basis.basis_rank1
+                        ) - sum(
+                            len(list(element_basis_functions)) for element_basis_functions in pyace_section.ctilde_basis.basis
+                        )
+                        # Add offset columns with rank 0
+                        feature_ranks.extend([0] * n_offset_cols)
+                        pt.debug_single_print(f"Added {n_offset_cols} offset columns (rank 0) to feature_ranks")
+                    
                     # Rank 1 functions
                     for element_basis_rank1_functions in pyace_section.ctilde_basis.basis_rank1:
                         for basis_rank1_function in element_basis_rank1_functions:
@@ -256,6 +275,12 @@ class SLATE(SlateCommon):
                     for element_basis_functions in pyace_section.ctilde_basis.basis:
                         for basis_function in element_basis_functions:
                             feature_ranks.append(int(basis_function.rank))
+                    
+                    # Verify feature_ranks matches n
+                    if len(feature_ranks) != n:
+                        pt.single_print(f"WARNING: feature_ranks length ({len(feature_ranks)}) != n features ({n})")
+                        pt.single_print(f"This may cause issues in validation. Setting feature_ranks to None.")
+                        feature_ranks = None
             
             # Save both gamma history and feature ranks
             save_data = {
@@ -284,10 +309,20 @@ class SLATE(SlateCommon):
             return
     
         import pandas as pd
+        import os
         
         output_prefix = self.config.sections['OUTFILE'].metrics.replace('.md', '')
         notebook_file = f"{output_prefix}_validation.ipynb"
         gamma_history_file = f"{output_prefix}_gamma_history.pkl"
+        
+        # Check if this was an ARD run by checking if gamma_history was saved
+        # Only ARD solver calls perform_fit_ard which creates gamma_history
+        is_ard_run = hasattr(self, 'gamma_history') and self.gamma_history is not None
+        
+        if not is_ard_run:
+            self.pt.single_print(f"This was a {self.config.sections['SOLVER'].solver} run (not ARD).")
+            self.pt.single_print("Validation notebook will only contain error analysis.")
+            self.pt.single_print("To generate ARD validation plots, set solver = SLATEARD in your config.")
         
         # Create Jupyter notebook structure
         notebook = {
@@ -490,14 +525,15 @@ class SLATE(SlateCommon):
                         "source": subsystem_lines
                     })
         
-        # Cell 4: Load gamma history
-        notebook["cells"].append({
-            "cell_type": "markdown",
-            "metadata": {},
-            "source": ["## Gamma Evolution Heatmaps"]
-        })
+        # Cell 4: Load gamma history (only if this was an ARD run)
+        if is_ard_run:
+            notebook["cells"].append({
+                "cell_type": "markdown",
+                "metadata": {},
+                "source": ["## Gamma Evolution Heatmaps"]
+            })
         
-        notebook["cells"].append({
+            notebook["cells"].append({
             "cell_type": "code",
             "execution_count": None,
             "metadata": {},
