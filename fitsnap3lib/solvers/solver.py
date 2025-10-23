@@ -414,13 +414,9 @@ class Solver:
 
                 # Return data for each group.
                 
-                # resolve pandas FutureWarning by explicitly excluding the grouping columns
-                # from the operation, which will be the default behavior in future versions
-
-                grouped = self.df.groupby(['Groups', 'Testing', 'Row_Type']).apply(
-                  self._ncount_mae_rmse_rsq_unweighted_and_weighted,
-                  include_groups=False
-                )
+                grouped = self.df.groupby(['Groups', \
+                    'Testing', \
+                    'Row_Type'])[['truths','preds','weights']].apply(self._ncount_mae_rmse_rsq_unweighted_and_weighted)
 
                 # reformat the weighted and unweighted data into separate rows
 
@@ -431,13 +427,8 @@ class Solver:
 
                 # return data for dataset as a whole
 
-                # resolve pandas FutureWarning by explicitly excluding the grouping columns
-                # from the operation, which will be the default behavior in future versions
-
-                all = self.df.groupby(['Testing', 'Row_Type']).apply(
-                    self._ncount_mae_rmse_rsq_unweighted_and_weighted,
-                    include_groups=False
-                )
+                all = self.df.groupby(['Testing', 'Row_Type'])[['truths','preds','weights']].\
+                    apply(self._ncount_mae_rmse_rsq_unweighted_and_weighted)
 
                 # reformat the weighted and unweighted data into separate rows
 
