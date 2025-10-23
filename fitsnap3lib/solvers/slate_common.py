@@ -246,7 +246,8 @@ class SlateCommon(Solver):
                 self.pt.single_print(f"  NaN count: {np.sum(np.isnan(self.fit))}, Inf count: {np.sum(np.isinf(self.fit))}")
             
             # Compute predictions with NaN/Inf handling
-            preds = local_a @ self.fit
+            with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
+                preds = local_a @ self.fit
             
             # Replace NaN/Inf with 0 for error analysis (or could skip these rows)
             if np.any(np.isnan(preds)) or np.any(np.isinf(preds)):
