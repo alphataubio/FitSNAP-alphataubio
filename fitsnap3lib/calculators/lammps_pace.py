@@ -556,6 +556,6 @@ class LammpsPace(LammpsBase):
 
         # check that number of atoms here is equal to number of atoms in the sliced array
 
-        natoms_sliced = self.pt.shared_arrays['number_of_atoms'].sliced_array[self._i]
+        natoms_sliced = self.pt.shared_arrays['number_of_atoms'].array[self._i]
         assert(natoms_sliced==num_atoms)
-        self.pt.shared_arrays['number_of_dgrad_rows'].sliced_array[self._i] = nrows_dgrad
+        self.pt.shared_arrays['number_of_dgrad_rows'].array[self._i] = nrows_dgrad

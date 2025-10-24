@@ -270,6 +270,6 @@ class LammpsCustom(LammpsBase):
 
         # check that number of atoms here is equal to number of atoms in the sliced array
 
-        natoms_sliced = self.pt.shared_arrays['number_of_atoms'].sliced_array[self._i]
+        natoms_sliced = self.pt.shared_arrays['number_of_atoms'].array[self._i]
         assert(natoms_sliced==num_atoms)
-        self.pt.shared_arrays['number_of_neighs_scrape'].sliced_array[self._i] = number_of_neighs
+        self.pt.shared_arrays['number_of_neighs_scrape'].array[self._i] = number_of_neighs
