@@ -18,8 +18,8 @@ class ADIOS2(Scraper):
     Expected .bp file structure:
     - Attributes: nconfigs, element_map, has_forces, has_stress, group_names
     - Arrays: NumAtoms, Energy, test_bool, eweight, fweight, vweight
-    - Flattened arrays: PositionOffsets, PositionsFlat, AtomTypesFlat, LatticesFlat
-    - Optional: ForcesFlat, StressesFlat
+    - Variable-length arrays: PositionOffsets, PositionsFlat, AtomTypesFlat, ForcesFlat
+    - Fixed-size arrays: Lattices (nconfigs, 9), Stresses (nconfigs, 9)
     """
 
     def __init__(self, name, pt, config):
@@ -66,9 +66,9 @@ class ADIOS2(Scraper):
         self.position_offsets = None
         self.positions_flat = None
         self.atom_types_flat = None
-        self.lattices_flat = None
+        self.lattices = None  # Shape: (nconfigs, 9)
         self.forces_flat = None
-        self.stresses_flat = None
+        self.stresses = None  # Shape: (nconfigs, 9)
         
         # My configurations
         self.my_config_indices = []
@@ -199,16 +199,18 @@ class ADIOS2(Scraper):
                 self.fweight = s.read('fweight')
                 self.vweight = s.read('vweight')
                 
-                # Read flattened arrays
+                # Read variable-length arrays
                 self.position_offsets = s.read('PositionOffsets')
                 self.positions_flat = s.read('PositionsFlat')
                 self.atom_types_flat = s.read('AtomTypesFlat')
-                self.lattices_flat = s.read('LatticesFlat')
+                
+                # Read fixed-size arrays
+                self.lattices = s.read('Lattices')  # Shape: (nconfigs, 9)
                 
                 if self.has_forces:
                     self.forces_flat = s.read('ForcesFlat')
                 if self.has_stress:
-                    self.stresses_flat = s.read('StressesFlat')
+                    self.stresses = s.read('Stresses')  # Shape: (nconfigs, 9)
                 
         except Exception as e:
             raise RuntimeError(f"Failed to read ADIOS2 data arrays: {e}")
@@ -250,11 +252,8 @@ class ADIOS2(Scraper):
         atom_type_indices = self.atom_types_flat[pos_start : pos_end]
         atom_types = [self.element_map[int(idx)] for idx in atom_type_indices]
         
-        # Extract lattice (stored as flattened 3x3 matrix)
-        lattice_start = config_idx * 9
-        lattice_end = lattice_start + 9
-        lattice_1d = self.lattices_flat[lattice_start : lattice_end]
-        lattice = lattice_1d.reshape((3, 3))
+        # Extract lattice (3x3 matrix stored as 9 elements)
+        lattice = self.lattices[config_idx].reshape((3, 3))
         
         # Create data dictionary
         data_dict = {
@@ -277,12 +276,9 @@ class ADIOS2(Scraper):
             forces = forces_1d.reshape((natoms, 3))
             data_dict['Forces'] = forces.copy()
         
-        # Extract stress if available
+        # Extract stress if available (3x3 matrix stored as 9 elements)
         if self.has_stress and self.use_stress:
-            stress_start = config_idx * 9
-            stress_end = stress_start + 9
-            stress_1d = self.stresses_flat[stress_start : stress_end]
-            stress = stress_1d.reshape((3, 3))
+            stress = self.stresses[config_idx].reshape((3, 3))
             data_dict['Stress'] = stress.copy()
         
         return data_dict
