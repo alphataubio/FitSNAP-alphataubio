@@ -13,6 +13,12 @@ if (importlib.util.find_spec("lmdb") is not None and
 else:
     FAIRChem = None
 
+# only import ADIOS2 scraper if adios2 is available
+if importlib.util.find_spec("adios2") is not None:
+    from fitsnap3lib.scrapers.adios2_scraper import ADIOS2
+else:
+    ADIOS2 = None
+
 
 def scraper(scraper_name, pt, config):
     """Section Factory"""
