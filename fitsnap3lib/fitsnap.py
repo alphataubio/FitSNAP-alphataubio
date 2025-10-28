@@ -254,17 +254,16 @@ class FitSnap:
             # Allocate shared memory arrays.
             self.calculator.create_a()
             # Calculate descriptors.
-            if (self.solver.linear):
-                progress_tracker = GlobalProgressTracker(self.pt, len(data))
-                for i, configuration in enumerate(data):
+            progress_tracker = GlobalProgressTracker(self.pt, len(data))
+            for i, configuration in enumerate(data):
+                self.pt.single_print(f"*** i {i} configuration {configuration}")
+                if (self.solver.linear):
                     self.calculator.process_configs(configuration, i)
-                    progress_tracker.update(i)
-                self.pt.all_barrier()
-                progress_tracker.finalize()
-
-            else:
-                for i, configuration in enumerate(data):
+                else:
                     self.calculator.process_configs_nonlinear(configuration, i)
+                progress_tracker.update(i)
+            self.pt.all_barrier()
+            progress_tracker.finalize()
             # Delete instance-owned data dictionary to save memory.
             if delete_data and hasattr(self, "data"):
                 del self.data
