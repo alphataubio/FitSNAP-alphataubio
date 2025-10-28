@@ -279,8 +279,10 @@ def write_adios2_file(configs, output_path, allowed_elements):
     - PositionsFlat[3*total_atoms]: flattened positions
     - AtomTypesFlat[total_atoms]: flattened atom type indices
     - ForcesFlat[3*total_atoms]: flattened forces (if available)
-    - LatticeFlat[9*nconfigs]: flattened lattice matrices (3x3 per config)
-    - StressFlat[9*nconfigs]: flattened stress tensors (3x3 per config, if available)
+    
+    Fixed-size arrays (nconfigs, 9):
+    - Lattices[nconfigs, 9]: lattice matrices (3x3 per config, flattened to 9)
+    - Stresses[nconfigs, 9]: stress tensors (3x3 per config, flattened to 9, if available)
     
     Element mapping (attributes):
     - element_map: maps element index to symbol
@@ -306,8 +308,10 @@ def write_adios2_file(configs, output_path, allowed_elements):
     positions_list = []
     atom_types_list = []
     forces_list = []
-    lattices_list = []
-    stresses_list = []
+    
+    # Fixed-size arrays (nconfigs, 9) for 3x3 matrices
+    lattice_array = np.zeros((nconfigs, 9), dtype=np.float64)
+    stress_array = np.zeros((nconfigs, 9), dtype=np.float64) if has_stress else None
     
     position_offsets = np.zeros(nconfigs + 1, dtype=np.int64)
     
@@ -343,15 +347,15 @@ def write_adios2_file(configs, output_path, allowed_elements):
             else:
                 forces_list.append(np.zeros(config['NumAtoms'] * 3, dtype=np.float64))
         
-        # Flatten lattice (3x3 -> 9)
-        lattices_list.append(config['Lattice'].flatten())
+        # Store lattice (3x3 -> 9) directly in array
+        lattice_array[i] = config['Lattice'].flatten()
         
-        # Flatten stress if available
+        # Store stress if available (3x3 -> 9) directly in array
         if has_stress:
             if 'Stress' in config:
-                stresses_list.append(config['Stress'].flatten())
+                stress_array[i] = config['Stress'].flatten()
             else:
-                stresses_list.append(np.zeros(9, dtype=np.float64))
+                stress_array[i] = np.zeros(9, dtype=np.float64)
     
     position_offsets[-1] = total_atoms
     
@@ -359,12 +363,9 @@ def write_adios2_file(configs, output_path, allowed_elements):
     print("  Concatenating arrays...", file=sys.stderr)
     positions_flat = np.concatenate(positions_list)
     atom_types_flat = np.concatenate(atom_types_list)
-    lattices_flat = np.concatenate(lattices_list)
     
     if has_forces:
         forces_flat = np.concatenate(forces_list)
-    if has_stress:
-        stresses_flat = np.concatenate(stresses_list)
     
     print(f"  Total atoms across all configs: {total_atoms}", file=sys.stderr)
     print(f"  Has forces: {has_forces}", file=sys.stderr)
@@ -395,12 +396,14 @@ def write_adios2_file(configs, output_path, allowed_elements):
         s.write('PositionOffsets', position_offsets)
         s.write('PositionsFlat', positions_flat)
         s.write('AtomTypesFlat', atom_types_flat)
-        s.write('LatticesFlat', lattices_flat)
+        
+        # Write fixed-size arrays
+        s.write('Lattices', lattice_array)
         
         if has_forces:
             s.write('ForcesFlat', forces_flat)
         if has_stress:
-            s.write('StressesFlat', stresses_flat)
+            s.write('Stresses', stress_array)
     
     print(f"\nSuccessfully wrote {output_path}", file=sys.stderr)
     print(f"  File contains {nconfigs} configurations", file=sys.stderr)
