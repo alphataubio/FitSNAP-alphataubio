@@ -281,8 +281,8 @@ def write_adios2_file(configs, output_path, allowed_elements):
     - ForcesFlat[3*total_atoms]: flattened forces (if available)
     
     Fixed-size arrays (nconfigs, 9):
-    - Lattices[nconfigs, 9]: lattice matrices (3x3 per config, flattened to 9)
-    - Stresses[nconfigs, 9]: stress tensors (3x3 per config, flattened to 9, if available)
+    - Lattice[nconfigs, 9]: lattice matrices (3x3 per config, flattened to 9)
+    - Stress[nconfigs, 9]: stress tensors (3x3 per config, flattened to 9, if available)
     
     Element mapping (attributes):
     - element_map: maps element index to symbol
@@ -398,12 +398,12 @@ def write_adios2_file(configs, output_path, allowed_elements):
         s.write('AtomTypesFlat', atom_types_flat)
         
         # Write fixed-size arrays
-        s.write('Lattices', lattice_array)
+        s.write('Lattice', lattice_array)
         
         if has_forces:
             s.write('ForcesFlat', forces_flat)
         if has_stress:
-            s.write('Stresses', stress_array)
+            s.write('Stress', stress_array)
     
     print(f"\nSuccessfully wrote {output_path}", file=sys.stderr)
     print(f"  File contains {nconfigs} configurations", file=sys.stderr)
@@ -421,12 +421,12 @@ Example:
 Expected directory structure:
     scratch/omat24/
     ├── train/
-    │   ├── rattled-300-subsampled.tar.gz
-    │   ├── rattled-1000-subsampled.tar.gz
+    │   ├── rattled-300.tar.gz
+    │   ├── rattled-500.tar.gz
     │   └── ...
     └── val/
-        ├── rattled-300-subsampled.tar.gz
-        ├── rattled-1000-subsampled.tar.gz
+        ├── rattled-300.tar.gz
+        ├── rattled-500.tar.gz
         └── ...
         """
     )
