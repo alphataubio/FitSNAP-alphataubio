@@ -19,7 +19,7 @@ class ADIOS2(Scraper):
     - Attributes: nconfigs, element_map, has_forces, has_stress, group_names
     - Arrays: NumAtoms, Energy, test_bool, eweight, fweight, vweight
     - Variable-length arrays: PositionOffsets, PositionsFlat, AtomTypesFlat, ForcesFlat
-    - Fixed-size arrays: Lattices (nconfigs, 9), Stresses (nconfigs, 9)
+    - Fixed-size arrays: Lattice (nconfigs, 9), Stress (nconfigs, 9)
     """
 
     def __init__(self, name, pt, config):
@@ -205,12 +205,12 @@ class ADIOS2(Scraper):
                 self.atom_types_flat = s.read('AtomTypesFlat')
                 
                 # Read fixed-size arrays
-                self.lattices = s.read('Lattices')  # Shape: (nconfigs, 9)
+                self.lattices = s.read('Lattice')  # Shape: (nconfigs, 9)
                 
                 if self.has_forces:
                     self.forces_flat = s.read('ForcesFlat')
                 if self.has_stress:
-                    self.stresses = s.read('Stresses')  # Shape: (nconfigs, 9)
+                    self.stresses = s.read('Stress')  # Shape: (nconfigs, 9)
                 
         except Exception as e:
             raise RuntimeError(f"Failed to read ADIOS2 data arrays: {e}")
