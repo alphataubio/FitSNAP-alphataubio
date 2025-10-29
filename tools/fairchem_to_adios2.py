@@ -2,7 +2,7 @@
 """
 Convert FAIRChem LMDB datasets to ADIOS2 .bp format with element filtering.
 
-Reads LMDB databases directly using the lmdb package and ASE, avoiding torch dependency.
+Uses fairchem's AseDBDataset to read LMDB databases (mocks torch if not installed).
 Expects LMDB databases to be already extracted in train/ and val/ directories.
 
 Usage:
@@ -16,6 +16,71 @@ import numpy as np
 from pathlib import Path
 import multiprocessing as mp
 from tqdm import tqdm
+
+# Mock torch to allow fairchem imports without actually requiring torch
+try:
+    import torch
+except ImportError:
+    # Create a more sophisticated mock that handles nested imports
+    from types import ModuleType
+    import importlib.abc
+    import importlib.machinery
+    
+    class MockModule(ModuleType):
+        """A mock module that returns itself for any attribute access"""
+        def __init__(self, name):
+            super().__init__(name)
+            # Make it look like a real module package
+            self.__path__ = []
+            self.__file__ = f"<mock {name}>"
+        
+        def __getattr__(self, name):
+            mock = MockModule(f"{self.__name__}.{name}")
+            sys.modules[mock.__name__] = mock
+            return mock
+        
+        def __call__(self, *args, **kwargs):
+            # If called with a function (as a decorator), return that function
+            if len(args) == 1 and callable(args[0]) and not kwargs:
+                return args[0]
+            # Otherwise return a mock that can be used as a decorator
+            return MockModule(f"{self.__name__}()")
+        
+        def __iter__(self):
+            # Return empty iterator to satisfy import system
+            return iter([])
+        
+        def __mro_entries__(self, bases):
+            # When used as a base class, return object as the actual base
+            return (object,)
+        
+        def __getitem__(self, item):
+            # Support generic type subscripting like Dataset[T_co]
+            return MockModule(f"{self.__name__}[{item}]")
+    
+    class TorchMockFinder(importlib.abc.MetaPathFinder):
+        """A meta path finder that creates mock modules for torch imports"""
+        def find_spec(self, fullname, path, target=None):
+            # Intercept any torch-related imports
+            if fullname.startswith('torch') or fullname.startswith('torch_'):
+                return importlib.machinery.ModuleSpec(fullname, TorchMockLoader())
+            return None
+    
+    class TorchMockLoader(importlib.abc.Loader):
+        """A loader that creates mock modules"""
+        def create_module(self, spec):
+            return MockModule(spec.name)
+        
+        def exec_module(self, module):
+            # Nothing to execute
+            pass
+    
+    # Install the meta path finder
+    sys.meta_path.insert(0, TorchMockFinder())
+    
+    # Create the base mock modules
+    mock_torch = MockModule('torch')
+    sys.modules['torch'] = mock_torch
 
 try:
     from adios2 import Stream
@@ -45,20 +110,107 @@ except ImportError as e:
     sys.exit(1)
 
 try:
-    from ase.io import read
-    from ase import Atoms
-    import lmdb
-    import pickle
-    HAS_ASE = True
+    from fairchem.core.datasets import AseDBDataset
+    from ase.data import chemical_symbols
+    HAS_FAIRCHEM = True
 except ImportError as e:
-    HAS_ASE = False
+    HAS_FAIRCHEM = False
     print("="*80, file=sys.stderr)
-    print("ERROR: Failed to import required packages", file=sys.stderr)
+    print("ERROR: Failed to import fairchem", file=sys.stderr)
     print("="*80, file=sys.stderr)
     print(f"\nImport error: {e}\n", file=sys.stderr)
-    print("Install required packages: pip install ase lmdb\n", file=sys.stderr)
+    print("Install: pip install fairchem-core\n", file=sys.stderr)
     print("="*80, file=sys.stderr)
     sys.exit(1)
+
+
+def process_lmdb_dir(lmdb_path, group_name, allowed_elements, test_bool):
+    """
+    Process a single LMDB database directory using fairchem's AseDBDataset.
+    
+    Args:
+        lmdb_path: Path to LMDB database directory
+        group_name: Name for this group of configurations
+        allowed_elements: Set of allowed element symbols
+        test_bool: Boolean indicating if this is validation data
+    
+    Returns:
+        Tuple of (list of configs, number filtered)
+    """
+    # AseDBDataset expects a config dict with 'src' pointing to the database
+    dataset = AseDBDataset({"src": str(lmdb_path)})
+    
+    configs = []
+    filtered_count = 0
+    
+    for i in range(len(dataset)):
+    
+        atoms = dataset.get_atoms(i)
+        
+        # Get element symbols
+        atom_types = atoms.get_chemical_symbols()
+        
+        # Filter by elements
+        if not set(atom_types).issubset(allowed_elements):
+            filtered_count += 1
+            continue
+        
+        # Extract data
+        num_atoms = len(atoms)
+        positions = atoms.get_positions()
+        cell = atoms.get_cell().array
+        
+        # Energy
+        energy = 0.0
+        if atoms.calc is not None:
+            try:
+                energy = float(atoms.get_potential_energy())
+            except:
+                pass
+        
+        # Forces (if available)
+        forces = None
+        if atoms.calc is not None:
+            try:
+                forces = atoms.get_forces()
+            except:
+                pass
+        
+        # Stress (if available)
+        stress = None
+        if atoms.calc is not None:
+            try:
+                stress_voigt = atoms.get_stress()
+                # Convert Voigt to 3x3
+                stress = np.array([
+                    [stress_voigt[0], stress_voigt[5], stress_voigt[4]],
+                    [stress_voigt[5], stress_voigt[1], stress_voigt[3]],
+                    [stress_voigt[4], stress_voigt[3], stress_voigt[2]]
+                ])
+            except:
+                pass
+        
+        config = {
+            'Group': group_name,
+            'NumAtoms': num_atoms,
+            'Positions': positions,
+            'AtomTypes': atom_types,
+            'Lattice': cell,
+            'Energy': energy,
+            'test_bool': test_bool,
+            'eweight': 1.0,
+            'fweight': 1.0 if forces is not None else 0.0,
+            'vweight': 1.0 if stress is not None else 0.0,
+        }
+        
+        if forces is not None:
+            config['Forces'] = forces
+        if stress is not None:
+            config['Stress'] = stress
+        
+        configs.append(config)
+    
+    return configs, filtered_count
 
 
 def process_dataset_path(dataset_root, subset_type, allowed_elements, num_workers=None):
@@ -79,11 +231,14 @@ def process_dataset_path(dataset_root, subset_type, allowed_elements, num_worker
         print(f"Warning: {subset_dir} does not exist, skipping", file=sys.stderr)
         return []
     
-    # Find all LMDB database directories (containing data.mdb)
+    # Find all LMDB database directories
     lmdb_dirs = []
     for item in subset_dir.iterdir():
-        if item.is_dir() and (item / 'data.mdb').exists():
-            lmdb_dirs.append(item)
+        if item.is_dir():
+            # Check if directory contains LMDB files
+            has_lmdb = (item / 'data.mdb').exists() or any(item.glob('*.aselmdb'))
+            if has_lmdb:
+                lmdb_dirs.append(item)
     
     if not lmdb_dirs:
         print(f"Warning: No LMDB databases found in {subset_dir}", file=sys.stderr)
@@ -92,51 +247,20 @@ def process_dataset_path(dataset_root, subset_type, allowed_elements, num_worker
     lmdb_dirs = sorted(lmdb_dirs)
     print(f"\nProcessing {subset_type} subset with {len(lmdb_dirs)} LMDB databases", file=sys.stderr)
     
-    if num_workers is None:
-        num_workers = mp.cpu_count()
-    
     all_configs = []
     test_bool = (subset_type == 'val')
     
-    # Process each LMDB database with progress bar
+    # Process each LMDB database
     for lmdb_dir in tqdm(lmdb_dirs, desc=f"  {subset_type} databases", unit="db"):
         group_name = lmdb_dir.name
-        lmdb_path = str(lmdb_dir)
         
-        # Open LMDB to get size
-        env = lmdb.open(lmdb_path, readonly=True, lock=False, readahead=False, meminit=False)
-        with env.begin() as txn:
-            dataset_size = txn.stat()['entries']
-        env.close()
-        
-        # Create chunks for parallel processing
-        chunk_size = max(100, dataset_size // (num_workers * 4))  # 4 chunks per worker
-        chunks = []
-        for i in range(0, dataset_size, chunk_size):
-            end_idx = min(i + chunk_size, dataset_size)
-            chunks.append((lmdb_path, i, end_idx, group_name, test_bool, allowed_elements))
-        
-        # Process chunks in parallel
-        archive_configs = []
-        total_filtered = 0
-        
-        with mp.Pool(processes=num_workers) as pool:
-            results = list(tqdm(
-                pool.imap_unordered(process_config_chunk, chunks),
-                total=len(chunks),
-                desc=f"    {group_name}",
-                unit="chunk",
-                leave=False
-            ))
-        
-        # Collect results
-        for configs, filtered_count in results:
-            archive_configs.extend(configs)
-            total_filtered += filtered_count
-        
-        all_configs.extend(archive_configs)
-        
-        tqdm.write(f"    {group_name}: kept {len(archive_configs)}, filtered {total_filtered}")
+        try:
+            configs, filtered = process_lmdb_dir(lmdb_dir, group_name, allowed_elements, test_bool)
+            all_configs.extend(configs)
+            tqdm.write(f"    {group_name}: kept {len(configs)}, filtered {filtered}")
+        except Exception as e:
+            tqdm.write(f"    {group_name}: ERROR - {e}")
+            continue
     
     return all_configs
 
