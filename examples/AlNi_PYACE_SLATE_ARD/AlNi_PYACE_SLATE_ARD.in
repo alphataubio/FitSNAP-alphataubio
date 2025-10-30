@@ -1,0 +1,106 @@
+
+#############################################################################################################################
+#
+# OMAT=https://dl.fbaipublicfiles.com/opencatalystproject/data/omat
+# wget -c -P train $OMAT/241018/omat/train/{rattled-{1000,500,300},aimd-from-PBE-{1000,3000}-{npt,nvt},rattled-relax}.tar.gz
+# wget -c -P val $OMAT/241220/omat/val/{rattled-{1000,500,300},aimd-from-PBE-{1000,3000}-{npt,nvt},rattled-relax}.tar.gz
+#
+# clear; mpirun -np 192 python -m fitsnap3 AlNi_PYACE_SLATE_ARD.in --overwrite
+#
+#############################################################################################################################
+
+
+[PYACE]
+elements = Al Ni
+bzeroflag = 1
+
+embeddings = {
+    "Al": {"npot": "FinnisSinclair", "fs_parameters": [1, 1], "ndensity": 1},
+    "Ni": {"npot": "FinnisSinclair", "fs_parameters": [1, 1], "ndensity": 1}
+  }
+
+bonds = {
+    "AlAl": {"radbase": "ChebExpCos", "radparameters": [5.5],
+             "rcut": 6.5, "dcut": 0.5, "core-repulsion": [20000, 5.5], "r_in": 1.2, "delta_in": 0.05},
+    "AlNi": {"radbase": "ChebExpCos", "radparameters": [5.0],
+             "rcut": 6.0, "dcut": 0.5, "core-repulsion": [20000, 5.0], "r_in": 1.0, "delta_in": 0.05},
+    "NiNi": {"radbase": "ChebExpCos", "radparameters": [4.5],
+             "rcut": 5.5, "dcut": 0.5, "core-repulsion": [20000, 4.5], "r_in": 0.9, "delta_in": 0.05}
+  }
+
+functions = {
+    "ALL": {"lmin_by_orders": [0,0,0,0], "lmax_by_orders": [2,2,1,1], "nradmax_by_orders": [8,3,2,1]}
+  }
+
+[CALCULATOR]
+calculator = LAMMPSPYACE
+energy = 1
+force = 1
+stress = 0
+
+[REFERENCE]
+units = real
+atom_style = atomic
+pair_style = zero 6.0
+pair_coeff = * *
+
+[SOLVER]
+solver = SLATE
+compute_testerrs = 1
+detailed_errors = 0
+
+[SLATE]
+method = ARD
+scap = 1e-3
+scai = 1e-3
+max_iter = 10
+threshold_gamma = 0.1
+
+[SCRAPER]
+scraper = FAIRCHEM
+#max_configs_per_rank = 1000
+verbose = 1
+data_id = biomolecules
+charge = 0
+#composition = H80O40
+
+[PATH]
+dataPath = ./omat24
+
+[GROUPS]
+group_sections = name training_size testing_size eweight fweight vweight
+group_types = str float float float float float
+smartweights = 1
+random_sampling = 0
+train/rattled-300             = 1.0  0.0  1.0  100.0  1e-12
+train/rattled-500             = 1.0  0.0  1.0  100.0  1e-12
+train/rattled-1000            = 1.0  0.0  1.0  100.0  1e-12
+train/rattled-relax           = 1.0  0.0  1.0  100.0  1e-12
+train/aimd-from-PBE-1000-npt  = 1.0  0.0  1.0  100.0  1e-12
+train/aimd-from-PBE-1000-nvt  = 1.0  0.0  1.0  100.0  1e-12
+train/aimd-from-PBE-3000-npt  = 1.0  0.0  1.0  100.0  1e-12
+train/aimd-from-PBE-3000-nvt  = 1.0  0.0  1.0  100.0  1e-12
+val/rattled-300               = 0.0  1.0  1.0  100.0  1e-12
+val/rattled-500               = 0.0  1.0  1.0  100.0  1e-12
+val/rattled-1000              = 0.0  1.0  1.0  100.0  1e-12
+val/rattled-relax             = 0.0  1.0  1.0  100.0  1e-12
+val/aimd-from-PBE-1000-npt    = 0.0  1.0  1.0  100.0  1e-12
+val/aimd-from-PBE-1000-nvt    = 0.0  1.0  1.0  100.0  1e-12
+val/aimd-from-PBE-3000-npt    = 0.0  1.0  1.0  100.0  1e-12
+val/aimd-from-PBE-3000-nvt    = 0.0  1.0  1.0  100.0  1e-12
+
+
+[OUTFILE]
+output_style = PACE
+metrics = AlNi_PYACE_SLATE_ARD.md
+potential = AlNi_PYACE_SLATE_ARD
+validation = 1
+
+[EXTRAS]
+dump_descriptors = 0
+dump_truth = 0
+dump_weights = 0
+debug = 1
+
+[MEMORY]
+override = 0
