@@ -16,10 +16,12 @@ class ADIOS2(Scraper):
     Designed for scalable MPI-parallel reading of FAIRChem datasets.
     
     Expected .bp file structure:
-    - Attributes: nconfigs, element_map, has_forces, has_stress, group_names
-    - Arrays: NumAtoms, Energy, test_bool, eweight, fweight, vweight
+    - Attributes: nconfigs, element_map, has_forces, has_stress, unique_group_names
+    - Arrays: NumAtoms, Energy, test_bool, GroupIndices
     - Variable-length arrays: PositionOffsets, PositionsFlat, AtomTypesFlat, ForcesFlat
-    - Fixed-size arrays: Lattice (nconfigs, 9), Stress (nconfigs, 9)
+    - Fixed-size arrays: Lattice (nconfigs, 3, 3), Stress (nconfigs, 3, 3)
+    
+    Note: Weights (eweight, fweight, vweight) are read from config file [GROUPS] section.
     """
 
     def __init__(self, name, pt, config):
@@ -29,11 +31,11 @@ class ADIOS2(Scraper):
         super().__init__(name, pt, config)
         self.data = []
         
-        # Get the .bp file path from SCRAPER section
-        if not hasattr(self.config.sections["SCRAPER"], 'bp_file'):
-            raise ValueError("ADIOS2 scraper requires 'bp_file' parameter in [SCRAPER] section")
+        # Get the .bp file path from PATH section
+        if not hasattr(self.config.sections["PATH"], 'datapath'):
+            raise ValueError("ADIOS2 scraper requires 'dataPath' parameter in [PATH] section")
         
-        self.bp_file = self.config.sections["SCRAPER"].bp_file
+        self.dataPath = self.config.sections["PATH"].datapath
         
         # MPI setup
         if self.pt.stubs == 0:
@@ -54,21 +56,19 @@ class ADIOS2(Scraper):
         self.element_map = []
         self.has_forces = False
         self.has_stress = False
-        self.group_names = []
+        self.unique_group_names = []
         
         # Data arrays
         self.num_atoms = None
         self.energy = None
         self.test_bool = None
-        self.eweight = None
-        self.fweight = None
-        self.vweight = None
+        self.group_indices = None
         self.position_offsets = None
         self.positions_flat = None
         self.atom_types_flat = None
-        self.lattices = None  # Shape: (nconfigs, 9)
+        self.lattices = None  # Shape: (nconfigs, 3, 3)
         self.forces_flat = None
-        self.stresses = None  # Shape: (nconfigs, 9)
+        self.stresses = None  # Shape: (nconfigs, 3, 3)
         
         # My configurations
         self.my_config_indices = []
@@ -78,12 +78,12 @@ class ADIOS2(Scraper):
         Read metadata from ADIOS2 file and determine configuration distribution.
         """
         if self.rank == 0:
-            self.pt.single_print(f"Opening ADIOS2 file: {self.bp_file}")
+            self.pt.single_print(f"Opening ADIOS2 file: {self.dataPath}")
         
         # Only rank 0 reads metadata, then broadcasts
         if self.rank == 0:
             try:
-                with Stream(self.bp_file, 'r') as s:
+                with Stream(self.dataPath, 'r') as s:
                     # Read attributes
                     self.nconfigs = s.read_attribute('nconfigs')
                     if isinstance(self.nconfigs, np.ndarray):
@@ -112,14 +112,14 @@ class ADIOS2(Scraper):
                     else:
                         self.has_stress = bool(has_stress_val)
                     
-                    group_names_str = s.read_attribute('group_names')
-                    if isinstance(group_names_str, np.ndarray):
-                        group_names_str = str(group_names_str[0])
-                    elif isinstance(group_names_str, bytes):
-                        group_names_str = group_names_str.decode('utf-8')
+                    unique_group_names_str = s.read_attribute('unique_group_names')
+                    if isinstance(unique_group_names_str, np.ndarray):
+                        unique_group_names_str = str(unique_group_names_str[0])
+                    elif isinstance(unique_group_names_str, bytes):
+                        unique_group_names_str = unique_group_names_str.decode('utf-8')
                     else:
-                        group_names_str = str(group_names_str)
-                    self.group_names = group_names_str.split('|')
+                        unique_group_names_str = str(unique_group_names_str)
+                    self.unique_group_names = unique_group_names_str.split('|')
                     
                     self.pt.single_print(f"ADIOS2 file contains {self.nconfigs} configurations")
                     self.pt.single_print(f"Elements: {', '.join(self.element_map)}")
@@ -135,7 +135,14 @@ class ADIOS2(Scraper):
             self.element_map = self.comm.bcast(self.element_map, root=0)
             self.has_forces = self.comm.bcast(self.has_forces, root=0)
             self.has_stress = self.comm.bcast(self.has_stress, root=0)
-            self.group_names = self.comm.bcast(self.group_names, root=0)
+            self.unique_group_names = self.comm.bcast(self.unique_group_names, root=0)
+        
+        # Read group_table from config file using parent class method
+        # This populates self.group_table with weights from [GROUPS] section
+        super().scrape_groups()
+        
+        if self.rank == 0:
+            self.pt.single_print(f"Found {len(self.unique_group_names)} unique groups: {self.unique_group_names}")
         
         # Determine which configurations this rank will process
         configs_per_rank = self.nconfigs // self.size
@@ -148,26 +155,6 @@ class ADIOS2(Scraper):
         
         if self.rank == 0:
             self.pt.single_print(f"Each rank will process ~{configs_per_rank} configurations")
-        
-        # Create group_table from unique groups
-        unique_groups = sorted(set(self.group_names))
-        self.group_table = {}
-        for group in unique_groups:
-            self.group_table[group] = {
-                'eweight': 1.0,
-                'fweight': 1.0,
-                'vweight': 1.0,
-                'training_size': 0,  # Will be updated in divvy_up_configs
-                'testing_size': 0,
-            }
-        
-        # Count training and testing configs per group
-        for i, group_name in enumerate(self.group_names):
-            # We'll read test_bool later, for now just count all
-            self.group_table[group_name]['training_size'] += 1
-        
-        if self.rank == 0:
-            self.pt.single_print(f"Found {len(unique_groups)} unique groups: {unique_groups}")
 
     def divvy_up_configs(self):
         """
@@ -190,14 +177,12 @@ class ADIOS2(Scraper):
         
         # Read all data arrays (all ranks read the same data, but only process their slice)
         try:
-            with Stream(self.bp_file, 'r') as s:
+            with Stream(self.dataPath, 'r') as s:
                 # Read per-config arrays
                 self.num_atoms = s.read('NumAtoms')
                 self.energy = s.read('Energy')
                 self.test_bool = s.read('test_bool')
-                self.eweight = s.read('eweight')
-                self.fweight = s.read('fweight')
-                self.vweight = s.read('vweight')
+                self.group_indices = s.read('GroupIndices')
                 
                 # Read variable-length arrays
                 self.position_offsets = s.read('PositionOffsets')
@@ -234,8 +219,9 @@ class ADIOS2(Scraper):
         """
         Extract a single configuration from the flattened arrays.
         """
-        # Get group name
-        group_name = self.group_names[config_idx]
+        # Get group name from indices
+        group_idx = int(self.group_indices[config_idx])
+        group_name = self.unique_group_names[group_idx]
         
         # Get number of atoms
         natoms = int(self.num_atoms[config_idx])
@@ -252,7 +238,7 @@ class ADIOS2(Scraper):
         atom_type_indices = self.atom_types_flat[pos_start : pos_end]
         atom_types = [self.element_map[int(idx)] for idx in atom_type_indices]
         
-        # Extract lattice (3x3 matrix stored as 9 elements)
+        # Extract lattice (3x3 matrix)
         lattice = self.lattices[config_idx].reshape((3, 3))
         
         # Create data dictionary
@@ -263,11 +249,9 @@ class ADIOS2(Scraper):
             'AtomTypes': atom_types,
             'NumAtoms': natoms,
             'Lattice': lattice.copy(),
+            'QMLattice': lattice.copy().T,  # Transpose for compatibility with parent class
             'Energy': float(self.energy[config_idx]),
             'test_bool': bool(self.test_bool[config_idx]),
-            'eweight': float(self.eweight[config_idx]),
-            'fweight': float(self.fweight[config_idx]),
-            'vweight': float(self.vweight[config_idx]),
         }
         
         # Extract forces if available
@@ -281,7 +265,13 @@ class ADIOS2(Scraper):
             stress = self.stresses[config_idx].reshape((3, 3))
             data_dict['Stress'] = stress.copy()
         
-        return data_dict
+        # Store as self.data temporarily so _weighting can access it
+        self.data = data_dict
+        
+        # Apply weights from config file using parent class method
+        self._weighting(natoms)
+        
+        return self.data
 
     def __del__(self):
         """
