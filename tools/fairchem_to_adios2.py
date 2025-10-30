@@ -156,9 +156,6 @@ def _process_chunk(args):
             'Lattice': cell,
             'Energy': energy,
             'test_bool': test_bool,
-            'eweight': 1.0,
-            'fweight': 1.0 if forces is not None else 0.0,
-            'vweight': 1.0 if stress is not None else 0.0,
         }
         
         if forces is not None:
@@ -280,7 +277,6 @@ def write_adios2_file(configs, output_path, allowed_elements):
     - NumAtoms[i]: number of atoms
     - Energy[i]: total energy
     - test_bool[i]: boolean (0=train, 1=val)
-    - eweight[i], fweight[i], vweight[i]: weights
     
     Variable-length arrays (flattened with offsets):
     - PositionOffsets[i]: starting index in PositionsFlat for config i
@@ -308,9 +304,6 @@ def write_adios2_file(configs, output_path, allowed_elements):
     num_atoms_array = np.zeros(nconfigs, dtype=np.int32)
     energy_array = np.zeros(nconfigs, dtype=np.float64)
     test_bool_array = np.zeros(nconfigs, dtype=np.int32)
-    eweight_array = np.zeros(nconfigs, dtype=np.float64)
-    fweight_array = np.zeros(nconfigs, dtype=np.float64)
-    vweight_array = np.zeros(nconfigs, dtype=np.float64)
     
     # Variable-length data
     positions_list = []
@@ -334,9 +327,6 @@ def write_adios2_file(configs, output_path, allowed_elements):
         num_atoms_array[i] = config['NumAtoms']
         energy_array[i] = config['Energy']
         test_bool_array[i] = 1 if config['test_bool'] else 0
-        eweight_array[i] = config['eweight']
-        fweight_array[i] = config['fweight']
-        vweight_array[i] = config['vweight']
         
         position_offsets[i] = total_atoms
         total_atoms += config['NumAtoms']
@@ -392,9 +382,6 @@ def write_adios2_file(configs, output_path, allowed_elements):
         s.write('NumAtoms', num_atoms_array, count=[nconfigs])
         s.write('Energy', energy_array, count=[nconfigs])
         s.write('test_bool', test_bool_array, count=[nconfigs])
-        s.write('eweight', eweight_array, count=[nconfigs])
-        s.write('fweight', fweight_array, count=[nconfigs])
-        s.write('vweight', vweight_array, count=[nconfigs])
         
         # Create unique group names list and indices array
         unique_groups = sorted(set(group_names))
