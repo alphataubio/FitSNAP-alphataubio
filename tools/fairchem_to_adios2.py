@@ -11,82 +11,26 @@ Usage:
 
 import os
 import sys
+
+# Redirect stderr to devnull to suppress torch warnings
+_original_stderr = os.dup(2)
+_devnull = os.open(os.devnull, os.O_WRONLY)
+os.dup2(_devnull, 2)
+
 import argparse
 import numpy as np
 from pathlib import Path
 import multiprocessing as mp
 from tqdm import tqdm
-
-# Mock torch to allow fairchem imports without actually requiring torch
-try:
-    import torch
-except ImportError:
-    # Create a more sophisticated mock that handles nested imports
-    from types import ModuleType
-    import importlib.abc
-    import importlib.machinery
-    
-    class MockModule(ModuleType):
-        """A mock module that returns itself for any attribute access"""
-        def __init__(self, name):
-            super().__init__(name)
-            # Make it look like a real module package
-            self.__path__ = []
-            self.__file__ = f"<mock {name}>"
-        
-        def __getattr__(self, name):
-            mock = MockModule(f"{self.__name__}.{name}")
-            sys.modules[mock.__name__] = mock
-            return mock
-        
-        def __call__(self, *args, **kwargs):
-            # If called with a function (as a decorator), return that function
-            if len(args) == 1 and callable(args[0]) and not kwargs:
-                return args[0]
-            # Otherwise return a mock that can be used as a decorator
-            return MockModule(f"{self.__name__}()")
-        
-        def __iter__(self):
-            # Return empty iterator to satisfy import system
-            return iter([])
-        
-        def __mro_entries__(self, bases):
-            # When used as a base class, return object as the actual base
-            return (object,)
-        
-        def __getitem__(self, item):
-            # Support generic type subscripting like Dataset[T_co]
-            return MockModule(f"{self.__name__}[{item}]")
-    
-    class TorchMockFinder(importlib.abc.MetaPathFinder):
-        """A meta path finder that creates mock modules for torch imports"""
-        def find_spec(self, fullname, path, target=None):
-            # Intercept any torch-related imports
-            if fullname.startswith('torch') or fullname.startswith('torch_'):
-                return importlib.machinery.ModuleSpec(fullname, TorchMockLoader())
-            return None
-    
-    class TorchMockLoader(importlib.abc.Loader):
-        """A loader that creates mock modules"""
-        def create_module(self, spec):
-            return MockModule(spec.name)
-        
-        def exec_module(self, module):
-            # Nothing to execute
-            pass
-    
-    # Install the meta path finder
-    sys.meta_path.insert(0, TorchMockFinder())
-    
-    # Create the base mock modules
-    mock_torch = MockModule('torch')
-    sys.modules['torch'] = mock_torch
+import warnings
 
 try:
     from adios2 import Stream
     HAS_ADIOS2 = True
 except ImportError as e:
     HAS_ADIOS2 = False
+    # Restore stderr for error messages
+    os.dup2(_original_stderr, 2)
     print("="*80, file=sys.stderr)
     print("ERROR: Failed to import ADIOS2", file=sys.stderr)
     print("="*80, file=sys.stderr)
@@ -115,6 +59,8 @@ try:
     HAS_FAIRCHEM = True
 except ImportError as e:
     HAS_FAIRCHEM = False
+    # Restore stderr for error messages
+    os.dup2(_original_stderr, 2)
     print("="*80, file=sys.stderr)
     print("ERROR: Failed to import fairchem", file=sys.stderr)
     print("="*80, file=sys.stderr)
@@ -123,36 +69,44 @@ except ImportError as e:
     print("="*80, file=sys.stderr)
     sys.exit(1)
 
+# Restore stderr after imports
+os.dup2(_original_stderr, 2)
+os.close(_devnull)
+os.close(_original_stderr)
 
-def process_lmdb_dir(lmdb_path, group_name, allowed_elements, test_bool):
+
+# Global variables for worker processes
+_worker_dataset = None
+
+def _init_worker(lmdb_path):
+    """Initialize worker process with dataset."""
+    global _worker_dataset
+    _worker_dataset = AseDBDataset({"src": str(lmdb_path)})
+
+def _process_chunk(args):
     """
-    Process a single LMDB database directory using fairchem's AseDBDataset.
+    Process a chunk of configuration indices.
     
     Args:
-        lmdb_path: Path to LMDB database directory
-        group_name: Name for this group of configurations
-        allowed_elements: Set of allowed element symbols
-        test_bool: Boolean indicating if this is validation data
+        args: Tuple of (start_idx, end_idx, group_name, allowed_elements, test_bool)
     
     Returns:
         Tuple of (list of configs, number filtered)
     """
-    # AseDBDataset expects a config dict with 'src' pointing to the database
-    dataset = AseDBDataset({"src": str(lmdb_path)})
+    start_idx, end_idx, group_name, allowed_elements, test_bool = args
+    global _worker_dataset
     
     configs = []
     filtered_count = 0
     
-    for i in tqdm(range(len(dataset))):
-    #for i in tqdm(range(1723010,1723036)):
-    
-        atoms = dataset.get_atoms(i)
+    for i in range(start_idx, end_idx):
+        try:
+            atoms = _worker_dataset.get_atoms(i)
+        except Exception as e:
+            continue
         
         # Get element symbols
         atom_types = atoms.get_chemical_symbols()
-        
-        #print(f"*** i {i} atom_types {atom_types}")
-
         
         # Filter by elements
         if not set(atom_types).issubset(allowed_elements):
@@ -212,13 +166,53 @@ def process_lmdb_dir(lmdb_path, group_name, allowed_elements, test_bool):
             config['Forces'] = forces
         if stress is not None:
             config['Stress'] = stress
-            
-        print(f"*** i {i} config {config}")
-
         
         configs.append(config)
     
     return configs, filtered_count
+
+
+def process_lmdb_dir(lmdb_path, group_name, allowed_elements, test_bool, num_workers=None):
+    """
+    Process a single LMDB database directory using fairchem's AseDBDataset with multiprocessing.
+    
+    Args:
+        lmdb_path: Path to LMDB database directory
+        group_name: Name for this group of configurations
+        allowed_elements: Set of allowed element symbols
+        test_bool: Boolean indicating if this is validation data
+        num_workers: Number of parallel workers (default: cpu_count)
+    
+    Returns:
+        Tuple of (list of configs, number filtered)
+    """
+    # AseDBDataset expects a config dict with 'src' pointing to the database
+    dataset = AseDBDataset({"src": str(lmdb_path)})
+    dataset_size = len(dataset)
+    
+    if num_workers is None:
+        num_workers = mp.cpu_count()
+    
+    # Split dataset into chunks
+    chunk_size = max(1, dataset_size // num_workers)
+    chunks = []
+    for i in range(0, dataset_size, chunk_size):
+        start_idx = i
+        end_idx = min(i + chunk_size, dataset_size)
+        chunks.append((start_idx, end_idx, group_name, allowed_elements, test_bool))
+    
+    # Process chunks in parallel with global progress bar
+    all_configs = []
+    total_filtered = 0
+    
+    with mp.Pool(processes=num_workers, initializer=_init_worker, initargs=(lmdb_path,)) as pool:
+        with tqdm(total=dataset_size, desc=f"  {group_name}", unit="config") as pbar:
+            for configs, filtered in pool.imap_unordered(_process_chunk, chunks):
+                all_configs.extend(configs)
+                total_filtered += filtered
+                pbar.update(len(configs) + filtered)
+    
+    return all_configs, total_filtered
 
 
 def process_dataset_path(dataset_root, subset_type, allowed_elements, num_workers=None):
@@ -259,11 +253,11 @@ def process_dataset_path(dataset_root, subset_type, allowed_elements, num_worker
     test_bool = (subset_type == 'val')
     
     # Process each LMDB database
-    for lmdb_dir in tqdm(lmdb_dirs, desc=f"  {subset_type} databases", unit="db"):
+    for lmdb_dir in lmdb_dirs:
         group_name = lmdb_dir.name
         
         try:
-            configs, filtered = process_lmdb_dir(lmdb_dir, group_name, allowed_elements, test_bool)
+            configs, filtered = process_lmdb_dir(lmdb_dir, group_name, allowed_elements, test_bool, num_workers)
             all_configs.extend(configs)
             tqdm.write(f"    {group_name}: kept {len(configs)}, filtered {filtered}")
         except Exception as e:
@@ -280,9 +274,10 @@ def write_adios2_file(configs, output_path, allowed_elements):
     Data structure:
     - nconfigs: total number of configurations (scalar)
     - allowed_elements: string list of allowed elements (attribute)
+    - unique_group_names: pipe-delimited string of unique group names (attribute)
     
     For each configuration i (arrays of length nconfigs):
-    - Group[i]: group name (string)
+    - GroupIndices[i]: index into unique_group_names array
     - NumAtoms[i]: number of atoms
     - Energy[i]: total energy
     - test_bool[i]: boolean (0=train, 1=val)
@@ -402,9 +397,15 @@ def write_adios2_file(configs, output_path, allowed_elements):
         s.write('fweight', fweight_array, count=[nconfigs])
         s.write('vweight', vweight_array, count=[nconfigs])
         
-        # Write group names as a single concatenated string with delimiters
-        group_string = '|'.join(group_names)
-        s.write_attribute('group_names', group_string)
+        # Create unique group names list and indices array
+        unique_groups = sorted(set(group_names))
+        group_to_idx = {name: idx for idx, name in enumerate(unique_groups)}
+        group_indices = np.array([group_to_idx[name] for name in group_names], dtype=np.int32)
+        
+        # Write unique group names and indices
+        unique_groups_string = '|'.join(unique_groups)
+        s.write_attribute('unique_group_names', unique_groups_string)
+        s.write('GroupIndices', group_indices, count=[nconfigs])
         
         # Write variable-length data
         s.write('PositionOffsets', position_offsets, count=[nconfigs])
