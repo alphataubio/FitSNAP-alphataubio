@@ -94,7 +94,6 @@ def _process_chunk(args):
         Tuple of (list of configs, number filtered)
     """
     start_idx, end_idx, group_name, allowed_elements, test_bool = args
-    global _worker_dataset
     
     configs = []
     filtered_count = 0
