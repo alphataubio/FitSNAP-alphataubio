@@ -143,17 +143,22 @@ def process_lmdb_dir(lmdb_path, group_name, allowed_elements, test_bool):
     configs = []
     filtered_count = 0
     
-    for i in range(len(dataset)):
+    for i in tqdm(range(len(dataset))):
+    #for i in tqdm(range(1723010,1723036)):
     
         atoms = dataset.get_atoms(i)
         
         # Get element symbols
         atom_types = atoms.get_chemical_symbols()
         
+        #print(f"*** i {i} atom_types {atom_types}")
+
+        
         # Filter by elements
         if not set(atom_types).issubset(allowed_elements):
             filtered_count += 1
             continue
+            
         
         # Extract data
         num_atoms = len(atoms)
@@ -207,6 +212,9 @@ def process_lmdb_dir(lmdb_path, group_name, allowed_elements, test_bool):
             config['Forces'] = forces
         if stress is not None:
             config['Stress'] = stress
+            
+        print(f"*** i {i} config {config}")
+
         
         configs.append(config)
     
@@ -320,9 +328,9 @@ def write_adios2_file(configs, output_path, allowed_elements):
     has_forces = any('Forces' in config for config in configs)
     has_stress = any('Stress' in config for config in configs)
     
-    # Fixed-size arrays (nconfigs, 9) for 3x3 matrices
-    lattice_array = np.zeros((nconfigs, 9), dtype=np.float64)
-    stress_array = np.zeros((nconfigs, 9), dtype=np.float64) if has_stress else None
+    # Fixed-size arrays (nconfigs, 3, 3) for 3x3 matrices
+    lattice_array = np.zeros((nconfigs, 3, 3), dtype=np.float64)
+    stress_array = np.zeros((nconfigs, 3, 3), dtype=np.float64) if has_stress else None
     
     total_atoms = 0
     
@@ -353,15 +361,15 @@ def write_adios2_file(configs, output_path, allowed_elements):
             else:
                 forces_list.append(np.zeros(config['NumAtoms'] * 3, dtype=np.float64))
         
-        # Store lattice (3x3 -> 9) directly in array
-        lattice_array[i] = config['Lattice'].flatten()
+        # Store lattice (3x3) directly in array
+        lattice_array[i] = config['Lattice']
         
-        # Store stress if available (3x3 -> 9) directly in array
+        # Store stress if available (3x3) directly in array
         if has_stress:
             if 'Stress' in config:
-                stress_array[i] = config['Stress'].flatten()
+                stress_array[i] = config['Stress']
             else:
-                stress_array[i] = np.zeros(9, dtype=np.float64)
+                stress_array[i] = np.zeros(3, 3, dtype=np.float64)
     
     position_offsets[-1] = total_atoms
     
@@ -387,29 +395,29 @@ def write_adios2_file(configs, output_path, allowed_elements):
         s.write_attribute('has_stress', 1 if has_stress else 0)
         
         # Write per-config arrays
-        s.write('NumAtoms', num_atoms_array)
-        s.write('Energy', energy_array)
-        s.write('test_bool', test_bool_array)
-        s.write('eweight', eweight_array)
-        s.write('fweight', fweight_array)
-        s.write('vweight', vweight_array)
+        s.write('NumAtoms', num_atoms_array, count=[nconfigs])
+        s.write('Energy', energy_array, count=[nconfigs])
+        s.write('test_bool', test_bool_array, count=[nconfigs])
+        s.write('eweight', eweight_array, count=[nconfigs])
+        s.write('fweight', fweight_array, count=[nconfigs])
+        s.write('vweight', vweight_array, count=[nconfigs])
         
         # Write group names as a single concatenated string with delimiters
         group_string = '|'.join(group_names)
         s.write_attribute('group_names', group_string)
         
         # Write variable-length data
-        s.write('PositionOffsets', position_offsets)
-        s.write('PositionsFlat', positions_flat)
-        s.write('AtomTypesFlat', atom_types_flat)
+        s.write('PositionOffsets', position_offsets, count=[nconfigs])
+        s.write('PositionsFlat', positions_flat, count=[total_atoms,3])
+        s.write('AtomTypesFlat', atom_types_flat, count=[total_atoms])
         
         # Write fixed-size arrays
-        s.write('Lattice', lattice_array)
+        s.write('Lattice', lattice_array, count=[nconfigs,3,3])
         
         if has_forces:
-            s.write('ForcesFlat', forces_flat)
+            s.write('ForcesFlat', forces_flat, count=[total_atoms,3])
         if has_stress:
-            s.write('Stress', stress_array)
+            s.write('Stress', stress_array, count=[nconfigs,3,3])
     
     print(f"\nSuccessfully wrote {output_path}", file=sys.stderr)
     print(f"  File contains {nconfigs} configurations", file=sys.stderr)
@@ -427,12 +435,12 @@ Example:
 Expected directory structure:
     scratch/omat24/
     ├── train/
-    │   ├── rattled-300.tar.gz
-    │   ├── rattled-500.tar.gz
+    │   ├── rattled-300/
+    │   ├── rattled-500/
     │   └── ...
     └── val/
-        ├── rattled-300.tar.gz
-        ├── rattled-500.tar.gz
+        ├── rattled-300/
+        ├── rattled-500/
         └── ...
         """
     )
