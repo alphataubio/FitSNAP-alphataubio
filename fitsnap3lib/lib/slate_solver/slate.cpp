@@ -174,58 +174,35 @@ void slate_ard_update(double* local_aw_active, double* local_bw, double* local_s
         
         // MODIFIED: Extract only diagonal of sigma instead of full matrix
         // This saves massive memory (n_active instead of n_active^2 doubles)
-        for (int64_t i = 0; i < n_active; ++i) local_sigma_diag[i] = 0.0;
         
-        int64_t local_diag_count = 0;
         for (int64_t i = 0; i < n_active; ++i) {
             int64_t tile_i = i / nb;
             int64_t local_i = i % nb;
             
             // Only extract diagonal elements
-            if (C.tileIsLocal(tile_i, tile_i)) {
-                auto tile = C(tile_i, tile_i);
-                local_sigma_diag[i] = tile.at(local_i, local_i);
-                local_diag_count++;
-            }
+            if (C.tileIsLocal(tile_i, tile_i)) local_sigma_diag[i] = C(tile_i, tile_i).at(local_i, local_i);
+            else local_sigma_diag[i] = 0.0;
+            
+            if (coef_active.tileIsLocal(tile_i, 0)) local_coef_active[i] = coef_active(tile_i, 0).at(local_i, 0);
+            else local_coef_active[i] = 0.0;
+
         }
         
         MPI_Barrier(MPI_COMM_WORLD);
         
         // Reduce diagonal to all ranks (allreduce since we need it everywhere)
         MPI_Allreduce(MPI_IN_PLACE, local_sigma_diag, n_active, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        MPI_Barrier(MPI_COMM_WORLD);
-        
-        // Extract coefficients
-        for (int64_t i = 0; i < n_active; ++i) local_coef_active[i] = 0.0;
-        
-        int64_t local_coef_count = 0;
-        for (int64_t i = 0; i < n_active; ++i) {
-            int64_t tile_i = i / nb;
-            int64_t local_i = i % nb;
-            
-            if (coef_active.tileIsLocal(tile_i, 0)) {
-                auto tile = coef_active(tile_i, 0);
-                local_coef_active[i] = tile.at(local_i, 0);
-                local_coef_count++;
-            }
-        }
-        
-        MPI_Barrier(MPI_COMM_WORLD);
         
         // Reduce coefficients to all ranks
         MPI_Allreduce(MPI_IN_PLACE, local_coef_active, n_active, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        
         MPI_Barrier(MPI_COMM_WORLD);
         
         if (mpi_rank == 0 && debug) {
-            std::fprintf(stderr, "=== slate_ard_update COMPLETE (diagonal only) ===\n");
-            std::fprintf(stderr, "    Memory saved: %.2f MB (full matrix) -> %.2f KB (diagonal)\n",
-                        (double)(n_active * n_active * 8) / 1e6,
-                        (double)(n_active * 8) / 1e3);
+            std::fprintf(stderr, "=== slate_ard_update COMPLETE ===\n");
             std::fflush(stderr);
         }
         
-        MPI_Barrier(MPI_COMM_WORLD);
-
     } catch (const std::exception& e) {
         std::cerr << "[Rank " << mpi_rank << "] SLATE ARD error: " << e.what() << std::endl;
         MPI_Abort(MPI_COMM_WORLD, 1);
