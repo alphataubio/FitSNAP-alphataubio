@@ -133,7 +133,7 @@ class ADIOS2(Scraper):
                     
                 self.pt.single_print(
                     f"ADIOS2 scraper: {self.dataPath}, {self.nconfigs} configurations with "
-                    f"[{', '.join(self.element_map)}], "
+                    f"[{' '.join(self.element_map)}], "
                     f"forces {self.has_forces}, stress {self.has_stress}"
                 )
                     
@@ -230,10 +230,17 @@ class ADIOS2(Scraper):
                     self.group_table[group_name]['training_size'] += 1
             
             # Print summary
-            for group_name in self.unique_group_names:
+            max_len = max(len(s) for s in self.unique_group_names)
+            total_train = total_test = 0
+            self.pt.single_print(f"    {'GROUP':<{max_len}}  TRAINING  VALIDATION")
+            
+            for group_name in sorted(self.unique_group_names):
                 train_size = self.group_table[group_name]['training_size']
                 test_size = self.group_table[group_name]['testing_size']
-                self.pt.single_print(f"  {group_name}: {train_size} training, {test_size} testing")
+                total_train += train_size
+                total_test += test_size
+                self.pt.single_print(f"    {group_name:<{max_len}}  {train_size:>8}    {test_size:>8}")
+            self.pt.single_print(f"    {'TOTAL':<{max_len}}  {total_train:>8}    {total_test:>8}")
         
         # Broadcast group_table to all ranks
         if self.pt.stubs == 0:
