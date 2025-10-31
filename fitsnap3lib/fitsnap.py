@@ -256,7 +256,7 @@ class FitSnap:
             # Calculate descriptors.
             progress_tracker = GlobalProgressTracker(self.pt, len(data))
             for i, configuration in enumerate(data):
-                self.pt.single_print(f"*** i {i} configuration {configuration}")
+                # self.pt.single_print(f"*** i {i} configuration {configuration}")
                 if (self.solver.linear):
                     self.calculator.process_configs(configuration, i)
                 else:
