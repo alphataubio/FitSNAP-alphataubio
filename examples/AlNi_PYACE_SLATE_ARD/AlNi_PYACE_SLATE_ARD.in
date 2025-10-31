@@ -19,31 +19,36 @@ embeddings = {
     "Ni": {"npot": "FinnisSinclair", "fs_parameters": [1, 1], "ndensity": 1}
   }
 
+
 bonds = {
-    "AlAl": {"radbase": "ChebExpCos", "radparameters": [5.5],
-             "rcut": 6.5, "dcut": 0.5, "core-repulsion": [20000, 5.5], "r_in": 1.2, "delta_in": 0.05},
-    "AlNi": {"radbase": "ChebExpCos", "radparameters": [5.0],
-             "rcut": 6.0, "dcut": 0.5, "core-repulsion": [20000, 5.0], "r_in": 1.0, "delta_in": 0.05},
-    "NiNi": {"radbase": "ChebExpCos", "radparameters": [4.5],
-             "rcut": 5.5, "dcut": 0.5, "core-repulsion": [20000, 4.5], "r_in": 0.9, "delta_in": 0.05}
+    "AlAl": {"radbase": "ChebExpCos", "radparameters": [0.342],
+             "rcut": 6.832, "dcut": 0.01, "core-repulsion": [0, 0.342], "r_in": 0.625, "delta_in": 0.01},
+    "AlNi": {"radbase": "ChebExpCos", "radparameters": [0.318],
+             "rcut": 6.356, "dcut": 0.01, "core-repulsion": [0, 0.318], "r_in": 0.650, "delta_in": 0.01},
+    "NiNi": {"radbase": "ChebExpCos", "radparameters": [0.281],
+             "rcut": 5.610, "dcut": 0.01, "core-repulsion": [0, 0.281], "r_in": 0.540, "delta_in": 0.01}
   }
 
 functions = {
-    "ALL": {"lmin_by_orders": [0,0,0,0], "lmax_by_orders": [2,2,1,1], "nradmax_by_orders": [8,3,2,1]}
+    "ALL": {"lmin_by_orders": [0,0,0,0], "lmax_by_orders": [2,2,2,2], "nradmax_by_orders": [15,3,2,1]}
     #"ALL": {"lmin_by_orders": [0,0], "lmax_by_orders": [1,1], "nradmax_by_orders": [2,1]}
   }
 
 [CALCULATOR]
 calculator = LAMMPSPYACE
-energy = 0
+energy = 1
 force = 1
 stress = 0
 
 [REFERENCE]
 units = real
 atom_style = atomic
-pair_style = zero 6.5
-pair_coeff = * *
+pair_style = hybrid/overlay zero 6.842222 zbl 4.782556 5.465778 zbl 4.448889 5.084444 zbl 3.927000 4.488000
+pair_coeff1 = * * zero
+pair_coeff2 = 1 1 zbl 1    13 13
+pair_coeff3 = 1 2 zbl 2    13 28
+pair_coeff4 = 2 2 zbl 3    28 28
+
 
 [SOLVER]
 solver = SLATE
@@ -52,7 +57,7 @@ detailed_errors = 0
 
 [SLATE]
 method = RIDGE
-alpha = 1e-3
+alpha = 1e-6
 #method = ARD
 #scap = 1e-3
 #scai = 1e-3
