@@ -253,15 +253,15 @@ def _to_pyace_coeff_string(coeffs, config):
     Convert a set of coefficients along with descriptor options to a coeffs file.
     """
 
-    if config.sections["PYACE"].bzeroflag:
-        coeff_names = config.sections["PYACE"].blist
-    else:
-        coeff_names = [[0]]+config.sections["PYACE"].blist
-    type_names = config.sections["PYACE"].types
+    pyace_section = config.sections["PYACE"]
+    coeff_names = pyace_section.blist
+    if not pyace_section.bzeroflag:
+        coeff_names = [f"{t} [0]" for t in pyace_section.types] + coeff_names
+    
     out = f"# FitSNAP generated on {datetime.now()} with Hash: {config.hash}\n\n"
     
     from collections import Counter
-    counts = Counter(s.split()[0] for s in config.sections["PYACE"].blist)
+    counts = Counter(s.split()[0] for s in coeff_names)
     out += " ".join(f"{k} {v}" for k, v in counts.items())
     out += "\n"
     
