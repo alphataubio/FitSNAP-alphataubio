@@ -50,6 +50,9 @@ class SLATE(SlateCommon):
         # Note: a, b, w remain unchanged - only aw, bw get modified
         aw = pt.shared_arrays['aw'].array
         bw = pt.shared_arrays['bw'].array
+        
+        pt.debug_all_print(f"*** ok 1")
+
 
         # Get dimensions
         a_start_idx, a_end_idx = pt.fitsnap_dict["sub_a_indices"]
@@ -61,6 +64,8 @@ class SLATE(SlateCommon):
         # Apply weights to my local slice
         aw[local_slice] = w[local_slice, np.newaxis] * a[local_slice]
         bw[local_slice] = w[local_slice] * b[local_slice]
+        
+        pt.debug_all_print(f"*** ok 2")
 
         # -------- TRAINING/TESTING SPLIT --------
         # Zero out test samples (they won't contribute to the fit)
@@ -70,6 +75,9 @@ class SLATE(SlateCommon):
                 if testing_mask[i]:
                     aw[a_start_idx+i,:] = 0.0
                     bw[a_start_idx+i] = 0.0
+                    
+        pt.debug_all_print(f"*** ok 3")
+
 
         # Initialize ARD parameters
         eps = np.finfo(np.float64).eps
@@ -81,6 +89,9 @@ class SLATE(SlateCommon):
             local_n_training = np.sum(~np.array(testing_mask, dtype=bool))
         else:
             local_n_training = a_end_idx - a_start_idx + 1
+            
+        pt.debug_all_print(f"*** ok 4")
+
         
         # Compute variance (test samples are already zero'd in bw, so they won't affect mean/variance)
         local_bw = bw[local_slice]
@@ -91,6 +102,8 @@ class SLATE(SlateCommon):
         global_n_training = pt._comm.allreduce(local_n_training, op=MPI.SUM)
         mean_bw = global_sum_bw / global_n_training
         var_bw = (global_sum_bw2 / global_n_training) - mean_bw**2
+        
+        pt.debug_all_print(f"*** ok 5")
         
         # Compute adaptive hyperparameters (matching legacy ARD)
         ap = 1.0 / (var_bw + eps)  # inverse variance ("alpha prior")
@@ -139,6 +152,9 @@ class SLATE(SlateCommon):
             precision=4, suppress=False, floatmode='fixed', linewidth=np.inf,
             formatter={'float': '{:.3f}'.format}, threshold = 800, edgeitems=5
         )
+        
+        pt.debug_all_print(f"*** ok 6")
+
       
         # Iterative procedure of ARDRegression
         for iter_ in range(self.max_iter):
@@ -155,10 +171,14 @@ class SLATE(SlateCommon):
             aw_active = np.asfortranarray(aw[:, active_indices])  # column-major for SLATE
             lambda_active = lambda_[active_indices]
             
+            pt.debug_all_print(f"*** ok 7")
+            
             # Update sigma and coef using SLATE C++ functions
             sigma_, coef_active_ = slate_ard_update_cython(
                 aw_active, bw, lambda_active, alpha_, m, n_active, lld, self.config.debug
             )
+            
+            pt.debug_all_print(f"*** ok 8")
             
             # Map active coefficients back to full coefficient vector
             coef_ = np.zeros(n, dtype=np.float64)
