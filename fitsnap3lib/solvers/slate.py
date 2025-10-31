@@ -314,16 +314,7 @@ class SLATE(SlateCommon):
         output_prefix = self.config.sections['OUTFILE'].metrics.replace('.md', '')
         notebook_file = f"{output_prefix}_validation.ipynb"
         gamma_history_file = f"{output_prefix}_gamma_history.pkl"
-        
-        # Check if this was an ARD run by checking if gamma_history was saved
-        # Only ARD solver calls perform_fit_ard which creates gamma_history
-        is_ard_run = hasattr(self, 'gamma_history') and self.gamma_history is not None
-        
-        if not is_ard_run:
-            self.pt.single_print(f"This was a {self.config.sections['SOLVER'].solver} run (not ARD).")
-            self.pt.single_print("Validation notebook will only contain error analysis.")
-            self.pt.single_print("To generate ARD validation plots, set solver = SLATEARD in your config.")
-        
+                
         # Create Jupyter notebook structure
         notebook = {
             "cells": [],
@@ -352,7 +343,7 @@ class SLATE(SlateCommon):
         # Cell 2: Config dictionary (collapsed by default)
         notebook["cells"].append({
             "cell_type": "markdown",
-            "metadata": {},
+            "metadata": {"collapsed": True},
             "source": ["## Configuration"]
         })
         
@@ -368,7 +359,7 @@ class SLATE(SlateCommon):
         notebook["cells"].append({
             "cell_type": "code",
             "execution_count": None,
-            "metadata": {"collapsed": True, "jupyter": {"source_hidden": True}},
+            "metadata": {}, # "jupyter": {"source_hidden": True}
             "outputs": [],
             "source": [
                 "import json\n",
@@ -418,7 +409,7 @@ class SLATE(SlateCommon):
                                 
                                 # Merge them
                                 df_combined = df_train[['ncount', 'mae', 'rmse', 'rsq']].join(
-                                    df_test[['mae', 'rmse', 'rsq']],
+                                    df_test[['ncount', 'mae', 'rmse', 'rsq']],
                                     how='outer',
                                     rsuffix='_test'
                                 )
@@ -443,14 +434,15 @@ class SLATE(SlateCommon):
                                 # Header row with toprule
                                 html += '  <thead>\n'
                                 html += '    <tr style="border-top: 2px solid black; border-bottom: 2px solid black;">\n'
-                                html += '      <th style="text-align: left; padding: 8px 12px; width: 20%;">Group</th>\n'
+                                html += '      <th style="text-align: left; padding: 8px 12px; width: 30%;">Group</th>\n'
                                 html += '      <th style="text-align: center; padding: 8px 12px; width: 5%;">N</th>\n'
-                                html += '      <th style="text-align: right; padding: 8px 12px; width: 11%;">MAE</th>\n'
-                                html += '      <th style="text-align: right; padding: 8px 12px; width: 11%;">RMSE</th>\n'
-                                html += '      <th style="text-align: right; padding: 8px 12px; width: 11%;">R²</th>\n'
-                                html += '      <th style="text-align: right; padding: 8px 12px; width: 11%;">MAE</th>\n'
-                                html += '      <th style="text-align: right; padding: 8px 12px; width: 11%;">RMSE</th>\n'
-                                html += '      <th style="text-align: right; padding: 8px 12px; width: 11%;">R²</th>\n'
+                                html += '      <th style="text-align: right; padding: 8px 12px; width: 10%;">MAE</th>\n'
+                                html += '      <th style="text-align: right; padding: 8px 12px; width: 10%;">RMSE</th>\n'
+                                html += '      <th style="text-align: right; padding: 8px 12px; width: 10%;">R²</th>\n'
+                                html += '      <th style="text-align: center; padding: 8px 12px; width: 5%;">N</th>\n'
+                                html += '      <th style="text-align: right; padding: 8px 12px; width: 10%;">MAE</th>\n'
+                                html += '      <th style="text-align: right; padding: 8px 12px; width: 10%;">RMSE</th>\n'
+                                html += '      <th style="text-align: right; padding: 8px 12px; width: 10%;">R²</th>\n'
                                 html += '    </tr>\n'
                                 html += '  </thead>\n'
                                 
@@ -458,9 +450,8 @@ class SLATE(SlateCommon):
                                 html += '  <tbody>\n'
                                 html += '    <tr>\n'
                                 html += '      <td style="padding: 4px 12px;"></td>\n'
-                                html += '      <td style="padding: 4px 12px;"></td>\n'
-                                html += '      <td colspan="3" style="text-align: center; padding: 4px 12px; font-style: italic; border-bottom: 1px solid #999;">Training</td>\n'
-                                html += '      <td colspan="3" style="text-align: center; padding: 4px 12px; font-style: italic; border-bottom: 1px solid #999;">Testing</td>\n'
+                                html += '      <td colspan="4" style="text-align: center; padding: 4px 12px; font-style: italic; border-bottom: 1px solid #999;">Training</td>\n'
+                                html += '      <td colspan="4" style="text-align: center; padding: 4px 12px; font-style: italic; border-bottom: 1px solid #999;">Validation</td>\n'
                                 html += '    </tr>\n'
                                 
                                 # Helper function to format numbers
@@ -491,10 +482,11 @@ class SLATE(SlateCommon):
                                     html += f'    <tr style="{row_style}">\n'
                                     html += f'      <td style="text-align: left; padding: 4px 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{group_display}</td>\n'
                                     html += f'      <td style="text-align: center; padding: 4px 12px; border-left: 5px solid white;">{int(row["ncount"])}</td>\n'
-                                    html += f'      <td style="text-align: right; padding: 4px 12px; font-family: monospace; border-left: 5px solid white;">{format_value(row["mae"])}</td>\n'
+                                    html += f'      <td style="text-align: right; padding: 4px 12px; font-family: monospace; ">{format_value(row["mae"])}</td>\n'
                                     html += f'      <td style="text-align: right; padding: 4px 12px; font-family: monospace;">{format_value(row["rmse"])}</td>\n'
                                     html += f'      <td style="text-align: right; padding: 4px 12px 4px 16px; font-family: monospace;">{format_value(row["rsq"])}</td>\n'
-                                    html += f'      <td style="text-align: right; padding: 4px 12px; font-family: monospace; border-left: 5px solid white;">{format_value(row["mae_test"])}</td>\n'
+                                    html += f'      <td style="text-align: center; padding: 4px 12px; border-left: 5px solid white;">{int(row["ncount_test"])}</td>\n'
+                                    html += f'      <td style="text-align: right; padding: 4px 12px; font-family: monospace; ">{format_value(row["mae_test"])}</td>\n'
                                     html += f'      <td style="text-align: right; padding: 4px 12px; font-family: monospace;">{format_value(row["rmse_test"])}</td>\n'
                                     html += f'      <td style="text-align: right; padding: 4px 12px 4px 16px; font-family: monospace;">{format_value(row["rsq_test"])}</td>\n'
                                     html += '    </tr>\n'
@@ -524,16 +516,27 @@ class SLATE(SlateCommon):
                         "metadata": {},
                         "source": subsystem_lines
                     })
+
+        if self.method == 'ARD':
+            self.validation_ard()
+            
+        # Write notebook to file
+        with open(notebook_file, 'w') as f:
+            json.dump(notebook, f, indent=2)
+        
+        self.pt.single_print(f"Created validation notebook: {notebook_file}")
+
+
+    def validation_ard(self):
         
         # Cell 4: Load gamma history (only if this was an ARD run)
-        if is_ard_run:
-            notebook["cells"].append({
-                "cell_type": "markdown",
-                "metadata": {},
-                "source": ["## Gamma Evolution Heatmaps"]
-            })
+        notebook["cells"].append({
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": ["## Gamma Evolution Heatmaps"]
+        })
         
-            notebook["cells"].append({
+        notebook["cells"].append({
             "cell_type": "code",
             "execution_count": None,
             "metadata": {},
@@ -571,10 +574,7 @@ class SLATE(SlateCommon):
             ]
         })
         
-        # Cell 5: No longer needed - ranks come from pickle
-        # Skip this cell since we load feature_ranks directly
-        
-        # Cell 6: Create and display heatmaps
+        # Cell 5: Create and display heatmaps
         # We need to execute this cell and capture the output
         import matplotlib
         matplotlib.use('Agg')  # Non-interactive backend
@@ -827,10 +827,5 @@ class SLATE(SlateCommon):
             ]
         })
         
-        # Write notebook to file
-        with open(notebook_file, 'w') as f:
-            json.dump(notebook, f, indent=2)
-        
-        self.pt.single_print(f"Created validation notebook: {notebook_file}")
             
             
