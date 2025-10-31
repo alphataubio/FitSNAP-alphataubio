@@ -77,8 +77,6 @@ class ADIOS2(Scraper):
         """
         Read metadata from ADIOS2 file and determine configuration distribution.
         """
-        if self.rank == 0:
-            self.pt.single_print(f"Opening ADIOS2 file: {self.dataPath}")
         
         # Only rank 0 reads metadata, then broadcasts
         if self.rank == 0:
@@ -133,10 +131,11 @@ class ADIOS2(Scraper):
                         
                         break  # Only need first step
                     
-                    self.pt.single_print(f"ADIOS2 file contains {self.nconfigs} configurations")
-                    self.pt.single_print(f"Elements: {', '.join(self.element_map)}")
-                    self.pt.single_print(f"Has forces: {self.has_forces}")
-                    self.pt.single_print(f"Has stress: {self.has_stress}")
+                self.pt.single_print(
+                    f"ADIOS2 scraper: {self.dataPath}, {self.nconfigs} configurations with "
+                    f"[{', '.join(self.element_map)}], "
+                    f"forces {self.has_forces}, stress {self.has_stress}"
+                )
                     
             except Exception as e:
                 raise RuntimeError(f"Failed to read ADIOS2 file metadata: {e}")
@@ -167,11 +166,6 @@ class ADIOS2(Scraper):
             self.group_table[group_name]['training_size'] = 0
             self.group_table[group_name]['testing_size'] = 0
         
-        # We'll count actual sizes when we read the data, for now mark all as training
-        # The actual counts will be determined in scrape_configs when we read test_bool
-        if self.rank == 0:
-            self.pt.single_print(f"Found {len(self.unique_group_names)} unique groups: {self.unique_group_names}")
-        
         # Determine which configurations this rank will process
         configs_per_rank = self.nconfigs // self.size
         remainder = self.nconfigs % self.size
@@ -181,9 +175,6 @@ class ADIOS2(Scraper):
         
         self.my_config_indices = list(range(start_idx, end_idx))
         
-        if self.rank == 0:
-            self.pt.single_print(f"Each rank will process ~{configs_per_rank} configurations")
-
     def divvy_up_configs(self):
         """
         Configuration distribution is already done in scrape_groups.
@@ -192,11 +183,6 @@ class ADIOS2(Scraper):
         # my_config_indices already set in scrape_groups
         self.my_configs = self.my_config_indices
         
-        if self.rank == 0:
-            total_configs = len(self.my_configs) * self.size
-            self.pt.single_print(f"Total configurations to process: {total_configs}")
-            self.pt.single_print(f"Rank 0 processing {len(self.my_configs)} configurations")
-
     def scrape_configs(self):
         """
         Read ADIOS2 data and extract configurations for this rank.
@@ -262,9 +248,6 @@ class ADIOS2(Scraper):
             except Exception as e:
                 logging.warning(f"Failed to extract config {config_idx}: {e}")
                 continue
-        
-        if self.rank == 0:
-            self.pt.single_print(f"Rank {self.rank}: Successfully processed {len(self.data)} configurations")
         
         return self.data
 
