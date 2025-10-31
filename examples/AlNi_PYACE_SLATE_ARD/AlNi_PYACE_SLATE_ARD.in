@@ -30,7 +30,7 @@ bonds = {
   }
 
 functions = {
-    "ALL": {"lmin_by_orders": [0,0,0,0], "lmax_by_orders": [2,2,2,2], "nradmax_by_orders": [15,3,2,1]}
+    "ALL": {"lmin_by_orders": [0,0,0,0], "lmax_by_orders": [3,3,3,3], "nradmax_by_orders": [20,5,3,1]}
     #"ALL": {"lmin_by_orders": [0,0], "lmax_by_orders": [1,1], "nradmax_by_orders": [2,1]}
   }
 
@@ -56,13 +56,13 @@ compute_testerrs = 1
 detailed_errors = 0
 
 [SLATE]
-method = RIDGE
-alpha = 1e-6
-#method = ARD
-#scap = 1e-3
-#scai = 1e-3
-#max_iter = 1
-#threshold_gamma = 0.1
+#method = RIDGE
+#alpha = 1e-6
+method = ARD
+scap = 1e-3
+scai = 1e-3
+max_iter = 5
+threshold_gamma = 0.05
 
 
 [SCRAPER]
