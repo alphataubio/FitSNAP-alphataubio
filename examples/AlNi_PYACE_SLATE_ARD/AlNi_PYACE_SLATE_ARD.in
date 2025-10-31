@@ -12,7 +12,7 @@
 
 [PYACE]
 elements = Al Ni
-bzeroflag = 1
+bzeroflag = 0
 
 embeddings = {
     "Al": {"npot": "FinnisSinclair", "fs_parameters": [1, 1], "ndensity": 1},
@@ -29,20 +29,20 @@ bonds = {
   }
 
 functions = {
-    #"ALL": {"lmin_by_orders": [0,0,0,0], "lmax_by_orders": [2,2,1,1], "nradmax_by_orders": [8,3,2,1]}
-    "ALL": {"lmin_by_orders": [0,0], "lmax_by_orders": [1,1], "nradmax_by_orders": [2,1]}
+    "ALL": {"lmin_by_orders": [0,0,0,0], "lmax_by_orders": [2,2,1,1], "nradmax_by_orders": [8,3,2,1]}
+    #"ALL": {"lmin_by_orders": [0,0], "lmax_by_orders": [1,1], "nradmax_by_orders": [2,1]}
   }
 
 [CALCULATOR]
 calculator = LAMMPSPYACE
-energy = 1
-force = 0
+energy = 0
+force = 1
 stress = 0
 
 [REFERENCE]
 units = real
 atom_style = atomic
-pair_style = zero 6.0
+pair_style = zero 6.5
 pair_coeff = * *
 
 [SOLVER]
@@ -51,11 +51,14 @@ compute_testerrs = 1
 detailed_errors = 0
 
 [SLATE]
-method = ARD
-scap = 1e-3
-scai = 1e-3
-max_iter = 1
-threshold_gamma = 0.1
+method = RIDGE
+alpha = 1e-3
+#method = ARD
+#scap = 1e-3
+#scai = 1e-3
+#max_iter = 1
+#threshold_gamma = 0.1
+
 
 [SCRAPER]
 scraper = ADIOS2
@@ -94,7 +97,7 @@ validation = 1
 dump_descriptors = 0
 dump_truth = 0
 dump_weights = 0
-debug = 1
+debug = 0
 
 [MEMORY]
 override = 0
