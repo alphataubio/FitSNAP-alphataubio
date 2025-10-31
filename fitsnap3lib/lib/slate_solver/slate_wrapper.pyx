@@ -16,7 +16,7 @@ cdef extern from *:
                                       int64_t m, int64_t n, int64_t lld, int debug);
         
         void slate_ard_update(double* local_aw_active, double* local_bw, 
-                             double* local_sigma, double* local_coef_active,
+                             double* local_sigma_diag, double* local_coef_active,
                              int64_t m, int64_t n_active, int64_t lld,
                              double alpha, double* lambda_active, int debug);
     }
@@ -26,7 +26,7 @@ cdef extern from *:
                                   int64_t m, int64_t n, int64_t lld, int debug) except +
     
     void slate_ard_update(double* local_aw_active, double* local_bw, 
-                         double* local_sigma, double* local_coef_active,
+                         double* local_sigma_diag, double* local_coef_active,
                          int64_t m, int64_t n_active, int64_t lld,
                          double alpha, double* lambda_active, int debug) except +
 
@@ -38,7 +38,7 @@ def slate_ard_update_cython(double[::1, :] local_aw_active, double[::1] local_bw
                            double[::1] lambda_active, double alpha,
                            int m, int n_active, int lld, int debug=0):
     """
-    Perform one iteration of ARD updates: compute sigma and coefficients.
+    Perform one iteration of ARD updates: compute sigma diagonal and coefficients.
     
     Parameters:
     -----------
@@ -53,20 +53,20 @@ def slate_ard_update_cython(double[::1, :] local_aw_active, double[::1] local_bw
     
     Returns:
     --------
-    sigma : (n_active, n_active) posterior covariance matrix
+    sigma_diag : (n_active,) diagonal of posterior covariance matrix
     coef_active : (n_active,) coefficients for active features
     """
     
     if n_active == 0:
-        return np.zeros((0, 0), dtype=np.float64), np.zeros(0, dtype=np.float64)
+        return np.zeros(0, dtype=np.float64), np.zeros(0, dtype=np.float64)
     
-    # Allocate output arrays
-    cdef np.ndarray[double, ndim=2] sigma = np.zeros((n_active, n_active), dtype=np.float64, order='F')
+    # Allocate output arrays - only diagonal of sigma now!
+    cdef np.ndarray[double, ndim=1] sigma_diag = np.zeros(n_active, dtype=np.float64)
     cdef np.ndarray[double, ndim=1] coef_active = np.zeros(n_active, dtype=np.float64)
     
     # Call the C++ function
     slate_ard_update(&local_aw_active[0, 0], &local_bw[0], 
-                    <double*>np.PyArray_DATA(sigma), <double*>np.PyArray_DATA(coef_active),
+                    <double*>np.PyArray_DATA(sigma_diag), <double*>np.PyArray_DATA(coef_active),
                     m, n_active, lld, alpha, &lambda_active[0], debug)
     
-    return sigma, coef_active
+    return sigma_diag, coef_active

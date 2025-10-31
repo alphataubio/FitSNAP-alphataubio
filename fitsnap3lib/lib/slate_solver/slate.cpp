@@ -23,9 +23,10 @@ using slate::func::ij_tuple;
 
 constexpr int64_t ceil_div64(int64_t a, int64_t b) { return (a + b - 1) / b; }
 
-// Combined ARD update function - computes both sigma and coefficients
+// Combined ARD update function - computes both sigma diagonal and coefficients
 // Expects pre-filtered matrices with only active features
-void slate_ard_update(double* local_aw_active, double* local_bw, double* local_sigma, double* local_coef_active,
+// MODIFIED: Now only returns diagonal of sigma to save memory
+void slate_ard_update(double* local_aw_active, double* local_bw, double* local_sigma_diag, double* local_coef_active,
                      int64_t m, int64_t n_active, int64_t lld,
                      double alpha, double* lambda_active, int debug) {
     
@@ -146,17 +147,10 @@ void slate_ard_update(double* local_aw_active, double* local_bw, double* local_s
 
         auto t0 = timer::now();
 
-    // ===== Section 1 =====
-    // Your code here
-
-
-
         // C = alpha * X.T @ X + C
         auto X_active_T = transpose(X_active);
         slate::herk(alpha, X_active_T, 1.0, C);
         MPI_Barrier(MPI_COMM_WORLD);
-        //auto t1 = timer::now();
-        //std::cout << "herk: " << ms(t1 - t0).count() << " ms\n";
 
         // Compute Cholesky factorization and inverse
         slate::potrf(C);
@@ -164,17 +158,12 @@ void slate_ard_update(double* local_aw_active, double* local_bw, double* local_s
         slate::potri(C);
         MPI_Barrier(MPI_COMM_WORLD);
 
-        //auto t2 = timer::now();
-        //std::cout << "potrf/potri: " << ms(t2 - t1).count() << " ms\n";
-
         // Compute X.T @ y
         slate::Matrix<double> XTy(n_active, 1, tileNb, tile1, tileRankC, tileDevice, MPI_COMM_WORLD);
         XTy.insertLocalTiles();
         slate::set(0.0, XTy);
         slate::gemm(1.0, X_active_T, y, 0.0, XTy);
         MPI_Barrier(MPI_COMM_WORLD);
-        //auto t3 = timer::now();
-        //std::cout << "gemm: " << ms(t3 - t2).count() << " ms\n";
         
         // Compute coef = alpha * C @ XTy
         slate::Matrix<double> coef_active(n_active, 1, tileNb, tile1, tileRankC, tileDevice, MPI_COMM_WORLD);
@@ -182,42 +171,31 @@ void slate_ard_update(double* local_aw_active, double* local_bw, double* local_s
         slate::set(0.0, coef_active);
         slate::hemm(slate::Side::Left, alpha, C, XTy, 0.0, coef_active);
         MPI_Barrier(MPI_COMM_WORLD);
-        //auto t4 = timer::now();
-        //std::cout << "hemm: " << ms(t4 - t3).count() << " ms\n";
         
-        for (int64_t i = 0; i < n_active * n_active; ++i) local_sigma[i] = 0.0;
+        // MODIFIED: Extract only diagonal of sigma instead of full matrix
+        // This saves massive memory (n_active instead of n_active^2 doubles)
+        for (int64_t i = 0; i < n_active; ++i) local_sigma_diag[i] = 0.0;
         
-        int64_t local_tile_count = 0;
-        for (int64_t j = 0; j < n_active; ++j) {
-            for (int64_t i = j; i < n_active; ++i) {
-                int64_t tile_i = i / nb;
-                int64_t tile_j = j / nb;
-                int64_t local_i = i % nb;
-                int64_t local_j = j % nb;
-                
-                if (C.tileIsLocal(tile_i, tile_j)) {
-                    auto tile = C(tile_i, tile_j);
-                    double val = tile.at(local_i, local_j);
-                    local_sigma[i + j * n_active] = val;
-                    if (i != j) local_sigma[j + i * n_active] = val;
-                    local_tile_count++;
-                }
+        int64_t local_diag_count = 0;
+        for (int64_t i = 0; i < n_active; ++i) {
+            int64_t tile_i = i / nb;
+            int64_t local_i = i % nb;
+            
+            // Only extract diagonal elements
+            if (C.tileIsLocal(tile_i, tile_i)) {
+                auto tile = C(tile_i, tile_i);
+                local_sigma_diag[i] = tile.at(local_i, local_i);
+                local_diag_count++;
             }
         }
         
         MPI_Barrier(MPI_COMM_WORLD);
         
-        // Reduce sigma to rank 0
-        
-        if (mpi_rank == 0)
-            MPI_Reduce(MPI_IN_PLACE, local_sigma, n_active * n_active, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-        else
-            MPI_Reduce(local_sigma, nullptr, n_active * n_active, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-        
-        
-        MPI_Bcast(local_sigma, n_active * n_active, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        // Reduce diagonal to all ranks (allreduce since we need it everywhere)
+        MPI_Allreduce(MPI_IN_PLACE, local_sigma_diag, n_active, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
         MPI_Barrier(MPI_COMM_WORLD);
         
+        // Extract coefficients
         for (int64_t i = 0; i < n_active; ++i) local_coef_active[i] = 0.0;
         
         int64_t local_coef_count = 0;
@@ -232,22 +210,21 @@ void slate_ard_update(double* local_aw_active, double* local_bw, double* local_s
             }
         }
         
-
         MPI_Barrier(MPI_COMM_WORLD);
         
         // Reduce coefficients to all ranks
-        
         MPI_Allreduce(MPI_IN_PLACE, local_coef_active, n_active, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
         MPI_Barrier(MPI_COMM_WORLD);
         
         if (mpi_rank == 0 && debug) {
-            std::fprintf(stderr, "=== slate_ard_update COMPLETE ===\n\n");
+            std::fprintf(stderr, "=== slate_ard_update COMPLETE (diagonal only) ===\n");
+            std::fprintf(stderr, "    Memory saved: %.2f MB (full matrix) -> %.2f KB (diagonal)\n",
+                        (double)(n_active * n_active * 8) / 1e6,
+                        (double)(n_active * 8) / 1e3);
             std::fflush(stderr);
         }
         
         MPI_Barrier(MPI_COMM_WORLD);
-        //auto t5 = timer::now();
-        //std::cout << "reduce: " << ms(t5 - t4).count() << " ms\n";
 
     } catch (const std::exception& e) {
         std::cerr << "[Rank " << mpi_rank << "] SLATE ARD error: " << e.what() << std::endl;
