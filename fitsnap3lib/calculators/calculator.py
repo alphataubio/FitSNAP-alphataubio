@@ -311,6 +311,7 @@ class Calculator:
                     pt.add_2_fitsnap("is_slate_ridge", True)
                     extra_rows = a_width
                 elif method == "ARD":
+                    pt.add_2_fitsnap("is_slate_ard", True)
                     extra_rows = 0
                 else:
                     raise RuntimeError(f"SLATE method {method} not implemented.")

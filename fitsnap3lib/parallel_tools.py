@@ -721,6 +721,11 @@ class ParallelTools():
 
         
         # Handle SLATE augmented arrays
+        
+        if is_slate_ridge or is_slate_ard:
+            self.shared_arrays['aw'].array[:,:] = 0.0
+            self.shared_arrays['bw'].array[:] = 0.0
+        
         if is_slate_ridge:
             # For SLATE, the array was augmented with extra rows for regularization
             # We need to distribute the extra space across processors
@@ -729,8 +734,6 @@ class ParallelTools():
             sub_aw_sizes = sub_a_sizes.copy()
             self.debug_all_print(f"*** sub_a_sizes {sub_a_sizes} sum={data_size} |a| {array_size}")
             extra_rows = array_size - data_size
-            self.shared_arrays['aw'].array[:,:] = 0.0
-            self.shared_arrays['bw'].array[:] = 0.0
 
             # Distribute extra rows evenly across processors, with remainder to first procs
             extra_per_proc = extra_rows // self._sub_size
