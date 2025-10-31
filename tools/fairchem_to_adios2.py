@@ -310,7 +310,7 @@ def write_adios2_file(configs, output_path, allowed_elements):
     atom_types_list = []
     forces_list = []
     
-    position_offsets = np.zeros(nconfigs + 1, dtype=np.int64)
+    position_offsets = np.zeros(nconfigs, dtype=np.int64)
     
     has_forces = any('Forces' in config for config in configs)
     has_stress = any('Stress' in config for config in configs)
@@ -354,8 +354,6 @@ def write_adios2_file(configs, output_path, allowed_elements):
                 stress_array[i] = config['Stress']
             else:
                 stress_array[i] = np.zeros(3, 3, dtype=np.float64)
-    
-    position_offsets[-1] = total_atoms
     
     # Concatenate variable-length arrays
     print("  Concatenating arrays...", file=sys.stderr)
