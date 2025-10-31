@@ -84,42 +84,54 @@ class ADIOS2(Scraper):
         if self.rank == 0:
             try:
                 with Stream(self.dataPath, 'r') as s:
-                    # Read attributes
-                    self.nconfigs = s.read_attribute('nconfigs')
-                    if isinstance(self.nconfigs, np.ndarray):
-                        self.nconfigs = int(self.nconfigs[0])
-                    else:
-                        self.nconfigs = int(self.nconfigs)
-                    
-                    element_map_str = s.read_attribute('element_map')
-                    if isinstance(element_map_str, np.ndarray):
-                        element_map_str = str(element_map_str[0])
-                    elif isinstance(element_map_str, bytes):
-                        element_map_str = element_map_str.decode('utf-8')
-                    else:
-                        element_map_str = str(element_map_str)
-                    self.element_map = element_map_str.split(',')
-                    
-                    has_forces_val = s.read_attribute('has_forces')
-                    if isinstance(has_forces_val, np.ndarray):
-                        self.has_forces = bool(has_forces_val[0])
-                    else:
-                        self.has_forces = bool(has_forces_val)
-                    
-                    has_stress_val = s.read_attribute('has_stress')
-                    if isinstance(has_stress_val, np.ndarray):
-                        self.has_stress = bool(has_stress_val[0])
-                    else:
-                        self.has_stress = bool(has_stress_val)
-                    
-                    unique_group_names_str = s.read_attribute('unique_group_names')
-                    if isinstance(unique_group_names_str, np.ndarray):
-                        unique_group_names_str = str(unique_group_names_str[0])
-                    elif isinstance(unique_group_names_str, bytes):
-                        unique_group_names_str = unique_group_names_str.decode('utf-8')
-                    else:
-                        unique_group_names_str = str(unique_group_names_str)
-                    self.unique_group_names = unique_group_names_str.split('|')
+                    # Step to make attributes available
+                    for step in s.steps():
+                        # Read attributes
+                        attrs = s.available_attributes()
+                        
+                        nconfigs_attr = attrs.get('nconfigs')
+                        if nconfigs_attr:
+                            self.nconfigs = int(nconfigs_attr['Value'])
+                        else:
+                            raise KeyError('nconfigs attribute not found')
+                        
+                        element_map_attr = attrs.get('element_map')
+                        if element_map_attr:
+                            element_map_str = element_map_attr['Value']
+                            if isinstance(element_map_str, bytes):
+                                element_map_str = element_map_str.decode('utf-8')
+                            # Strip any surrounding quotes and whitespace
+                            element_map_str = element_map_str.strip('"\' ')
+                            self.element_map = element_map_str.split(',')
+                            # Strip quotes and whitespace from each element
+                            self.element_map = [elem.strip('"\' ') for elem in self.element_map]
+                        else:
+                            raise KeyError('element_map attribute not found')
+                        
+                        has_forces_attr = attrs.get('has_forces')
+                        if has_forces_attr:
+                            self.has_forces = bool(int(has_forces_attr['Value']))
+                        else:
+                            self.has_forces = False
+                        
+                        has_stress_attr = attrs.get('has_stress')
+                        if has_stress_attr:
+                            self.has_stress = bool(int(has_stress_attr['Value']))
+                        else:
+                            self.has_stress = False
+                        
+                        unique_group_names_attr = attrs.get('unique_group_names')
+                        if unique_group_names_attr:
+                            unique_group_names_str = unique_group_names_attr['Value']
+                            if isinstance(unique_group_names_str, bytes):
+                                unique_group_names_str = unique_group_names_str.decode('utf-8')
+                            # Strip any surrounding quotes
+                            unique_group_names_str = unique_group_names_str.strip('"\'')
+                            self.unique_group_names = unique_group_names_str.split('|')
+                        else:
+                            raise KeyError('unique_group_names attribute not found')
+                        
+                        break  # Only need first step
                     
                     self.pt.single_print(f"ADIOS2 file contains {self.nconfigs} configurations")
                     self.pt.single_print(f"Elements: {', '.join(self.element_map)}")
@@ -137,10 +149,26 @@ class ADIOS2(Scraper):
             self.has_stress = self.comm.bcast(self.has_stress, root=0)
             self.unique_group_names = self.comm.bcast(self.unique_group_names, root=0)
         
-        # Read group_table from config file using parent class method
-        # This populates self.group_table with weights from [GROUPS] section
-        super().scrape_groups()
+        # Build group_table from config file [GROUPS] section
+        # This gets us the weights but we need to set training/testing sizes
+        group_dict = {k: self.config.sections["GROUPS"].group_types[i]
+                      for i, k in enumerate(self.config.sections["GROUPS"].group_sections)}
+        self.group_table = self.config.sections["GROUPS"].group_table
         
+        # Initialize training/testing sizes to 0 for all groups
+        for group_name in self.unique_group_names:
+            if group_name not in self.group_table:
+                # Group exists in BP file but not in config - add with default weights
+                self.group_table[group_name] = {
+                    'eweight': 1.0,
+                    'fweight': 1.0,
+                    'vweight': 1.0,
+                }
+            self.group_table[group_name]['training_size'] = 0
+            self.group_table[group_name]['testing_size'] = 0
+        
+        # We'll count actual sizes when we read the data, for now mark all as training
+        # The actual counts will be determined in scrape_configs when we read test_bool
         if self.rank == 0:
             self.pt.single_print(f"Found {len(self.unique_group_names)} unique groups: {self.unique_group_names}")
         
@@ -178,27 +206,52 @@ class ADIOS2(Scraper):
         # Read all data arrays (all ranks read the same data, but only process their slice)
         try:
             with Stream(self.dataPath, 'r') as s:
-                # Read per-config arrays
-                self.num_atoms = s.read('NumAtoms')
-                self.energy = s.read('Energy')
-                self.test_bool = s.read('test_bool')
-                self.group_indices = s.read('GroupIndices')
-                
-                # Read variable-length arrays
-                self.position_offsets = s.read('PositionOffsets')
-                self.positions_flat = s.read('PositionsFlat')
-                self.atom_types_flat = s.read('AtomTypesFlat')
-                
-                # Read fixed-size arrays
-                self.lattices = s.read('Lattice')  # Shape: (nconfigs, 9)
-                
-                if self.has_forces:
-                    self.forces_flat = s.read('ForcesFlat')
-                if self.has_stress:
-                    self.stresses = s.read('Stress')  # Shape: (nconfigs, 9)
+                for step in s.steps():
+                    # Read per-config arrays
+                    self.num_atoms = s.read('NumAtoms')
+                    self.energy = s.read('Energy')
+                    self.test_bool = s.read('test_bool')
+                    self.group_indices = s.read('GroupIndices')
+                    
+                    # Read variable-length arrays
+                    self.position_offsets = s.read('PositionOffsets')
+                    self.positions_flat = s.read('PositionsFlat')
+                    self.atom_types_flat = s.read('AtomTypesFlat')
+                    
+                    # Read fixed-size arrays
+                    self.lattices = s.read('Lattice')  # Shape: (nconfigs, 3, 3)
+                    
+                    if self.has_forces:
+                        self.forces_flat = s.read('ForcesFlat')
+                    if self.has_stress:
+                        self.stresses = s.read('Stress')  # Shape: (nconfigs, 3, 3)
+                    
+                    break  # Only need first step
                 
         except Exception as e:
             raise RuntimeError(f"Failed to read ADIOS2 data arrays: {e}")
+        
+        # Count training/testing sizes per group (only rank 0)
+        if self.rank == 0:
+            for i in range(self.nconfigs):
+                group_idx = int(self.group_indices[i])
+                group_name = self.unique_group_names[group_idx]
+                is_test = bool(self.test_bool[i])
+                
+                if is_test:
+                    self.group_table[group_name]['testing_size'] += 1
+                else:
+                    self.group_table[group_name]['training_size'] += 1
+            
+            # Print summary
+            for group_name in self.unique_group_names:
+                train_size = self.group_table[group_name]['training_size']
+                test_size = self.group_table[group_name]['testing_size']
+                self.pt.single_print(f"  {group_name}: {train_size} training, {test_size} testing")
+        
+        # Broadcast group_table to all ranks
+        if self.pt.stubs == 0:
+            self.group_table = self.comm.bcast(self.group_table, root=0)
         
         # Process configurations assigned to this rank
         for config_idx in self.my_config_indices:
@@ -228,14 +281,17 @@ class ADIOS2(Scraper):
         
         # Get position range
         pos_start = int(self.position_offsets[config_idx])
-        pos_end = int(self.position_offsets[config_idx + 1])
+        # For the last config, use total length instead of next offset
+        if config_idx == self.nconfigs - 1:
+            pos_end = len(self.atom_types_flat)
+        else:
+            pos_end = int(self.position_offsets[config_idx + 1])
         
-        # Extract positions (flattened as [x1, y1, z1, x2, y2, z2, ...])
-        positions_1d = self.positions_flat[pos_start * 3 : pos_end * 3]
-        positions = positions_1d.reshape((natoms, 3))
+        # Extract positions (already shaped as (natoms, 3) in the file)
+        positions = self.positions_flat[pos_start:pos_end]
         
         # Extract atom types
-        atom_type_indices = self.atom_types_flat[pos_start : pos_end]
+        atom_type_indices = self.atom_types_flat[pos_start:pos_end]
         atom_types = [self.element_map[int(idx)] for idx in atom_type_indices]
         
         # Extract lattice (3x3 matrix)
@@ -254,24 +310,35 @@ class ADIOS2(Scraper):
             'test_bool': bool(self.test_bool[config_idx]),
         }
         
-        # Extract forces if available
+        # Extract forces if available (already shaped as (natoms, 3) in the file)
         if self.has_forces and self.use_forces:
-            forces_1d = self.forces_flat[pos_start * 3 : pos_end * 3]
-            forces = forces_1d.reshape((natoms, 3))
+            forces = self.forces_flat[pos_start:pos_end]
             data_dict['Forces'] = forces.copy()
         
-        # Extract stress if available (3x3 matrix stored as 9 elements)
+        # Extract stress if available (3x3 matrix)
         if self.has_stress and self.use_stress:
             stress = self.stresses[config_idx].reshape((3, 3))
             data_dict['Stress'] = stress.copy()
         
-        # Store as self.data temporarily so _weighting can access it
-        self.data = data_dict
-        
         # Apply weights from config file using parent class method
+        # We need to temporarily set self.data for parent methods to work
+        old_data = self.data
+        old_conversions = self.conversions
+        self.data = data_dict
+        self.conversions = self.default_conversions
+        
+        # Normalize coordinates for LAMMPS
+        self._rotate_coords()
+        self._translate_coords()
+        
+        # Apply weighting
         self._weighting(natoms)
         
-        return self.data
+        result = self.data
+        self.data = old_data
+        self.conversions = old_conversions
+        
+        return result
 
     def __del__(self):
         """
