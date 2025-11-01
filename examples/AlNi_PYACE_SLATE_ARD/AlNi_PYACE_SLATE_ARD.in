@@ -30,25 +30,24 @@ bonds = {
   }
 
 functions = {
-    "ALL": {"lmin_by_orders": [0,0,0,0], "lmax_by_orders": [1,1,1,1], "nradmax_by_orders": [20,5,3,1]}
-    #"ALL": {"lmin_by_orders": [0,0], "lmax_by_orders": [1,1], "nradmax_by_orders": [8,2]}
+    "ALL": {"lmin_by_orders": [0,0,0,0], "lmax_by_orders": [3,3,2,1], "nradmax_by_orders": [20,5,3,1]}
+    #"ALL": {"lmin_by_orders": [0,0], "lmax_by_orders": [1,1], "nradmax_by_orders": [2,1]}
   }
 
 [CALCULATOR]
 calculator = LAMMPSPYACE
 energy = 1
 force = 1
-stress = 0
+stress = 1
 
 [REFERENCE]
-units = real
+units = metal
 atom_style = atomic
 pair_style = hybrid/overlay zero 6.842222 zbl 4.782556 5.465778 zbl 4.448889 5.084444 zbl 3.927000 4.488000
 pair_coeff1 = * * zero
 pair_coeff2 = 1 1 zbl 1    13 13
 pair_coeff3 = 1 2 zbl 2    13 28
 pair_coeff4 = 2 2 zbl 3    28 28
-
 
 [SOLVER]
 solver = SLATE
@@ -63,7 +62,7 @@ pruning_method = lambda
 scap = 1e-3
 scai = 1e-3
 max_iter = 10
-threshold_lambda = 1.0
+threshold_lambda = 100.0
 
 [SCRAPER]
 scraper = ADIOS2
@@ -82,14 +81,14 @@ group_sections = name eweight fweight vweight
 group_types = str float float float float float
 smartweights = 1
 random_sampling = 0
-rattled-300             = 1.0  100.0  1e-12
-rattled-500             = 1.0  100.0  1e-12
-rattled-1000            = 1.0  100.0  1e-12
-rattled-relax           = 1.0  100.0  1e-12
-aimd-from-PBE-1000-npt  = 1.0  100.0  1e-12
-aimd-from-PBE-1000-nvt  = 1.0  100.0  1e-12
-aimd-from-PBE-3000-npt  = 1.0  100.0  1e-12
-aimd-from-PBE-3000-nvt  = 1.0  100.0  1e-12
+rattled-300             = 1.0  100.0  1e-2
+rattled-500             = 1.0  100.0  1e-2
+rattled-1000            = 1.0  100.0  1e-2
+rattled-relax           = 1.0  100.0  1e-2
+aimd-from-PBE-1000-npt  = 1.0  100.0  1e-2
+aimd-from-PBE-1000-nvt  = 1.0  100.0  1e-2
+aimd-from-PBE-3000-npt  = 1.0  100.0  1e-2
+aimd-from-PBE-3000-nvt  = 1.0  100.0  1e-2
 
 
 [OUTFILE]
