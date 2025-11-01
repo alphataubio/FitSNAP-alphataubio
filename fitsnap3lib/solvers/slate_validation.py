@@ -311,6 +311,7 @@ class SlateValidation(SlateCommon):
         gamma_array = np.array(gamma_history)
         lambda_array = np.array(lambda_history)
         n_iterations, n_features = gamma_array.shape
+        boundaries = [i for i in range(1, len(basis_ranks)) if basis_ranks[i] != basis_ranks[i-1]]
         
         # Create the gamma heatmap plot - 4x1 layout with custom colormap
         # TRANSPOSED: iterations on horizontal axis, features on vertical axis
@@ -321,45 +322,24 @@ class SlateValidation(SlateCommon):
         colors = [(1, 1, 1, 1)] + [turbo(i) for i in range(1, turbo.N)]
         custom_cmap = LinearSegmentedColormap.from_list('custom_turbo', colors, N=256)
         
-        fig, ax = plt.subplots(figsize=(16, 16), layout="constrained")
-        #fig.subplots_adjust(bottom=0.3, top=1.0, left=0.0, right=1.0)
-            
-        im = ax.imshow(gamma_array.T, aspect='auto', cmap=custom_cmap, interpolation='nearest', vmin=0, vmax=1)
+        fig, ax = plt.subplots(figsize=(10, 16.18), layout="constrained")
+        im = ax.imshow(gamma_array.T, aspect='auto', cmap=custom_cmap, vmin=0, vmax=1)
+        
         ax.set_xlabel('Iteration', fontsize=14, fontweight='bold')
-        ax.set_box_aspect(1.618)
-        
         ax.set_xticks(np.arange(n_iterations), minor=False)
-        ax.set_xticklabels([str(i) for i in range(n_iterations)], fontsize=14, minor=False)
-        ax.tick_params(axis='x', which='major', length=5, color='w')
-
         ax.set_xticks(np.arange(n_iterations+1) - 0.5, minor=True)
-        ax.set_xticklabels([''] * (n_iterations+1), minor=True)
-        ax.grid(axis='x', which='minor', color='k', linestyle='-', linewidth=1)
-        ax.tick_params(axis='x', which='minor', length=30, labelbottom=False)
-        
         ax.set_yticks(np.arange(n_features), minor=False)
+        ax.set_yticks([-0.5] + [b - 0.5 for b in boundaries] + [n_features - 0.5], minor=True)
+        ax.set_xticklabels([str(i) for i in range(n_iterations)], fontsize=14, minor=False)
         ax.set_yticklabels(blist, fontsize=14, minor=False)
+        ax.tick_params(axis='x', which='major', length=5, color='w')
+        ax.tick_params(axis='x', which='minor', length=30, width=1, labelbottom=False)
         ax.tick_params(axis='y', which='major', length=5, color='w')
-
-        boundaries = [i for i in range(1, len(basis_ranks)) if basis_ranks[i] != basis_ranks[i-1]]
-        minor_yticks = [-0.5] + [b - 0.5 for b in boundaries] + [n_features - 0.5]
-        ax.set_yticks(minor_yticks, minor=True)
-        ax.tick_params(axis='y', which='minor', length=200, labelleft=False)
-        
-        #ax.margins(0)
-        #ax.spines['right'].set_visible(False)
-        #ax.yaxis.set_ticks_position('left')
-        #ax.tick_params(right=False)
-        #plt.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.1)
-            
-        # Optional: move ticks to bottom/left
-        ax.tick_params(top=False, bottom=True, labelbottom=True, left=True, right=False, labelleft=True)
-        
-        # Add single colorbar at bottom
-        #fig.subplots_adjust(bottom=0.5)
-        #cbar_ax = fig.add_axes([0.15, 0.02, 0.7, 0.015])
-        cbar = fig.colorbar(im, location='bottom', orientation='horizontal') # , cax=cbar_ax
-        cbar.set_label('Gamma Value (white=0, removed features)', fontsize=12)
+        ax.tick_params(axis='y', which='minor', length=200, width=1, labelleft=False)
+        ax.grid(axis='x', which='minor', color='k', linestyle='-', linewidth=1)
+        ax.grid(axis='y', which='minor', color='k', linestyle='-', linewidth=1)
+        cbar = fig.colorbar(im, location='bottom', orientation='horizontal', pad=0.02)
+        cbar.set_label('Gamma (white: removed features)', fontsize=12, fontweight='bold')
         
         buf = io.BytesIO()
         plt.savefig(buf, format='svg', bbox_inches='tight')
@@ -380,39 +360,27 @@ class SlateValidation(SlateCommon):
 
         # Cell 6: Create and display lambda heatmaps
         # Create the lambda heatmap plot
-        fig, axes = plt.subplots(5, 1, figsize=(16, 16))
         
-        # Create lambda heatmaps for each rank
-        for i, rank in enumerate(unique_ranks[:5]):
-            ax = axes[i]
-            # Filter features by rank
-            rank_mask = basis_ranks == rank
-            rank_lambda = lambda_array[:, rank_mask]
-            
-            # Use log scale for lambda visualization
-            rank_lambda_log = np.log10(rank_lambda + 1e-10)  # Add small value to avoid log(0)
-            
-            # TRANSPOSE: rank_lambda_log.T so iterations are on x-axis, features on y-axis
-            im = ax.imshow(rank_lambda_log.T, aspect='auto', cmap='viridis', interpolation='nearest')
-            ax.set_title(f'PACE Rank {rank} Lambda Evolution (log10 scale)', fontsize=14, fontweight='bold')
-            ax.set_xlabel('Iteration', fontsize=12)
-            ax.set_ylabel('Feature Index', fontsize=12)
-            
-            # Add statistics
-            final_lambda = rank_lambda[-1, :]
-            n_active_final = np.sum(final_lambda < 1e3)  # Count features with small lambda
-            ax.text(0.98, 0.98, f'Active: {n_active_final}/{rank_lambda.shape[1]}',
-                    transform=ax.transAxes, fontsize=10, verticalalignment='top', horizontalalignment='right',
-                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        fig, ax = plt.subplots(figsize=(10, 16.18), layout="constrained")
+        im = ax.imshow(np.log10(lambda_array + 1e-10).T, aspect='auto', cmap=custom_cmap, vmin=0, vmax=1)
         
-        # Add single colorbar at bottom
-        fig.subplots_adjust(bottom=0.08)
-        cbar_ax = fig.add_axes([0.15, 0.02, 0.7, 0.015])
-        cbar = fig.colorbar(im, cax=cbar_ax, orientation='horizontal')
-        cbar.set_label('Log10(Lambda) - higher values indicate less important features', fontsize=12)
-        
+        ax.set_xlabel('Iteration', fontsize=14, fontweight='bold')
+        ax.set_xticks(np.arange(n_iterations), minor=False)
+        ax.set_xticks(np.arange(n_iterations+1) - 0.5, minor=True)
+        ax.set_yticks(np.arange(n_features), minor=False)
+        ax.set_yticks([-0.5] + [b - 0.5 for b in boundaries] + [n_features - 0.5], minor=True)
+        ax.set_xticklabels([str(i) for i in range(n_iterations)], fontsize=14, minor=False)
+        ax.set_yticklabels(blist, fontsize=14, minor=False)
+        ax.tick_params(axis='x', which='major', length=5, color='w')
+        ax.tick_params(axis='x', which='minor', length=30, width=1, labelbottom=False)
+        ax.tick_params(axis='y', which='major', length=5, color='w')
+        ax.tick_params(axis='y', which='minor', length=200, width=1, labelleft=False)
+        ax.grid(axis='x', which='minor', color='k', linestyle='-', linewidth=1)
+        ax.grid(axis='y', which='minor', color='k', linestyle='-', linewidth=1)
+        cbar = fig.colorbar(im, location='bottom', orientation='horizontal', pad=0.02)
+        cbar.set_label('Log10(Lambda) - higher values indicate less important features', fontsize=12, fontweight='bold')
+      
         buf = io.BytesIO()
-        plt.tight_layout()
         plt.savefig(buf, format='svg', bbox_inches='tight')
         plt.close()
         svg_text = buf.getvalue().decode('utf-8')
