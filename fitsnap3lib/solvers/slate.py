@@ -241,9 +241,13 @@ class SLATE(SlateValidation):
                 lambda_mask = lambda_ < self.threshold_lambda
                 n_pruned = np.sum(~lambda_mask)
                 
-                pt.single_print(f"SLATE ARD: iteration {iter_} alpha {alpha_:.6f} sse {sse_:.6f} gamma_sum {gamma_active.sum():.6f} n_active {n_active}")
-                pt.single_print(f"  Lambda pruning: keeping {np.sum(lambda_mask)}/{n} features with lambda < {self.threshold_lambda:.1f}")
-                pt.single_print(f"  Lambda range: [{lambda_[lambda_ > 0].min():.4e}, {lambda_.max():.4e}]")
+                pt.single_print(
+                    f"SLATE ARD: iteration {iter_} alpha {alpha_:.6f} sse {sse_:.6f} "
+                    f"gamma_sum {gamma_active.sum():.6f} n_active {n_active}\n    "
+                    f"lambda range [{lambda_[lambda_ > 0].min():.4e}, {lambda_.max():.4e}], "
+                    f"keeping {np.sum(lambda_mask)}/{n} features "
+                    f"with lambda < {self.threshold_lambda:.1f}"
+                )
             
             coef_[~lambda_mask] = 0
             
