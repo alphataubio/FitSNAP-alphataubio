@@ -141,12 +141,11 @@ class LammpsPyace(LammpsPace):
 
         if self.config.sections["CALCULATOR"].stress:
             vb_sum_temp = 1.6021765e6*lmp_pace[irow:irow + nrows_virial, :ncols_descriptors] / lmp_volume
-            vb_sum_temp.shape = (ndim_virial, self._ncoeff * self._numtypes)
+            vb_sum_temp.shape = (ndim_virial, self._ncoeff)
             if not self._bzeroflag:
-                vb_sum_temp.shape = (np.shape(vb_sum_temp)[0], self._numtypes, self._ncoeff)
-                onehot_atoms = np.zeros((np.shape(vb_sum_temp)[0], self._numtypes, 1))
-                vb_sum_temp = np.concatenate([onehot_atoms, vb_sum_temp], axis=2)
-                vb_sum_temp.shape = (np.shape(vb_sum_temp)[0], self._numtypes*(self._ncoeff+1))
+                onehot_atoms = np.zeros((np.shape(vb_sum_temp)[0], self._numtypes))
+                vb_sum_temp = np.concatenate([onehot_atoms, vb_sum_temp], axis=1)
+
             self.pt.shared_arrays['a'].array[index:index+ndim_virial] = vb_sum_temp
             ref_stress = lmp_pace[irow:irow + nrows_virial, icolref]
             self.pt.shared_arrays['b'].array[index:index+ndim_virial] = \
