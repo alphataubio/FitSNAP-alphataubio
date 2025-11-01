@@ -254,18 +254,14 @@ def _to_pyace_coeff_string(coeffs, config):
     """
 
     pyace_section = config.sections["PYACE"]
-    coeff_names = pyace_section.blist
-    if not pyace_section.bzeroflag:
-        coeff_names = [f"{t} [0]" for t in pyace_section.types] + coeff_names
-    
     out = f"# FitSNAP generated on {datetime.now()} with Hash: {config.hash}\n\n"
     
     from collections import Counter
-    counts = Counter(s.split()[0] for s in coeff_names)
+    counts = Counter(s.split()[0] for s in pyace_section.blist)
     out += " ".join(f"{k} {v}" for k, v in counts.items())
     out += "\n"
     
-    for bval, bname in zip(coeffs, coeff_names):
+    for bval, bname in zip(coeffs, pyace_section.blist):
         out += f" {bval:<30.18} # {bname}\n"
     out += "\n# End of potential"
     return out

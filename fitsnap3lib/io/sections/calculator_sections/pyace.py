@@ -133,24 +133,19 @@ class PyAce(Section):
                         
             self.pt.single_print(f"PyACE basis: numtypes {self.numtypes} ncoeff {self.ncoeff}")
             
-            self.blist = []
+            self.blist = [] if self.bzeroflag else [f"{t} [0]" for t in self.types]
             
             for element_basis_rank1_functions in ctilde_basis.basis_rank1:
-                for basis_rank1_function in element_basis_rank1_functions:
-                    element = self.elements[basis_rank1_function.mu0]
-                    elements = " ". join([self.elements[mu] for mu in basis_rank1_function.mus])
-                    ns = basis_rank1_function.ns
-                    ls = basis_rank1_function.ls
-                    self.blist.append(f"{element} {elements} ns={ns} ls={ls}")
+                for function in element_basis_rank1_functions:
+                    element = self.elements[function.mu0]
+                    elements = " ". join([self.elements[mu] for mu in function.mus])
+                    self.blist.append(f"{element} {elements} ls {function.ls} ns {function.ns}")
 
             for element_basis_functions in ctilde_basis.basis:
-                for basis_function in element_basis_functions:
-                    element = self.elements[basis_function.mu0]
-                    elements = " ". join([self.elements[mu] for mu in basis_function.mus])
-                    ns = basis_function.ns
-                    ls = basis_function.ls
-                    self.blist.append(f"{element} {elements} ns={ns} ls={ls}")
-
+                for function in element_basis_functions:
+                    element = self.elements[function.mu0]
+                    elements = " ". join([self.elements[mu] for mu in function.mus])
+                    self.blist.append(f"{element} {elements} ls {function.ls} ns {function.ns}")
 
             if 'EXTRAS' in self.sections and self.sections['EXTRAS'].debug:
                 for element_basis_rank1_functions in b_basis.basis_rank1:
@@ -160,7 +155,6 @@ class PyAce(Section):
                 for element_basis_functions in b_basis.basis:
                     for basis_function in element_basis_functions:
                         basis_function.print()
-                    
             
         except ImportError:
             raise RuntimeError("PyACE not available - cannot create basis")
