@@ -57,6 +57,7 @@ class SLATE(SlateValidation):
         # Get dimensions
         a_start_idx, a_end_idx = pt.fitsnap_dict["sub_a_indices"]
         local_slice = slice(a_start_idx, a_end_idx+1)
+        local_w = w[local_slice].copy()
         m = aw.shape[0] * pt._number_of_nodes  # global number of samples
         n = aw.shape[1]  # number of features
         lld = aw.shape[0]  # local leading dimension
@@ -69,11 +70,12 @@ class SLATE(SlateValidation):
                 if testing_mask[i]:
                     #aw[a_start_idx+i,:] = 0.0
                     #bw[a_start_idx+i] = 0.0
-                    w[a_start_idx+i] = 0.0
+                    #w[a_start_idx+i] = 0.0
+                    local_w[i] = 0.0
                     
         # Apply weights to my local slice
-        aw[local_slice] = w[local_slice, np.newaxis] * a[local_slice]
-        bw[local_slice] = w[local_slice] * b[local_slice]
+        aw[local_slice] = local_w[:, np.newaxis] * a[local_slice]
+        bw[local_slice] = local_w * b[local_slice]
 
         # Initialize ARD parameters
         eps = np.finfo(np.float64).eps
@@ -178,7 +180,7 @@ class SLATE(SlateValidation):
                 break
                         
             # Pack active columns of a into first columns of aw (both are column-major for SLATE)
-            aw[local_slice, :len(active_indices)] = w[local_slice, np.newaxis] * a[local_slice, active_indices]
+            aw[local_slice, :len(active_indices)] = local_w[:, np.newaxis] * a[local_slice, active_indices]
 
             lambda_active = lambda_[active_indices]
                         
