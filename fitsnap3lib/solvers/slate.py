@@ -133,9 +133,30 @@ class SLATE(SlateValidation):
         lambda_mask = np.ones(n, dtype=bool)
         coef_old_ = None
         
-        # Initialize gamma history tracking if validation is enabled
-        if self.config.sections["OUTFILE"].validation:
-            self.gamma_history = []
+        # Initialize gamma and lambda history tracking if validation is enabled
+        if self.validation and pt._rank == 0:
+
+            from adios2 import Stream
+            output_prefix = self.config.sections['OUTFILE'].metrics.replace('.md', '')
+            adios2_stream = Stream(f"{output_prefix}.bp", 'w')
+            
+            # s.write_attribute('nconfigs', nconfigs) # number of features
+            # s.write_attribute('element_map', ','.join(element_list))
+        
+            # Get rank information from PYACE basis if available
+            if "PYACE" in self.config.sections:
+                pyace_section = self.config.sections["PYACE"]
+                if hasattr(pyace_section, 'ctilde_basis'):
+                    basis_ranks = []
+                    if not pyace_section.bzeroflag:
+                        basis_ranks.extend([0] * len(pyace_section.types))
+                    for element_basis_rank1_functions in pyace_section.ctilde_basis.basis_rank1:
+                        for basis_rank1_function in element_basis_rank1_functions:
+                            basis_ranks.append(int(basis_rank1_function.rank))
+                    for element_basis_functions in pyace_section.ctilde_basis.basis:
+                        for basis_function in element_basis_functions:
+                            basis_ranks.append(int(basis_function.rank))
+                adios2_stream.write_attribute('basis_ranks', basis_ranks)
         
         pt.debug_single_print(f"ARD: m {m} n {n} var(bw)={var_bw:.9f} alpha={alpha_:.2f}")
         
@@ -143,6 +164,9 @@ class SLATE(SlateValidation):
             precision=4, suppress=False, floatmode='fixed', linewidth=np.inf,
             formatter={'float': '{:.3f}'.format}, threshold = 800, edgeitems=5
         )
+        
+
+
       
         # Iterative procedure of ARDRegression
         for iter_ in range(self.max_iter):
@@ -187,14 +211,15 @@ class SLATE(SlateValidation):
             # Map gamma back to full feature set
             gamma_ = np.zeros(n, dtype=np.float64)
             gamma_[active_indices] = gamma_active
-            
-            # Store gamma history if validation enabled
-            if self.config.sections["OUTFILE"].validation:
-                self.gamma_history.append(gamma_.copy())
-            
-            lambda_[active_indices] = (gamma_active + 2.0 * self.lambda_1) / (
-                coef_active_**2 + 2.0 * self.lambda_2
-            )
+                        
+            lambda_[active_indices] = (gamma_active + 2.0 * self.lambda_1) / (coef_active_**2 + 2.0 * self.lambda_2)
+                
+            # Store gamma and lambda history if validation enabled
+            if self.validation and pt._rank == 0:
+                adios2_stream.begin_step()
+                adios2_stream.write("gamma", gamma_, count=[n])
+                adios2_stream.write("lambda", lambda_, count=[n])
+                adios2_stream.end_step()
                         
             alpha_ = (global_n_training - gamma_active.sum() + 2.0 * self.alpha_1) / (sse_ + 2.0 * self.alpha_2)
             
@@ -246,58 +271,10 @@ class SLATE(SlateValidation):
 
         self.fit = coef_
         
-        # Save gamma history to pickle if validation enabled
-        if self.config.sections["OUTFILE"].validation and pt._rank == 0:
-            import pickle
-            output_prefix = self.config.sections['OUTFILE'].metrics.replace('.md', '')
-            gamma_history_file = f"{output_prefix}_gamma_history.pkl"
-            
-            # Get rank information from PYACE basis if available
-            feature_ranks = None
-            if "PYACE" in self.config.sections:
-                pyace_section = self.config.sections["PYACE"]
-                if hasattr(pyace_section, 'ctilde_basis'):
-                    feature_ranks = []
-                    
-                    # If bzeroflag is False, there are offset columns at the beginning
-                    # We need to account for these in feature_ranks
-                    if not pyace_section.bzeroflag:
-                        # Determine number of offset columns
-                        # For PACE, this is typically numtypes (per-element offsets)
-                        # But let's be precise by checking the actual number
-                        n_offset_cols = n - sum(
-                            len(list(element_basis_rank1_functions)) for element_basis_rank1_functions in pyace_section.ctilde_basis.basis_rank1
-                        ) - sum(
-                            len(list(element_basis_functions)) for element_basis_functions in pyace_section.ctilde_basis.basis
-                        )
-                        # Add offset columns with rank 0
-                        feature_ranks.extend([0] * n_offset_cols)
-                        pt.debug_single_print(f"Added {n_offset_cols} offset columns (rank 0) to feature_ranks")
-                    
-                    # Rank 1 functions
-                    for element_basis_rank1_functions in pyace_section.ctilde_basis.basis_rank1:
-                        for basis_rank1_function in element_basis_rank1_functions:
-                            feature_ranks.append(int(basis_rank1_function.rank))
-                    # Higher rank functions
-                    for element_basis_functions in pyace_section.ctilde_basis.basis:
-                        for basis_function in element_basis_functions:
-                            feature_ranks.append(int(basis_function.rank))
-                    
-                    # Verify feature_ranks matches n
-                    if len(feature_ranks) != n:
-                        pt.single_print(f"WARNING: feature_ranks length ({len(feature_ranks)}) != n features ({n})")
-                        pt.single_print(f"This may cause issues in validation. Setting feature_ranks to None.")
-                        feature_ranks = None
-            
-            # Save both gamma history and feature ranks
-            save_data = {
-                'gamma_history': self.gamma_history,
-                'feature_ranks': feature_ranks
-            }
-            
-            with open(gamma_history_file, 'wb') as f:
-                pickle.dump(save_data, f)
-            pt.single_print(f"Saved gamma history and feature ranks to {gamma_history_file}")
+        # Save gamma and lambda history using adios2 if validation enabled
+        if self.validation and pt._rank == 0:
+            adios2_stream.close()
+            pt.single_print(f"Saved gamma and lambda history to {output_prefix}.bp using adios2")
         
         if self.config.debug and pt._rank == 0:
             active_features = np.sum(lambda_mask)

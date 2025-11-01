@@ -55,6 +55,8 @@ class SlateCommon(Solver):
             error_msg = f"[Rank {self.pt._rank}, Node {self.pt._node_index}] SLATE module not available. Please compile it first."
             pt.single_print(error_msg)
             raise RuntimeError(error_msg)
+            
+        self.validation = self.config.sections["OUTFILE"].validation
         
         # Get parameters from SLATE section
         if 'SLATE' in self.config.sections:

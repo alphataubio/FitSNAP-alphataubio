@@ -304,13 +304,13 @@ class FitSnap:
             self.solver.error_analysis()
 
         @self.pt.single_timeit
-        def validation():
-            self.solver.validation()
+        def validation_notebook():
+            self.solver.validation_notebook()
 
         fit()
         fit_gather()
         error_analysis()
-        validation()
+        validation_notebook()
 
     def write_output(self):
         @self.pt.single_timeit

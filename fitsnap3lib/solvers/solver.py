@@ -497,6 +497,6 @@ class Solver:
 
         return pf_stdev
 
-    def validation(self):
+    def validation_notebook(self):
         # only implemented in SLATE solver
         pass
