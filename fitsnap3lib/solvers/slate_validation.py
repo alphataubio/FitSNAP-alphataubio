@@ -266,8 +266,6 @@ class SlateValidation(SlateCommon):
                         "metadata": {},
                         "source": subsystem_lines
                     })
-                    
-        self.pt.single_print(f"*** ok 1")
 
         if self.method == 'ARD':
             self.validation_notebook_ard(notebook)
@@ -276,7 +274,7 @@ class SlateValidation(SlateCommon):
         with open(notebook_file, 'w') as f:
             json.dump(notebook, f, indent=2)
         
-        self.pt.single_print(f"Created validation notebook: {notebook_file}")
+        self.pt.debug_single_print(f"Created validation notebook: {notebook_file}")
 
 
     def validation_notebook_ard(self, notebook):
@@ -290,7 +288,7 @@ class SlateValidation(SlateCommon):
         
         # Cell 5: Create and display gamma heatmaps
         # Load data from adios2 to create plots
-        from adios2 import Stream
+        import adios2
         import matplotlib
         matplotlib.use('Agg')  # Non-interactive backend
         import matplotlib.pyplot as plt
@@ -298,9 +296,14 @@ class SlateValidation(SlateCommon):
         import base64
         
         output_prefix = self.config.sections['OUTFILE'].metrics.replace('.md', '')
-        with Stream(f"{output_prefix}.bp", 'r') as adios2_stream:
-            basis_ranks = adios2_stream.read_attribute("basis_ranks")
-            gamma_history = lambda_history = []
+        adios2_path = f"{output_prefix}.bp"
+        with adios2.FileReader(adios2_path) as adios2_file:
+            basis_ranks = adios2_file.read_attribute("basis_ranks")
+            blist = adios2_file.read_attribute("blist")
+            unique_ranks = sorted(set(basis_ranks))
+        with adios2.Stream(adios2_path, 'r') as adios2_stream:
+            gamma_history = []
+            lambda_history = []
             for _ in adios2_stream.steps():
                 gamma_history.append(adios2_stream.read("gamma"))
                 lambda_history.append(adios2_stream.read("lambda"))
@@ -318,128 +321,72 @@ class SlateValidation(SlateCommon):
         colors = [(1, 1, 1, 1)] + [turbo(i) for i in range(1, turbo.N)]
         custom_cmap = LinearSegmentedColormap.from_list('custom_turbo', colors, N=256)
         
-        fig, axes = plt.subplots(5, 1, figsize=(16, 16))
+        fig, ax = plt.subplots(figsize=(16, 16), layout="constrained")
+        #fig.subplots_adjust(bottom=0.3, top=1.0, left=0.0, right=1.0)
+            
+        im = ax.imshow(gamma_array.T, aspect='auto', cmap=custom_cmap, interpolation='nearest', vmin=0, vmax=1)
+        ax.set_xlabel('Iteration', fontsize=14, fontweight='bold')
+        ax.set_box_aspect(1.618)
         
-        # Create gamma heatmaps for each rank
-        for i, rank in enumerate(basis_ranks[:5]):
-            ax = axes[i]
-            # Filter features by rank
-            rank_mask = basis_ranks == rank
-            rank_gamma = gamma_array[:, rank_mask]
+        ax.set_xticks(np.arange(n_iterations), minor=False)
+        ax.set_xticklabels([str(i) for i in range(n_iterations)], fontsize=14, minor=False)
+        ax.tick_params(axis='x', which='major', length=5, color='w')
+
+        ax.set_xticks(np.arange(n_iterations+1) - 0.5, minor=True)
+        ax.set_xticklabels([''] * (n_iterations+1), minor=True)
+        ax.grid(axis='x', which='minor', color='k', linestyle='-', linewidth=1)
+        ax.tick_params(axis='x', which='minor', length=30, labelbottom=False)
+        
+        ax.set_yticks(np.arange(n_features), minor=False)
+        ax.set_yticklabels(blist, fontsize=14, minor=False)
+        ax.tick_params(axis='y', which='major', length=5, color='w')
+
+        boundaries = [i for i in range(1, len(basis_ranks)) if basis_ranks[i] != basis_ranks[i-1]]
+        minor_yticks = [-0.5] + [b - 0.5 for b in boundaries] + [n_features - 0.5]
+        ax.set_yticks(minor_yticks, minor=True)
+        ax.tick_params(axis='y', which='minor', length=200, labelleft=False)
+        
+        #ax.margins(0)
+        #ax.spines['right'].set_visible(False)
+        #ax.yaxis.set_ticks_position('left')
+        #ax.tick_params(right=False)
+        #plt.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.1)
             
-            # TRANSPOSE: rank_gamma.T so iterations are on x-axis, features on y-axis
-            im = ax.imshow(rank_gamma.T, aspect='auto', cmap=custom_cmap, interpolation='nearest', vmin=0, vmax=1)
-            ax.set_title(f'PACE Rank {rank} Gamma Evolution', fontsize=14, fontweight='bold')
-            ax.set_xlabel('Iteration', fontsize=12)
-            ax.set_ylabel('Feature Index', fontsize=12)
-            
-            # Add statistics
-            final_gamma = rank_gamma[-1, :]
-            n_active_final = np.sum(final_gamma > 0.01)
-            ax.text(0.98, 0.98, f'Active: {n_active_final}/{rank_gamma.shape[1]}',
-                    transform=ax.transAxes, fontsize=10, verticalalignment='top', horizontalalignment='right',
-                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        # Optional: move ticks to bottom/left
+        ax.tick_params(top=False, bottom=True, labelbottom=True, left=True, right=False, labelleft=True)
         
         # Add single colorbar at bottom
-        fig.subplots_adjust(bottom=0.08)
-        cbar_ax = fig.add_axes([0.15, 0.02, 0.7, 0.015])
-        cbar = fig.colorbar(im, cax=cbar_ax, orientation='horizontal')
+        #fig.subplots_adjust(bottom=0.5)
+        #cbar_ax = fig.add_axes([0.15, 0.02, 0.7, 0.015])
+        cbar = fig.colorbar(im, location='bottom', orientation='horizontal') # , cax=cbar_ax
         cbar.set_label('Gamma Value (white=0, removed features)', fontsize=12)
         
-        plt.tight_layout(rect=[0, 0.04, 1, 1])
-        
-        # Save to buffer and encode as base64
         buf = io.BytesIO()
-        plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
-        buf.seek(0)
-        img_base64_gamma = base64.b64encode(buf.read()).decode('utf-8')
+        plt.savefig(buf, format='svg', bbox_inches='tight')
         plt.close()
-        
+        svg_text = buf.getvalue().decode('utf-8')
+        buf.close()
+        img_base64_gamma = base64.b64encode(svg_text.encode('utf-8')).decode('utf-8')
+  
         notebook["cells"].append({
             "cell_type": "markdown",
             "metadata": {},
-            "source": ["### Gamma Heatmaps"]
-        })
-        
-        notebook["cells"].append({
-            "cell_type": "code",
-            "execution_count": 1,
-            "metadata": {},
-            "outputs": [
-                {
-                    "data": {
-                        "image/png": img_base64_gamma
-                    },
-                    "metadata": {},
-                    "output_type": "display_data"
-                }
-            ],
             "source": [
-                "import matplotlib.pyplot as plt\n",
-                "import numpy as np\n",
-                "from matplotlib.colors import LinearSegmentedColormap\n",
-                "\n",
-                "# Create custom colormap: white for 0 (removed features), turbo for >0\n",
-                "turbo = plt.cm.turbo\n",
-                "colors = [(1, 1, 1, 1)] + [turbo(i) for i in range(1, turbo.N)]\n",
-                "custom_cmap = LinearSegmentedColormap.from_list('custom_turbo', colors, N=256)\n",
-                "\n",
-                "# Determine which ranks to plot\n",
-                "if feature_ranks is not None:\n",
-                "    unique_ranks = sorted(set(feature_ranks))\n",
-                "    feature_ranks_array = np.array(feature_ranks)\n",
-                "else:\n",
-                "    # Fallback: assume 4 ranks with equal division\n",
-                "    unique_ranks = [1, 2, 3, 4]\n",
-                "    features_per_rank = n_features // 4\n",
-                "    feature_ranks_array = np.repeat(unique_ranks, features_per_rank)\n",
-                "    if len(feature_ranks_array) < n_features:\n",
-                "        feature_ranks_array = np.concatenate([feature_ranks_array,\n",
-                "            np.full(n_features - len(feature_ranks_array), unique_ranks[-1])])\n",
-                "\n",
-                "# Create 4x1 layout for PACE ranks\n",
-                "fig, axes = plt.subplots(4, 1, figsize=(16, 16))\n",
-                "\n",
-                "# Create gamma heatmaps for each rank\n",
-                "for i, rank in enumerate(unique_ranks[:4]):\n",
-                "    ax = axes[i]\n",
-                "    # Filter features by rank\n",
-                "    rank_mask = feature_ranks_array == rank\n",
-                "    rank_gamma = gamma_array[:, rank_mask]\n",
-                "    \n",
-                "    # Transpose: iterations on x-axis (horizontal), features on y-axis (vertical)\n",
-                "    im = ax.imshow(rank_gamma.T, aspect='auto', cmap=custom_cmap, interpolation='nearest', vmin=0, vmax=1)\n",
-                "    ax.set_title(f'PACE Rank {rank} Gamma Evolution', fontsize=14, fontweight='bold')\n",
-                "    ax.set_xlabel('Iteration', fontsize=12)\n",
-                "    ax.set_ylabel('Feature Index', fontsize=12)\n",
-                "    \n",
-                "    # Add statistics\n",
-                "    final_gamma = rank_gamma[-1, :]\n",
-                "    n_active_final = np.sum(final_gamma > 0.01)\n",
-                "    ax.text(0.98, 0.98, f'Active: {n_active_final}/{rank_gamma.shape[1]}',\n",
-                "            transform=ax.transAxes, fontsize=10, verticalalignment='top', horizontalalignment='right',\n",
-                "            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))\n",
-                "\n",
-                "# Add single horizontal colorbar at bottom\n",
-                "fig.subplots_adjust(bottom=0.08)\n",
-                "cbar_ax = fig.add_axes([0.15, 0.02, 0.7, 0.015])\n",
-                "cbar = fig.colorbar(im, cax=cbar_ax, orientation='horizontal')\n",
-                "cbar.set_label('Gamma Value (white=0, removed features)', fontsize=12)\n",
-                "\n",
-                "plt.tight_layout(rect=[0, 0.04, 1, 1])\n",
-                "plt.show()"
+                "## Gamma Heatmaps\n",
+                f'<img src="data:image/svg+xml;base64,{img_base64_gamma}" '
+                'alt="Gamma Heatmap" style="width:100%;height:auto;">'
             ]
         })
-        
+
         # Cell 6: Create and display lambda heatmaps
         # Create the lambda heatmap plot
-        fig, axes = plt.subplots(4, 1, figsize=(16, 16))
+        fig, axes = plt.subplots(5, 1, figsize=(16, 16))
         
         # Create lambda heatmaps for each rank
-        for i, rank in enumerate(unique_ranks[:4]):
+        for i, rank in enumerate(unique_ranks[:5]):
             ax = axes[i]
             # Filter features by rank
-            rank_mask = feature_ranks_array == rank
+            rank_mask = basis_ranks == rank
             rank_lambda = lambda_array[:, rank_mask]
             
             # Use log scale for lambda visualization
@@ -464,81 +411,25 @@ class SlateValidation(SlateCommon):
         cbar = fig.colorbar(im, cax=cbar_ax, orientation='horizontal')
         cbar.set_label('Log10(Lambda) - higher values indicate less important features', fontsize=12)
         
-        plt.tight_layout(rect=[0, 0.04, 1, 1])
-        
-        # Save to buffer and encode as base64
         buf = io.BytesIO()
-        plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
-        buf.seek(0)
-        img_base64_lambda = base64.b64encode(buf.read()).decode('utf-8')
+        plt.tight_layout()
+        plt.savefig(buf, format='svg', bbox_inches='tight')
         plt.close()
-        
+        svg_text = buf.getvalue().decode('utf-8')
+        buf.close()
+        img_base64_lambda = base64.b64encode(svg_text.encode('utf-8')).decode('utf-8')
+  
         notebook["cells"].append({
             "cell_type": "markdown",
             "metadata": {},
-            "source": ["### Lambda Heatmaps"]
-        })
-        
-        notebook["cells"].append({
-            "cell_type": "code",
-            "execution_count": 2,
-            "metadata": {},
-            "outputs": [
-                {
-                    "data": {
-                        "image/png": img_base64_lambda
-                    },
-                    "metadata": {},
-                    "output_type": "display_data"
-                }
-            ],
             "source": [
-                "import matplotlib.pyplot as plt\n",
-                "import numpy as np\n",
-                "\n",
-                "# Create 4x1 layout for PACE ranks\n",
-                "fig, axes = plt.subplots(4, 1, figsize=(16, 16))\n",
-                "\n",
-                "# Create lambda heatmaps for each rank\n",
-                "for i, rank in enumerate(unique_ranks[:4]):\n",
-                "    ax = axes[i]\n",
-                "    # Filter features by rank\n",
-                "    rank_mask = feature_ranks_array == rank\n",
-                "    rank_lambda = lambda_array[:, rank_mask]\n",
-                "    \n",
-                "    # Use log scale for lambda visualization\n",
-                "    rank_lambda_log = np.log10(rank_lambda + 1e-10)  # Add small value to avoid log(0)\n",
-                "    \n",
-                "    # Transpose: iterations on x-axis (horizontal), features on y-axis (vertical)\n",
-                "    im = ax.imshow(rank_lambda_log.T, aspect='auto', cmap='viridis', interpolation='nearest')\n",
-                "    ax.set_title(f'PACE Rank {rank} Lambda Evolution (log10 scale)', fontsize=14, fontweight='bold')\n",
-                "    ax.set_xlabel('Iteration', fontsize=12)\n",
-                "    ax.set_ylabel('Feature Index', fontsize=12)\n",
-                "    \n",
-                "    # Add statistics\n",
-                "    final_lambda = rank_lambda[-1, :]\n",
-                "    n_active_final = np.sum(final_lambda < 1e3)  # Count features with small lambda\n",
-                "    ax.text(0.98, 0.98, f'Active: {n_active_final}/{rank_lambda.shape[1]}',\n",
-                "            transform=ax.transAxes, fontsize=10, verticalalignment='top', horizontalalignment='right',\n",
-                "            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))\n",
-                "\n",
-                "# Add single horizontal colorbar at bottom\n",
-                "fig.subplots_adjust(bottom=0.08)\n",
-                "cbar_ax = fig.add_axes([0.15, 0.02, 0.7, 0.015])\n",
-                "cbar = fig.colorbar(im, cax=cbar_ax, orientation='horizontal')\n",
-                "cbar.set_label('Log10(Lambda) - higher values indicate less important features', fontsize=12)\n",
-                "\n",
-                "plt.tight_layout(rect=[0, 0.04, 1, 1])\n",
-                "plt.show()"
+                "## Lambda Heatmaps\n",
+                f'<img src="data:image/svg+xml;base64,{img_base64_lambda}" '
+                'alt="Lambda Heatmap" style="width:100%;height:auto;">'
             ]
         })
-        
+
         # Cell 7: Summary statistics with side-by-side gamma and lambda distributions
-        notebook["cells"].append({
-            "cell_type": "markdown",
-            "metadata": {},
-            "source": ["## Summary Statistics"]
-        })
         
         # Create summary plots - (n_iterations) x 2 grid
         # Select representative iterations to show
@@ -602,16 +493,25 @@ class SlateValidation(SlateCommon):
                         transform=ax_lambda.transAxes, fontsize=9, verticalalignment='top',
                         horizontalalignment='right',
                         bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-        
-        plt.tight_layout()
-        
-        # Save to buffer and encode as base64
+                
         buf = io.BytesIO()
-        plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
-        buf.seek(0)
-        img_base64_summary = base64.b64encode(buf.read()).decode('utf-8')
+        plt.tight_layout()
+        plt.savefig(buf, format='svg', bbox_inches='tight')
         plt.close()
-        
+        svg_text = buf.getvalue().decode('utf-8')
+        buf.close()
+        img_base64_summary = base64.b64encode(svg_text.encode('utf-8')).decode('utf-8')
+  
+        notebook["cells"].append({
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "## Summary Statistics\n",
+                f'<img src="data:image/svg+xml;base64,{img_base64_summary}" '
+                'alt="Gamma Heatmap" style="width:100%;height:auto;">'
+            ]
+        })
+
         # Create text output for statistics
         stats_text = f"Feature Selection Summary:\nTotal features: {n_features}\n"
         for iteration in [0, n_iterations//2, n_iterations-1]:
@@ -624,106 +524,3 @@ class SlateValidation(SlateCommon):
             stats_text += f"  Gamma mean: {gamma_at_iter[gamma_at_iter > 0].mean():.4f}\n"
             stats_text += f"  Lambda range: [{lambda_at_iter.min():.2e}, {lambda_at_iter.max():.2e}]\n"
         
-        notebook["cells"].append({
-            "cell_type": "code",
-            "execution_count": 3,
-            "metadata": {},
-            "outputs": [
-                {
-                    "name": "stdout",
-                    "output_type": "stream",
-                    "text": [stats_text]
-                },
-                {
-                    "data": {
-                        "image/png": img_base64_summary
-                    },
-                    "metadata": {},
-                    "output_type": "display_data"
-                }
-            ],
-            "source": [
-                "import matplotlib.pyplot as plt\n",
-                "import numpy as np\n",
-                "\n",
-                "# Compute summary statistics\n",
-                "print('Feature Selection Summary:')\n",
-                "print(f'Total features: {n_features}')\n",
-                "\n",
-                "for iteration in [0, n_iterations//2, n_iterations-1]:\n",
-                "    gamma_at_iter = gamma_array[iteration, :]\n",
-                "    lambda_at_iter = lambda_array[iteration, :]\n",
-                "    n_active = np.sum(gamma_at_iter > 0.01)\n",
-                "    print(f'\\nIteration {iteration}:')\n",
-                "    print(f'  Active features: {n_active}/{n_features} ({100*n_active/n_features:.1f}%)') \n",
-                "    print(f'  Gamma range: [{gamma_at_iter.min():.4f}, {gamma_at_iter.max():.4f}]')\n",
-                "    print(f'  Gamma mean: {gamma_at_iter[gamma_at_iter > 0].mean():.4f}')\n",
-                "    print(f'  Lambda range: [{lambda_at_iter.min():.2e}, {lambda_at_iter.max():.2e}]')\n",
-                "\n",
-                "# Create (n_iterations x 2) subplots for gamma and lambda distributions\n",
-                "# Select representative iterations to show\n",
-                "if n_iterations <= 10:\n",
-                "    iter_indices = list(range(n_iterations))\n",
-                "else:\n",
-                "    # Show first, last, and evenly spaced middle iterations\n",
-                "    iter_indices = [0] + list(np.linspace(1, n_iterations-2, min(8, n_iterations-2), dtype=int)) + [n_iterations-1]\n",
-                "\n",
-                "n_rows = len(iter_indices)\n",
-                "fig, axes = plt.subplots(n_rows, 2, figsize=(14, 4*n_rows))\n",
-                "\n",
-                "# If only one row, axes won't be 2D\n",
-                "if n_rows == 1:\n",
-                "    axes = axes.reshape(1, -1)\n",
-                "\n",
-                "for row_idx, iter_idx in enumerate(iter_indices):\n",
-                "    # Left column: Gamma distribution\n",
-                "    ax_gamma = axes[row_idx, 0]\n",
-                "    gamma_at_iter = gamma_array[iter_idx, :]\n",
-                "    gamma_nonzero = gamma_at_iter[gamma_at_iter > 0]\n",
-                "    \n",
-                "    if len(gamma_nonzero) > 0:\n",
-                "        ax_gamma.hist(gamma_nonzero, bins=50, edgecolor='black', alpha=0.7, color='steelblue')\n",
-                "        ax_gamma.set_xlabel('Gamma Value', fontsize=11)\n",
-                "        ax_gamma.set_ylabel('Number of Features', fontsize=11)\n",
-                "        ax_gamma.set_title(f'Iteration {iter_idx}: Gamma Distribution', fontsize=12, fontweight='bold')\n",
-                "        ax_gamma.grid(True, alpha=0.3, axis='y')\n",
-                "        \n",
-                "        # Add statistics text\n",
-                "        n_active = np.sum(gamma_at_iter > 0.01)\n",
-                "        stats_text = f'Active: {n_active}/{n_features} ({100*n_active/n_features:.1f}%)\\\\n'\n",
-                "        stats_text += f'Range: [{gamma_at_iter.min():.3f}, {gamma_at_iter.max():.3f}]\\\\n'\n",
-                "        stats_text += f'Mean: {gamma_nonzero.mean():.3f}'\n",
-                "        ax_gamma.text(0.98, 0.98, stats_text,\n",
-                "                    transform=ax_gamma.transAxes, fontsize=9, verticalalignment='top',\n",
-                "                    horizontalalignment='right',\n",
-                "                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))\n",
-                "    else:\n",
-                "        ax_gamma.text(0.5, 0.5, 'No active features', transform=ax_gamma.transAxes,\n",
-                "                    ha='center', va='center', fontsize=12)\n",
-                "        ax_gamma.set_title(f'Iteration {iter_idx}: Gamma Distribution', fontsize=12, fontweight='bold')\n",
-                "    \n",
-                "    # Right column: Lambda distribution (log scale)\n",
-                "    ax_lambda = axes[row_idx, 1]\n",
-                "    lambda_at_iter = lambda_array[iter_idx, :]\n",
-                "    lambda_log = np.log10(lambda_at_iter + 1e-10)\n",
-                "    \n",
-                "    ax_lambda.hist(lambda_log, bins=50, edgecolor='black', alpha=0.7, color='coral')\n",
-                "    ax_lambda.set_xlabel('Log10(Lambda)', fontsize=11)\n",
-                "    ax_lambda.set_ylabel('Number of Features', fontsize=11)\n",
-                "    ax_lambda.set_title(f'Iteration {iter_idx}: Lambda Distribution', fontsize=12, fontweight='bold')\n",
-                "    ax_lambda.grid(True, alpha=0.3, axis='y')\n",
-                "    \n",
-                "    # Add statistics text\n",
-                "    n_small_lambda = np.sum(lambda_at_iter < 1e3)\n",
-                "    stats_text = f'Active (λ<1e3): {n_small_lambda}/{n_features} ({100*n_small_lambda/n_features:.1f}%)\\\\n'\n",
-                "    stats_text += f'Log range: [{lambda_log.min():.1f}, {lambda_log.max():.1f}]\\\\n'\n",
-                "    stats_text += f'Log mean: {lambda_log.mean():.1f}'\n",
-                "    ax_lambda.text(0.98, 0.98, stats_text,\n",
-                "                transform=ax_lambda.transAxes, fontsize=9, verticalalignment='top',\n",
-                "                horizontalalignment='right',\n",
-                "                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))\n",
-                "\n",
-                "plt.tight_layout()\n",
-                "plt.show()"
-            ]
-        })

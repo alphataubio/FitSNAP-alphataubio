@@ -156,7 +156,8 @@ class SLATE(SlateValidation):
                     for element_basis_functions in pyace_section.ctilde_basis.basis:
                         for basis_function in element_basis_functions:
                             basis_ranks.append(int(basis_function.rank))
-                adios2_stream.write_attribute('basis_ranks', basis_ranks)
+                    adios2_stream.write_attribute('basis_ranks', basis_ranks)
+                    adios2_stream.write_attribute('blist', pyace_section.blist)
         
         pt.debug_single_print(f"ARD: m {m} n {n} var(bw)={var_bw:.9f} alpha={alpha_:.2f}")
         
@@ -164,9 +165,6 @@ class SLATE(SlateValidation):
             precision=4, suppress=False, floatmode='fixed', linewidth=np.inf,
             formatter={'float': '{:.3f}'.format}, threshold = 800, edgeitems=5
         )
-        
-
-
       
         # Iterative procedure of ARDRegression
         for iter_ in range(self.max_iter):
@@ -274,7 +272,7 @@ class SLATE(SlateValidation):
         # Save gamma and lambda history using adios2 if validation enabled
         if self.validation and pt._rank == 0:
             adios2_stream.close()
-            pt.single_print(f"Saved gamma and lambda history to {output_prefix}.bp using adios2")
+            pt.debug_single_print(f"Saved gamma and lambda history to {output_prefix}.bp using adios2")
         
         if self.config.debug and pt._rank == 0:
             active_features = np.sum(lambda_mask)
