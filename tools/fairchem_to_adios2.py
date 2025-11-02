@@ -147,7 +147,7 @@ def _process_chunk(args):
                 ])
             except:
                 pass
-        
+                        
         config = {
             'Group': group_name,
             'NumAtoms': num_atoms,
@@ -157,6 +157,13 @@ def _process_chunk(args):
             'Energy': energy,
             'test_bool': test_bool,
         }
+        
+        # OMOL25 dataset
+        if hasattr(atoms, 'info') and isinstance(atoms.info, dict) and 'data_id' in atoms.info:
+            config['Group'] = atoms.info.get('data_id', '')
+            config['Charge'] = atoms.info.get('charge', '')
+            config['Spin'] = atoms.info.get('spin', '')
+            config['Composition'] = atoms.info.get('composition', '')
         
         if forces is not None:
             config['Forces'] = forces
