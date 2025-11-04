@@ -1,6 +1,11 @@
 from fitsnap3lib.solvers.slate_common import SlateCommon
+
 import numpy as np
-import json
+import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
+from matplotlib.colors import LinearSegmentedColormap
+from collections import Counter, defaultdict
+import re, json, io, base64, adios2
 
 try:
     from slate_wrapper import slate_ridge_augmented_qr_cython, slate_ard_update_cython
@@ -286,119 +291,62 @@ class SlateValidation(SlateCommon):
             "source": ["## Gamma and Lambda Evolution Heatmaps"]
         })
         
+        
+        
         # Cell 5: Create and display gamma heatmaps
         # Load data from adios2 to create plots
-        import adios2
+
         import matplotlib
         matplotlib.use('Agg')  # Non-interactive backend
         import matplotlib.pyplot as plt
-        import io
-        import base64
         
         output_prefix = self.config.sections['OUTFILE'].metrics.replace('.md', '')
         adios2_path = f"{output_prefix}.bp"
-        with adios2.FileReader(adios2_path) as adios2_file:
-            basis_ranks = adios2_file.read_attribute("basis_ranks")
-            blist = adios2_file.read_attribute("blist")
-            unique_ranks = sorted(set(basis_ranks))
-        with adios2.Stream(adios2_path, 'r') as adios2_stream:
-            gamma_history = []
-            lambda_history = []
+        with adios2.FileReader(adios2_path) as f:
+            basis_ranks = f.read_attribute("basis_ranks")
+            blist = f.read_attribute("blist")
+        with adios2.Stream(adios2_path, "r") as adios2_stream:
+            gamma_history, lambda_history = [], []
             for _ in adios2_stream.steps():
                 gamma_history.append(adios2_stream.read("gamma"))
                 lambda_history.append(adios2_stream.read("lambda"))
-        
-        gamma_array = np.array(gamma_history)
-        lambda_array = np.array(lambda_history)
-        n_iterations, n_features = gamma_array.shape
-        boundaries = [i for i in range(1, len(basis_ranks)) if basis_ranks[i] != basis_ranks[i-1]]
+            gamma_array = np.array(gamma_history)
+            lambda_array = np.log10(np.array(lambda_history)+1e-10)
+
+        blist_rank = defaultdict(list)
+        rank_indices = defaultdict(list)
+        for i, (r, f) in enumerate(zip(basis_ranks, blist)):
+            blist_rank[r].append(re.split(r" ns \[|\] ls \[| \[0\]$", f))
+            rank_indices[r].append(i)
+
         
         # Create the gamma heatmap plot - 4x1 layout with custom colormap
-        # TRANSPOSED: iterations on horizontal axis, features on vertical axis
-        from matplotlib.colors import LinearSegmentedColormap
-        
-        # Create custom colormap: white for 0, turbo for >0
-        turbo = plt.cm.turbo
-        colors = [(1, 1, 1, 1)] + [turbo(i) for i in range(1, turbo.N)]
-        custom_cmap = LinearSegmentedColormap.from_list('custom_turbo', colors, N=256)
-        
-        fig, ax = plt.subplots(figsize=(10, 16.18), layout="constrained")
-        im = ax.imshow(gamma_array.T, aspect='auto', cmap=custom_cmap, vmin=0, vmax=1)
-        
-        ax.set_xlabel('Iteration', fontsize=14, fontweight='bold')
-        ax.set_xticks(np.arange(n_iterations), minor=False)
-        ax.set_xticks(np.arange(n_iterations+1) - 0.5, minor=True)
-        ax.set_yticks(np.arange(n_features), minor=False)
-        ax.set_yticks([-0.5] + [b - 0.5 for b in boundaries] + [n_features - 0.5], minor=True)
-        ax.set_xticklabels([str(i) for i in range(n_iterations)], fontsize=14, minor=False)
-        ax.set_yticklabels(blist, fontsize=14, minor=False)
-        ax.tick_params(axis='x', which='major', length=5, color='w')
-        ax.tick_params(axis='x', which='minor', length=30, width=1, labelbottom=False)
-        ax.tick_params(axis='y', which='major', length=5, color='w')
-        ax.tick_params(axis='y', which='minor', length=200, width=1, labelleft=False)
-        ax.grid(axis='x', which='minor', color='k', linestyle='-', linewidth=1)
-        ax.grid(axis='y', which='minor', color='k', linestyle='-', linewidth=1)
-        cbar = fig.colorbar(im, location='bottom', orientation='horizontal', pad=0.02)
-        cbar.set_label('Gamma (white: removed features)', fontsize=12, fontweight='bold')
-        
-        buf = io.BytesIO()
-        plt.savefig(buf, format='svg', bbox_inches='tight')
-        plt.close()
-        svg_text = buf.getvalue().decode('utf-8')
-        buf.close()
-        img_base64_gamma = base64.b64encode(svg_text.encode('utf-8')).decode('utf-8')
-  
-        notebook["cells"].append({
-            "cell_type": "markdown",
-            "metadata": {},
-            "source": [
-                "## Gamma Heatmaps\n",
-                f'<img src="data:image/svg+xml;base64,{img_base64_gamma}" '
-                'alt="Gamma Heatmap" style="width:100%;height:auto;">'
-            ]
-        })
+        notebook["cells"].append({"cell_type": "markdown", "metadata": {}, "source": ["## Gamma Heatmaps\n"]})
+
+        for n in range(int(basis_ranks.min()), int(basis_ranks.max())+1):
+            img_base64 = plot_rank_n(n, blist_rank, rank_indices, gamma_array.T, 'Gamma')
+            notebook["cells"].append({
+                "cell_type": "markdown", "metadata": {}, "source": [
+                    f'<div align="center"><img src="data:image/svg+xml;base64,{img_base64}"></div>'
+                ]
+            })
 
         # Cell 6: Create and display lambda heatmaps
         # Create the lambda heatmap plot
         
-        fig, ax = plt.subplots(figsize=(10, 16.18), layout="constrained")
-        im = ax.imshow(np.log10(lambda_array + 1e-10).T, aspect='auto', cmap=custom_cmap, vmin=0, vmax=1)
-        
-        ax.set_xlabel('Iteration', fontsize=14, fontweight='bold')
-        ax.set_xticks(np.arange(n_iterations), minor=False)
-        ax.set_xticks(np.arange(n_iterations+1) - 0.5, minor=True)
-        ax.set_yticks(np.arange(n_features), minor=False)
-        ax.set_yticks([-0.5] + [b - 0.5 for b in boundaries] + [n_features - 0.5], minor=True)
-        ax.set_xticklabels([str(i) for i in range(n_iterations)], fontsize=14, minor=False)
-        ax.set_yticklabels(blist, fontsize=14, minor=False)
-        ax.tick_params(axis='x', which='major', length=5, color='w')
-        ax.tick_params(axis='x', which='minor', length=30, width=1, labelbottom=False)
-        ax.tick_params(axis='y', which='major', length=5, color='w')
-        ax.tick_params(axis='y', which='minor', length=200, width=1, labelleft=False)
-        ax.grid(axis='x', which='minor', color='k', linestyle='-', linewidth=1)
-        ax.grid(axis='y', which='minor', color='k', linestyle='-', linewidth=1)
-        cbar = fig.colorbar(im, location='bottom', orientation='horizontal', pad=0.02)
-        cbar.set_label('Log10(Lambda) - higher values indicate less important features', fontsize=12, fontweight='bold')
-      
-        buf = io.BytesIO()
-        plt.savefig(buf, format='svg', bbox_inches='tight')
-        plt.close()
-        svg_text = buf.getvalue().decode('utf-8')
-        buf.close()
-        img_base64_lambda = base64.b64encode(svg_text.encode('utf-8')).decode('utf-8')
-  
-        notebook["cells"].append({
-            "cell_type": "markdown",
-            "metadata": {},
-            "source": [
-                "## Lambda Heatmaps\n",
-                f'<img src="data:image/svg+xml;base64,{img_base64_lambda}" '
-                'alt="Lambda Heatmap" style="width:100%;height:auto;">'
-            ]
-        })
+        notebook["cells"].append({"cell_type": "markdown", "metadata": {}, "source": ["## Lambda Heatmaps\n"]})
+
+        for n in range(int(basis_ranks.min()), int(basis_ranks.max())+1):
+            img_base64 = plot_rank_n(n, blist_rank, rank_indices, lambda_array.T, 'Log10(Lambda)')
+            notebook["cells"].append({
+                "cell_type": "markdown", "metadata": {}, "source": [
+                    f'<div align="center"><img src="data:image/svg+xml;base64,{img_base64}"></div>'
+                ]
+            })
 
         # Cell 7: Summary statistics with side-by-side gamma and lambda distributions
         
+        n_iterations, n_features = gamma_array.shape
         # Create summary plots - (n_iterations) x 2 grid
         # Select representative iterations to show
         if n_iterations <= 10:
@@ -480,15 +428,85 @@ class SlateValidation(SlateCommon):
             ]
         })
 
-        # Create text output for statistics
-        stats_text = f"Feature Selection Summary:\nTotal features: {n_features}\n"
-        for iteration in [0, n_iterations//2, n_iterations-1]:
-            gamma_at_iter = gamma_array[iteration, :]
-            lambda_at_iter = lambda_array[iteration, :]
-            n_active = np.sum(gamma_at_iter > 0.01)
-            stats_text += f"\nIteration {iteration}:\n"
-            stats_text += f"  Active features: {n_active}/{n_features} ({100*n_active/n_features:.1f}%)\n"
-            stats_text += f"  Gamma range: [{gamma_at_iter.min():.4f}, {gamma_at_iter.max():.4f}]\n"
-            stats_text += f"  Gamma mean: {gamma_at_iter[gamma_at_iter > 0].mean():.4f}\n"
-            stats_text += f"  Lambda range: [{lambda_at_iter.min():.2e}, {lambda_at_iter.max():.2e}]\n"
-        
+
+
+def draw_labels(ax, y_positions, texts, x=-1):
+    y_positions = np.array(y_positions)
+    for y, txt in zip(y_positions, texts):
+        ax.text(x, y, txt, ha="center", va="center", fontsize=10)
+
+def plot_rank_n(n, blist_rank, rank_indices, history_array, title):
+    if (heatmap_rows := len(rank_indices[n])) == 0:
+        return
+    if n == 0:
+        xlim, xticks_extra = -1.5, [-.5]
+    elif n == 1:
+        xlim, xticks_extra = -5, [-2, -.5]
+    else:
+        xlim, xticks_extra = -3*n-.5, [-2*n+.5, -n]
+
+    n_features, n_iterations = history_array.shape
+    turbo = plt.cm.turbo
+    colors = [turbo(i) for i in range(1, turbo.N)]
+    custom_cmap = LinearSegmentedColormap.from_list("custom_turbo", colors, N=256)
+    fig, ax = plt.subplots(figsize=(n_iterations, max(3, 0.25*heatmap_rows)), layout="constrained")
+    vmin, vmax = np.min(history_array), np.max(history_array)
+    im = ax.imshow(history_array[rank_indices[n]], aspect="auto", cmap=custom_cmap, vmin=vmin, vmax=vmax)
+
+    # --- atom labels ---
+    atoms = Counter([basis[0] for basis in blist_rank[n]])
+    y, y_positions, texts = 0, [], []
+    for k, v in atoms.items():
+        for j in range(v):
+            y_positions.append(y + j)
+            texts.append(blist_rank[n][y + j][-1].replace(']', ''))
+            ax.add_patch(Rectangle((xlim, y - 0.5), xticks_extra[0]-xlim, v, fc='w', ec="k", zorder=9))
+        ax.text((xlim+xticks_extra[0])/2, y + v / 2 - 0.5, k, 
+                ha="center", va="center", fontsize=10, fontweight="bold", zorder=10)
+        y += v
+
+    # --- ns labels ---
+    if n >= 1:
+        ns = Counter([f"{basis[0]}_{basis[1]}" for basis in blist_rank[n]])
+        ax.text(-1.5*n+.25, heatmap_rows-.25, 'ns', ha="center", va="top", fontsize=12, fontweight="bold")
+        y = 0
+        for k, v in ns.items():
+            for j in range(v):
+                ax.add_patch(Rectangle((xticks_extra[0], y - 0.5), xticks_extra[1]-xticks_extra[0], v, fc='w', ec="k", zorder=9))
+                ax.text(-1.5*n+.25, y + v / 2 - 0.5, k.split('_')[-1], ha="center", va="center", fontsize=10, zorder=10)
+            y += v
+ 
+    # --- ls labels ---
+    if n >= 2:
+        draw_labels(ax, y_positions, texts, x=-0.5*n-.25)
+        ax.text(-0.5*n-.25, heatmap_rows-.25, 'ls', ha="center", va="top", fontsize=12, fontweight="bold")
+ 
+    ax.set_xlim(xlim, ax.get_xlim()[1])
+    ax.set_aspect('equal', adjustable='box')
+    ax.set_xticks(np.arange(n_iterations), minor=False)
+    ax.set_xticks(np.concatenate((xticks_extra,np.arange(n_iterations+1)-.5)), minor=True)
+    ax.set_yticks([], minor=False)
+    ax.set_yticks(np.arange(heatmap_rows+1)-0.5, minor=True)
+    ax.tick_params(axis="x", which="major", length=1, color="w")
+    ax.tick_params(axis="x", which="minor", length=20, width=1, labelbottom=False)
+    ax.tick_params(axis="y", which='both', length=0, left=False, labelleft=False, right=False, labelright=False)
+    ax.grid(axis="x", which="minor", color="k", linestyle="-", linewidth=1, antialiased=True)
+    ax.grid(axis="y", which="both", color="k", linestyle="-", linewidth=1, antialiased=True, zorder=9)
+    plt.setp(ax.get_xticklabels(), fontsize=12, fontweight='bold')
+    fig.suptitle(f"{title} History (rank {n})", fontsize="x-large", fontweight="bold")
+
+    cbar = fig.colorbar(im, orientation='horizontal', pad=1/heatmap_rows, shrink=.618)
+    cbar_ticks = [vmin + (vmax - vmin) * f for f in [0, 0.25, 0.5, 0.75, 1.0]]
+    cbar.set_ticks(cbar_ticks)
+    cbar.ax.set_xticklabels([f'{t:.3f}' for t in cbar_ticks])
+    cbar.set_label(f"{title} (white: removed features)", fontsize=8, fontweight='bold')
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='svg', bbox_inches='tight')
+    plt.close()
+    svg_text = buf.getvalue().decode('utf-8')
+    buf.close()
+    return base64.b64encode(svg_text.encode('utf-8')).decode('utf-8')
+  
+
+
