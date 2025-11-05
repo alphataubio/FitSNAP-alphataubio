@@ -212,7 +212,7 @@ class SlateValidation(SlateCommon):
                                     if pd.isna(val) or (isinstance(val, float) and np.isnan(val)):
                                         return "-"
                                     else:
-                                        return int(value)
+                                        return int(val)
 
                                 def format_value(val):
                                     # Handle NaN values
