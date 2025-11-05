@@ -238,7 +238,6 @@ class SlateValidation(SlateCommon):
                                         group_display = f'&nbsp;&nbsp;{group_name}'
                                         row_style = ''
                                     
-                                    print(f"*** row {row}")
                                     fmt = "padding: 3px 5px; font-family: monospace; white-space: nowrap; "
                                     fmt_n = fmt + "text-align: center; border-left: 5px solid white;"
                                     fmt_left = fmt + "text-align: left; overflow: hidden; text-overflow: ellipsis;"
