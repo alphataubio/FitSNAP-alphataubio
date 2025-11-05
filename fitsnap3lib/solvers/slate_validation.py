@@ -205,7 +205,15 @@ class SlateValidation(SlateCommon):
                                 html += '      <td colspan="4" style="text-align: center; padding: 4px 12px; font-style: italic; border-bottom: 1px solid #999;">Validation</td>\n'
                                 html += '    </tr>\n'
                                 
-                                # Helper function to format numbers
+                                # Helper functions to format numbers
+                                
+                                def format_int_value(val):
+                                    # Handle NaN values
+                                    if pd.isna(val) or (isinstance(val, float) and np.isnan(val)):
+                                        return "-"
+                                    else
+                                        return int(value)
+
                                 def format_value(val):
                                     # Handle NaN values
                                     if pd.isna(val) or (isinstance(val, float) and np.isnan(val)):
@@ -230,17 +238,18 @@ class SlateValidation(SlateCommon):
                                         group_display = f'&nbsp;&nbsp;{group_name}'
                                         row_style = ''
                                     
+                                    print(f"*** row {row}")
                                     fmt = "padding: 3px 5px; font-family: monospace; white-space: nowrap; "
                                     fmt_n = fmt + "text-align: center; border-left: 5px solid white;"
                                     fmt_left = fmt + "text-align: left; overflow: hidden; text-overflow: ellipsis;"
                                     fmt_right = fmt + "text-align: right;"
                                     html += f'    <tr style="{row_style}">\n'
                                     html += f'      <td style="{fmt_left}">{group_display}</td>\n'
-                                    html += f'      <td style="{fmt_n}">{int(row["ncount"])}</td>\n'
+                                    html += f'      <td style="{fmt_n}">{format_int_value(row["ncount"])}</td>\n'
                                     html += f'      <td style="{fmt_right}">{format_value(row["mae"])}</td>\n'
                                     html += f'      <td style="{fmt_right}">{format_value(row["rmse"])}</td>\n'
                                     html += f'      <td style="{fmt_right}">{format_value(row["rsq"])}</td>\n'
-                                    html += f'      <td style="{fmt_n}">{int(row["ncount_test"])}</td>\n'
+                                    html += f'      <td style="{fmt_n}">{format_int_value(row["ncount_test"])}</td>\n'
                                     html += f'      <td style="{fmt_right}">{format_value(row["mae_test"])}</td>\n'
                                     html += f'      <td style="{fmt_right}">{format_value(row["rmse_test"])}</td>\n'
                                     html += f'      <td style="{fmt_right}">{format_value(row["rsq_test"])}</td>\n'
@@ -394,9 +403,8 @@ class SlateValidation(SlateCommon):
             # Right column: Lambda distribution (log scale)
             ax_lambda = axes[row_idx, 1]
             lambda_at_iter = lambda_array[iter_idx, :]
-            lambda_log = lambda_array
             
-            ax_lambda.hist(lambda_log, bins=50, edgecolor='black', alpha=0.7, color='coral')
+            ax_lambda.hist(lambda_at_iter, bins=50, edgecolor='black', alpha=0.7, color='coral')
             ax_lambda.set_xlabel('Log10(Lambda)', fontsize=11)
             ax_lambda.set_ylabel('Number of Features', fontsize=11)
             ax_lambda.set_title(f'Iteration {iter_idx}: Lambda Distribution', fontsize=12, fontweight='bold')
@@ -405,8 +413,8 @@ class SlateValidation(SlateCommon):
             # Add statistics text
             n_small_lambda = np.sum(lambda_at_iter < 1e3)
             stats_text = f'Active (λ<1e3): {n_small_lambda}/{n_features} ({100*n_small_lambda/n_features:.1f}%)\\n'
-            stats_text += f'Log range: [{lambda_log.min():.1f}, {lambda_log.max():.1f}]\\n'
-            stats_text += f'Log mean: {lambda_log.mean():.1f}'
+            stats_text += f'Log range: [{lambda_at_iter.min():.1f}, {lambda_at_iter.max():.1f}]\\n'
+            stats_text += f'Log mean: {lambda_at_iter.mean():.1f}'
             ax_lambda.text(0.98, 0.98, stats_text,
                         transform=ax_lambda.transAxes, fontsize=9, verticalalignment='top',
                         horizontalalignment='right',
