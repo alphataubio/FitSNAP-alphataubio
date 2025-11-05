@@ -323,8 +323,9 @@ class SlateValidation(SlateCommon):
         # Create the gamma heatmap plot - 4x1 layout with custom colormap
         notebook["cells"].append({"cell_type": "markdown", "metadata": {}, "source": ["## Gamma Heatmaps\n"]})
 
+        threshold = self.threshold_gamma if self.pruning_method.lower() == 'gamma' else None
         for n in range(int(basis_ranks.min()), int(basis_ranks.max())+1):
-            img_base64 = plot_rank_n(n, blist_rank, rank_indices, gamma_array.T, 'Gamma')
+            img_base64 = plot_rank_n(n, blist_rank, rank_indices, 'Gamma', gamma_array.T, threshold, 'min')
             notebook["cells"].append({
                 "cell_type": "markdown", "metadata": {}, "source": [
                     f'<div align="center"><img src="data:image/svg+xml;base64,{img_base64}"></div>'
@@ -335,9 +336,10 @@ class SlateValidation(SlateCommon):
         # Create the lambda heatmap plot
         
         notebook["cells"].append({"cell_type": "markdown", "metadata": {}, "source": ["## Lambda Heatmaps\n"]})
-
+        
+        threshold = self.threshold_lambda if self.pruning_method.lower() == 'lambda' else None
         for n in range(int(basis_ranks.min()), int(basis_ranks.max())+1):
-            img_base64 = plot_rank_n(n, blist_rank, rank_indices, lambda_array.T, 'Log10(Lambda)')
+            img_base64 = plot_rank_n(n, blist_rank, rank_indices, 'Log10(Lambda)', lambda_array.T, threshold, 'max')
             notebook["cells"].append({
                 "cell_type": "markdown", "metadata": {}, "source": [
                     f'<div align="center"><img src="data:image/svg+xml;base64,{img_base64}"></div>'
@@ -392,7 +394,7 @@ class SlateValidation(SlateCommon):
             # Right column: Lambda distribution (log scale)
             ax_lambda = axes[row_idx, 1]
             lambda_at_iter = lambda_array[iter_idx, :]
-            lambda_log = np.log10(lambda_at_iter + 1e-10)
+            lambda_log = lambda_array
             
             ax_lambda.hist(lambda_log, bins=50, edgecolor='black', alpha=0.7, color='coral')
             ax_lambda.set_xlabel('Log10(Lambda)', fontsize=11)
@@ -435,7 +437,7 @@ def draw_labels(ax, y_positions, texts, x=-1):
     for y, txt in zip(y_positions, texts):
         ax.text(x, y, txt, ha="center", va="center", fontsize=10)
 
-def plot_rank_n(n, blist_rank, rank_indices, history_array, title):
+def plot_rank_n(n, blist_rank, rank_indices, title, history_array, threshold=None, threshold_position='min'):
     if (heatmap_rows := len(rank_indices[n])) == 0:
         return
     if n == 0:
@@ -447,11 +449,20 @@ def plot_rank_n(n, blist_rank, rank_indices, history_array, title):
 
     n_features, n_iterations = history_array.shape
     turbo = plt.cm.turbo
-    colors = [turbo(i) for i in range(1, turbo.N)]
-    custom_cmap = LinearSegmentedColormap.from_list("custom_turbo", colors, N=256)
+    if threshold is None:
+        vmin, vmax = np.min(history_array), np.max(history_array)
+        cbar_extend = 'neither'
+    elif threshold_position == 'min':
+        vmin, vmax = max(threshold, np.min(history_array)), np.max(history_array)
+        cbar_extend = 'min'
+        turbo.set_under('white')
+    else:
+        vmin, vmax = np.min(history_array), min(threshold, np.max(history_array))
+        cbar_extend = 'max'
+        turbo.set_over('white')
+        
     fig, ax = plt.subplots(figsize=(n_iterations, max(3, 0.25*heatmap_rows)), layout="constrained")
-    vmin, vmax = np.min(history_array), np.max(history_array)
-    im = ax.imshow(history_array[rank_indices[n]], aspect="auto", cmap=custom_cmap, vmin=vmin, vmax=vmax)
+    im = ax.imshow(history_array[rank_indices[n]], aspect="auto", cmap=turbo, vmin=vmin, vmax=vmax)
 
     # --- atom labels ---
     atoms = Counter([basis[0] for basis in blist_rank[n]])
@@ -460,7 +471,7 @@ def plot_rank_n(n, blist_rank, rank_indices, history_array, title):
         for j in range(v):
             y_positions.append(y + j)
             texts.append(blist_rank[n][y + j][-1].replace(']', ''))
-            ax.add_patch(Rectangle((xlim, y - 0.5), xticks_extra[0]-xlim, v, fc='w', ec="k", zorder=9))
+        ax.add_patch(Rectangle((xlim, y - 0.5), xticks_extra[0]-xlim, v, fc='w', ec="k", zorder=9))
         ax.text((xlim+xticks_extra[0])/2, y + v / 2 - 0.5, k, 
                 ha="center", va="center", fontsize=10, fontweight="bold", zorder=10)
         y += v
@@ -471,9 +482,8 @@ def plot_rank_n(n, blist_rank, rank_indices, history_array, title):
         ax.text(-1.5*n+.25, heatmap_rows-.25, 'ns', ha="center", va="top", fontsize=12, fontweight="bold")
         y = 0
         for k, v in ns.items():
-            for j in range(v):
-                ax.add_patch(Rectangle((xticks_extra[0], y - 0.5), xticks_extra[1]-xticks_extra[0], v, fc='w', ec="k", zorder=9))
-                ax.text(-1.5*n+.25, y + v / 2 - 0.5, k.split('_')[-1], ha="center", va="center", fontsize=10, zorder=10)
+            ax.add_patch(Rectangle((xticks_extra[0], y - 0.5), xticks_extra[1]-xticks_extra[0], v, fc='w', ec="k", zorder=9))
+            ax.text(-1.5*n+.25, y + v / 2 - 0.5, k.split('_')[-1], ha="center", va="center", fontsize=10, zorder=10)
             y += v
  
     # --- ls labels ---
@@ -495,11 +505,19 @@ def plot_rank_n(n, blist_rank, rank_indices, history_array, title):
     plt.setp(ax.get_xticklabels(), fontsize=12, fontweight='bold')
     fig.suptitle(f"{title} History (rank {n})", fontsize="x-large", fontweight="bold")
 
-    cbar = fig.colorbar(im, orientation='horizontal', pad=1/heatmap_rows, shrink=.618)
+    pad_extra = 1 if threshold is None else 1.618
+    cbar = fig.colorbar(im, orientation='horizontal', pad=pad_extra*min(.1,1/heatmap_rows), shrink=.8, extend=cbar_extend)
     cbar_ticks = [vmin + (vmax - vmin) * f for f in [0, 0.25, 0.5, 0.75, 1.0]]
     cbar.set_ticks(cbar_ticks)
-    cbar.ax.set_xticklabels([f'{t:.3f}' for t in cbar_ticks])
-    cbar.set_label(f"{title} (white: removed features)", fontsize=8, fontweight='bold')
+    cbar.ax.set_xticklabels([f'{t:.2g}' for t in cbar_ticks])
+    title_extra = "" if threshold is None else " (white: removed features)"
+    cbar.set_label(title + title_extra, fontsize=8, fontweight='bold')
+    
+    if threshold is not None:
+        cax_top = cbar.ax.twiny()
+        cax_top.set_xlim(cbar.ax.get_xlim())
+        cax_top.set_xticks([threshold])
+        cax_top.xaxis.set_ticks_position('top')
 
     buf = io.BytesIO()
     plt.savefig(buf, format='svg', bbox_inches='tight')
