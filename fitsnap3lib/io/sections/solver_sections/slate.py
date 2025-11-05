@@ -34,7 +34,7 @@ class Slate(Section):
         self.lambdasmall = self.get_value("SLATE", "lambdasmall", "1.0E-6", "float")
         
         # Pruning method: 'gamma' (default) or  'lambda'
-        self.pruning_method = self.get_value("SLATE", "pruning_method", "gamma", "str")
+        self.pruning_method = self.get_value("SLATE", "pruning_method", "lambda", "str")
         
         # Lambda threshold for removing (pruning) weights with high precision from the computation.
         # If not specified, will be auto-computed as 10^(int(abs(log10(ap))) + logcut)
