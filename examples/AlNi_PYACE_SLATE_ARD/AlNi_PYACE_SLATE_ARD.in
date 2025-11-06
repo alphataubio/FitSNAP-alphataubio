@@ -25,13 +25,17 @@ bonds = {
              "rcut": 6.832, "dcut": 0.01, "core-repulsion": [0, 0.342], "r_in": 0.625, "delta_in": 0.01},
     "AlNi": {"radbase": "ChebExpCos", "radparameters": [0.318],
              "rcut": 6.356, "dcut": 0.01, "core-repulsion": [0, 0.318], "r_in": 0.650, "delta_in": 0.01},
+    "NiAl": {"radbase": "ChebExpCos", "radparameters": [0.318],
+             "rcut": 6.356, "dcut": 0.01, "core-repulsion": [0, 0.318], "r_in": 0.650, "delta_in": 0.01},
     "NiNi": {"radbase": "ChebExpCos", "radparameters": [0.281],
              "rcut": 5.610, "dcut": 0.01, "core-repulsion": [0, 0.281], "r_in": 0.540, "delta_in": 0.01}
   }
 
 functions = {
-    "ALL": {"lmin_by_orders": [0,0,0,0], "lmax_by_orders": [3,3,2,1], "nradmax_by_orders": [20,5,3,1]}
-    #"ALL": {"lmin_by_orders": [0,0], "lmax_by_orders": [1,1], "nradmax_by_orders": [2,1]}
+    #"ALL": {"lmin_by_orders": [0,0], "lmax_by_orders": [0,1], "nradmax_by_orders": [2,1]}
+    #"ALL": {"lmin_by_orders": [0,0,0], "lmax_by_orders": [0,3,3], "nradmax_by_orders": [5,2,1]}
+    #"ALL": {"lmin_by_orders": [0,0,0,0], "lmax_by_orders": [0,3,2,1], "nradmax_by_orders": [8,5,3,1]}
+    "ALL": {"lmin_by_orders": [0,0,0,0,0], "lmax_by_orders": [0,3,3,2,1], "nradmax_by_orders": [24,8,4,2,1]}
   }
 
 [CALCULATOR]
@@ -61,8 +65,8 @@ method = ARD
 pruning_method = lambda
 scap = 1e-3
 scai = 1e-3
-max_iter = 10
-threshold_lambda = 100.0
+max_iter = 100
+threshold_lambda = 1e6
 
 [SCRAPER]
 scraper = ADIOS2
