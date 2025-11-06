@@ -140,7 +140,7 @@ class LammpsPyace(LammpsPace):
         irow += nrows_force
 
         if self.config.sections["CALCULATOR"].stress:
-            vb_sum_temp = 1.6021765e6*lmp_pace[irow:irow + nrows_virial, :ncols_descriptors] / lmp_volume
+            vb_sum_temp = 160.2176565*lmp_pace[irow:irow + nrows_virial, :ncols_descriptors] / lmp_volume
             vb_sum_temp.shape = (ndim_virial, self._ncoeff)
             if not self._bzeroflag:
                 onehot_atoms = np.zeros((np.shape(vb_sum_temp)[0], self._numtypes))
@@ -148,8 +148,11 @@ class LammpsPyace(LammpsPace):
 
             self.pt.shared_arrays['a'].array[index:index+ndim_virial] = vb_sum_temp
             ref_stress = lmp_pace[irow:irow + nrows_virial, icolref]
+            
+            # Convert b vector from eV/Å³ to GPa
             self.pt.shared_arrays['b'].array[index:index+ndim_virial] = \
-                self._data["Stress"][[0, 1, 2, 1, 0, 0], [0, 1, 2, 2, 2, 1]].ravel() - ref_stress
+                160.2176565 * (self._data["Stress"][[0, 1, 2, 1, 0, 0], [0, 1, 2, 2, 2, 1]].ravel() - ref_stress)
+                
             self.pt.shared_arrays['w'].array[index:index+ndim_virial] = self._data["vweight"]
             self.pt.fitsnap_dict['Row_Type'][dindex:dindex + ndim_virial] = ['Stress'] * ndim_virial
             self.pt.fitsnap_dict['Atom_I'][dindex:dindex + ndim_virial] = [int(0)] * ndim_virial
