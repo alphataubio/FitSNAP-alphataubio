@@ -45,7 +45,7 @@ jobs:
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --ignore=F821,F824
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
-    - name: Install LAMMPS
+    - name: Install LAMMPS (stubs)
       shell: bash
       run: |
         which python
@@ -84,6 +84,93 @@ jobs:
         export PYTHONPATH=$(pwd):$PYTHONPATH
         cd tests
         pytest test_examples.py::test_stubs
+
+  test-mpi:
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+        test: [mpi, quad, pace]
+        python-version: ["3.10"]
+      max-parallel: 20
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Load Mac Env
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew update
+        brew install openmpi hdf5 cmake
+        # Build ADIOS2 with MPI manually for consistent behavior
+        git clone --depth=1 https://github.com/ornladios/ADIOS2.git
+        cd ADIOS2
+        cmake -DADIOS2_USE_MPI=ON -DADIOS2_USE_HDF5=ON -DCMAKE_BUILD_TYPE=Release -B build
+        cmake --build build -j$(sysctl -n hw.logicalcpu)
+        sudo cmake --install build
+
+    - name: Load Ubuntu Env
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake g++ git libopenmpi-dev openmpi-bin libhdf5-dev
+        # Cache ADIOS2 build for speed
+        if [ ! -d "/usr/local/lib/cmake/adios2" ]; then
+          git clone --depth=1 https://github.com/ornladios/ADIOS2.git
+          cd ADIOS2
+          cmake -DADIOS2_USE_MPI=ON -DADIOS2_USE_HDF5=ON -DCMAKE_BUILD_TYPE=Release -B build
+          cmake --build build -j$(nproc)
+          sudo cmake --install build
+        fi
+
+    - name: Install Python dependencies (with MPI/ADIOS2)
+      run: |
+        python -m pip install --upgrade pip setuptools wheel
+        python -m pip install numpy pandas scipy psutil tqdm matplotlib tabulate torch sympy pyyaml mpi4py adios2 flake8 pytest
+
+    - name: Lint with flake8
+      run: |
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --ignore=F821,F824
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+    - name: Install LAMMPS (MPI)
+      shell: bash
+      run: |
+        which python
+        # conda activate base
+        cd ../
+
+        # variables for git clone RPC error
+        
+        export GIT_TRACE_PACKET=1
+        export GIT_TRACE=1
+        export GIT_CURL_VERBOSE=1
+
+        # increase postbuffer size
+
+        git config --global http.version HTTP/1.1
+        git config --global http.postBuffer 157286400
+
+        # Procedure for installing our custom branch with compute pace:
+
+        git clone https://github.com/lammps/lammps.git --branch patch_12Jun2025 --single-branch
+        cd lammps/cmake
+        mkdir build && cd build
+        cmake -DLAMMPS_EXCEPTIONS=yes \
+              -DBUILD_SHARED_LIBS=yes \
+              -DMLIAP_ENABLE_PYTHON=yes \
+              -DPKG_PYTHON=yes \
+              -DPKG_ML-SNAP=yes \
+              -DPKG_ML-PACE=yes \
+              -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15 \
+              -DPYTHON_EXECUTABLE:FILEPATH=$(which python) ../
+        make -j$(nproc)
+        make install-python
 
     - name: Test basic executable examples (MPI)
       run: |
