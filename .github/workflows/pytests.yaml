@@ -27,7 +27,7 @@ jobs:
       if: matrix.os == 'macos-latest'
       run: |
         brew update
-        brew install hdf5 cmake openblas lapack
+        brew install hdf5 cmake openblas lapack gcc
         # Build ADIOS2 WITHOUT MPI for stubs test
         git clone --depth=1 https://github.com/ornladios/ADIOS2.git
         cd ADIOS2
@@ -39,7 +39,7 @@ jobs:
       if: matrix.os == 'ubuntu-latest'
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake g++ git libhdf5-dev libopenblas-dev liblapack-dev
+        sudo apt-get install -y cmake g++ gfortran git libhdf5-dev libopenblas-dev liblapack-dev
         # Build ADIOS2 WITHOUT MPI for stubs test
         git clone --depth=1 https://github.com/ornladios/ADIOS2.git
         cd ADIOS2
@@ -145,7 +145,7 @@ jobs:
       if: matrix.os == 'macos-latest'
       run: |
         brew update
-        brew install openmpi hdf5 cmake openblas lapack
+        brew install openmpi hdf5 cmake openblas lapack gcc
         # Build ADIOS2 with MPI manually for consistent behavior
         git clone --depth=1 https://github.com/ornladios/ADIOS2.git
         cd ADIOS2
@@ -157,7 +157,7 @@ jobs:
       if: matrix.os == 'ubuntu-latest'
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake g++ git libopenmpi-dev openmpi-bin libhdf5-dev libopenblas-dev liblapack-dev
+        sudo apt-get install -y cmake g++ gfortran git libopenmpi-dev openmpi-bin libhdf5-dev libopenblas-dev liblapack-dev
         # Cache ADIOS2 build for speed
         if [ ! -d "/usr/local/lib/cmake/adios2" ]; then
           git clone --depth=1 https://github.com/ornladios/ADIOS2.git
