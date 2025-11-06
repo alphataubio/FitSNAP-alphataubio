@@ -28,3 +28,31 @@ class Reference(Section):
         if "pair_coeff" in self.lmp_pairdecl:
             self.lmp_pairdecl.append("pair_coeff * * ")
         self.delete()
+        
+    @property
+    def energy_units(self):
+        if self.units == "metal":
+            return "eV"
+        elif self.units == "real":
+            return "kcal/mol"
+        else:
+            return "?"
+
+    @property
+    def force_units(self):
+        if self.units == "metal":
+            return "eV/A"
+        elif self.units == "real":
+            return "kcal/mol/A"
+        else:
+            return "?"
+
+    @property
+    def stress_units(self):
+        if self.units == "metal":
+            return "GPa"
+        elif self.units == "real":
+            return "GPa"
+        else:
+            return "?"
+

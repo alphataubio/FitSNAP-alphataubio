@@ -2,8 +2,9 @@ from fitsnap3lib.solvers.slate_common import SlateCommon
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
 from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.patches import Rectangle
+from matplotlib.ticker import MaxNLocator
 from collections import Counter, defaultdict
 import re, json, io, base64, adios2
 
@@ -136,7 +137,16 @@ class SlateValidation(SlateCommon):
             for row_type in row_types:
                 if row_type in ['Energy', 'Force', 'Stress']:
                     # Create a markdown cell for this subsystem
-                    subsystem_lines = [f"### {row_type}\n\n"]
+                    reference_section = self.config.sections["REFERENCE"]
+                    if row_type == 'Energy':
+                        row_units = f" ({reference_section.energy_units})"
+                    elif row_type == 'Force':
+                        row_units = f" ({reference_section.force_units})"
+                    elif row_type == 'Stress':
+                        row_units = f" ({reference_section.stress_units})"
+                    else:
+                        row_units = ""
+                    subsystem_lines = [f"### {row_type}{row_units}\n\n"]
                     
                     # Get data for this row type
                     try:
@@ -299,8 +309,6 @@ class SlateValidation(SlateCommon):
             "source": ["## Gamma and Lambda Evolution Heatmaps"]
         })
         
-        
-        
         # Cell 5: Create and display gamma heatmaps
         # Load data from adios2 to create plots
 
@@ -367,6 +375,7 @@ class SlateValidation(SlateCommon):
         
         n_rows = len(iter_indices)
         fig, axes = plt.subplots(n_rows, 2, figsize=(14, 4*n_rows))
+        turbo = plt.get_cmap('turbo')
         
         # If only one row, axes won't be 2D
         if n_rows == 1:
@@ -379,11 +388,16 @@ class SlateValidation(SlateCommon):
             gamma_nonzero = gamma_at_iter[gamma_at_iter > 0]
             
             if len(gamma_nonzero) > 0:
-                ax_gamma.hist(gamma_nonzero, bins=50, edgecolor='black', alpha=0.7, color='steelblue')
+                counts, edges, patches = ax_gamma.hist(gamma_nonzero, bins=20, edgecolor='black', alpha=.99)
                 ax_gamma.set_xlabel('Gamma Value', fontsize=11)
                 ax_gamma.set_ylabel('Number of Features', fontsize=11)
                 ax_gamma.set_title(f'Iteration {iter_idx}: Gamma Distribution', fontsize=12, fontweight='bold')
                 ax_gamma.grid(True, alpha=0.3, axis='y')
+
+                bin_centers = 0.5 * (edges[:-1] + edges[1:])
+                norm_centers = (bin_centers - bin_centers.min()) / (bin_centers.max() - bin_centers.min())
+                for c, p in zip(norm_centers, patches):
+                    p.set_facecolor(turbo(c))
                 
                 # Add statistics text
                 n_active = np.sum(gamma_at_iter > 0.01)
@@ -403,12 +417,17 @@ class SlateValidation(SlateCommon):
             ax_lambda = axes[row_idx, 1]
             lambda_at_iter = lambda_array[iter_idx, :]
             
-            ax_lambda.hist(lambda_at_iter, bins=50, edgecolor='black', alpha=0.7, color='coral')
+            counts, edges, patches = ax_lambda.hist(lambda_at_iter, bins=20, edgecolor='black', alpha=.99)
             ax_lambda.set_xlabel('Log10(Lambda)', fontsize=11)
             ax_lambda.set_ylabel('Number of Features', fontsize=11)
             ax_lambda.set_title(f'Iteration {iter_idx}: Lambda Distribution', fontsize=12, fontweight='bold')
             ax_lambda.grid(True, alpha=0.3, axis='y')
-            
+
+            bin_centers = 0.5 * (edges[:-1] + edges[1:])
+            norm_centers = (bin_centers - bin_centers.min()) / (bin_centers.max() - bin_centers.min())
+            for c, p in zip(norm_centers, patches):
+                p.set_facecolor(turbo(c))
+
             # Add statistics text
             n_small_lambda = np.sum(lambda_at_iter < 1e3)
             stats_text = f'Active (λ<1e3): {n_small_lambda}/{n_features} ({100*n_small_lambda/n_features:.1f}%)\\n'
@@ -442,19 +461,22 @@ class SlateValidation(SlateCommon):
 def draw_labels(ax, y_positions, texts, x=-1):
     y_positions = np.array(y_positions)
     for y, txt in zip(y_positions, texts):
-        ax.text(x, y, txt, ha="center", va="center", fontsize=10)
+        ax.text(x, y, txt, ha="center", va="center", fontsize=8)
 
-def plot_rank_n(n, blist_rank, rank_indices, title, history_array, threshold=None, threshold_position='min'):
-    if (heatmap_rows := len(rank_indices[n])) == 0:
-        return
-    if n == 0:
-        xlim, xticks_extra = -1.5, [-.5]
-    elif n == 1:
-        xlim, xticks_extra = -5, [-2, -.5]
-    else:
-        xlim, xticks_extra = -3*n-.5, [-2*n+.5, -n]
-
+def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=None, threshold_position='min'):
+    
     n_features, n_iterations = history_array.shape
+
+    if (heatmap_rows := len(rank_indices[rank])) == 0:
+        return
+    label_spacing = .025*rank*n_iterations
+    if rank == 0:
+        xlim, xticks_extra = -1.5, [-.5, -.5]
+        figsize = (8, heatmap_rows)
+    else:
+        xlim, xticks_extra = -4*label_spacing-.5, [-2*label_spacing-.5, -label_spacing-.5]
+        figsize = (10, max(6, heatmap_rows*11/72))
+
     turbo = plt.cm.turbo
     if threshold is None:
         vmin, vmax = np.min(history_array), np.max(history_array)
@@ -467,65 +489,67 @@ def plot_rank_n(n, blist_rank, rank_indices, title, history_array, threshold=Non
         vmin, vmax = np.min(history_array), min(threshold, np.max(history_array))
         cbar_extend = 'max'
         turbo.set_over('white')
-        
-    fig, ax = plt.subplots(figsize=(n_iterations, max(3, 0.25*heatmap_rows)), layout="constrained")
-    im = ax.imshow(history_array[rank_indices[n]], aspect="auto", cmap=turbo, vmin=vmin, vmax=vmax)
+
+    fig, ax = plt.subplots(figsize=(10,max(3,heatmap_rows*10/72)), layout="constrained")
+    im = ax.imshow(history_array[rank_indices[rank]], aspect="auto", cmap=turbo, vmin=vmin, vmax=vmax)
 
     # --- atom labels ---
-    atoms = Counter([basis[0] for basis in blist_rank[n]])
-    y, y_positions, texts = 0, [], []
+    atoms = Counter([basis[0] for basis in blist_rank[rank]])
+    y, y_positions, texts, ls_x = 0, [], [], (xticks_extra[1]-.5)/2
     for k, v in atoms.items():
         for j in range(v):
             y_positions.append(y + j)
-            texts.append(blist_rank[n][y + j][-1].replace(']', ''))
+            texts.append(blist_rank[rank][y + j][-1].replace(']', ''))
         ax.add_patch(Rectangle((xlim, y - 0.5), xticks_extra[0]-xlim, v, fc='w', ec="k", zorder=9))
-        ax.text((xlim+xticks_extra[0])/2, y + v / 2 - 0.5, k, 
+        ax.text((xlim+xticks_extra[0])/2, (atom_y := y + v / 2 - 0.5), k,
                 ha="center", va="center", fontsize=10, fontweight="bold", zorder=10)
+        if rank == 1:
+            ax.add_patch(Rectangle((xticks_extra[1], y - .5), xticks_extra[1]-xticks_extra[0], v, fc='w', ec="k", zorder=9))
+            ax.text(ls_x, atom_y, '0', ha="center", va="center", fontsize=8, zorder=10)
         y += v
 
-    # --- ns labels ---
-    if n >= 1:
-        ns = Counter([f"{basis[0]}_{basis[1]}" for basis in blist_rank[n]])
-        ax.text(-1.5*n+.25, heatmap_rows-.25, 'ns', ha="center", va="top", fontsize=12, fontweight="bold")
-        y = 0
+    if rank >= 1:
+    
+        # --- ns labels ---
+        y, ns = 0, Counter([f"{basis[0]}_{basis[1]}" for basis in blist_rank[rank]])
+        ax.text((ns_x:=(xticks_extra[0]+xticks_extra[1])/2), 1.01*heatmap_rows, 'ns', 
+                ha="center", va="center", fontsize=10, fontweight="bold")
         for k, v in ns.items():
             ax.add_patch(Rectangle((xticks_extra[0], y - 0.5), xticks_extra[1]-xticks_extra[0], v, fc='w', ec="k", zorder=9))
-            ax.text(-1.5*n+.25, y + v / 2 - 0.5, k.split('_')[-1], ha="center", va="center", fontsize=10, zorder=10)
+            ax.text(ns_x, y + v / 2 - 0.5, k.split('_')[-1], ha="center", va="center", fontsize=8, zorder=10)
             y += v
  
-    # --- ls labels ---
-    if n >= 2:
-        draw_labels(ax, y_positions, texts, x=-0.5*n-.25)
-        ax.text(-0.5*n-.25, heatmap_rows-.25, 'ls', ha="center", va="top", fontsize=12, fontweight="bold")
- 
-    ax.set_xlim(xlim, ax.get_xlim()[1])
-    ax.set_aspect('equal', adjustable='box')
-    ax.set_xticks(np.arange(n_iterations), minor=False)
-    ax.set_xticks(np.concatenate((xticks_extra,np.arange(n_iterations+1)-.5)), minor=True)
+        # --- ls labels ---
+        if rank >= 2:
+            ax.text((xticks_extra[1]-.5)/2, 1.01*heatmap_rows, 'ls', ha="center", va="center", fontsize=10, fontweight="bold")
+            draw_labels(ax, y_positions, texts, x=ls_x)
+
+    tick_values = MaxNLocator(steps=[1, 5, 10],integer=True).tick_values(0, n_iterations)
+    tick_positions = [t - .5 for t in tick_values]
+    ax.set_xticks(tick_positions)
+    ax.set_xticklabels([str(int(t)) if t>0 else '' for t in tick_values])
+    ax.set_xlim(xlim, n_iterations-.5)
     ax.set_yticks([], minor=False)
     ax.set_yticks(np.arange(heatmap_rows+1)-0.5, minor=True)
-    ax.tick_params(axis="x", which="major", length=1, color="w")
-    ax.tick_params(axis="x", which="minor", length=20, width=1, labelbottom=False)
     ax.tick_params(axis="y", which='both', length=0, left=False, labelleft=False, right=False, labelright=False)
-    ax.grid(axis="x", which="minor", color="k", linestyle="-", linewidth=1, antialiased=True)
+    ax.grid(axis="x", which="major", color="k", linestyle="-", linewidth=1, antialiased=True)
     ax.grid(axis="y", which="both", color="k", linestyle="-", linewidth=1, antialiased=True, zorder=9)
-    plt.setp(ax.get_xticklabels(), fontsize=12, fontweight='bold')
-    fig.suptitle(f"{title} History (rank {n})", fontsize="x-large", fontweight="bold")
+    plt.setp(ax.get_xticklabels(), fontsize=10)
+    fig.suptitle(f"{title} History (rank {rank})", fontsize="x-large", fontweight="bold")
 
-    pad_extra = 1 if threshold is None else 1.618
-    cbar = fig.colorbar(im, orientation='horizontal', pad=pad_extra*min(.1,1/heatmap_rows), shrink=.8, extend=cbar_extend)
+    cbar = fig.colorbar(im, ax=ax, orientation='horizontal', pad=2*min(.1,1/heatmap_rows), shrink=.8, extend=cbar_extend)
     cbar_ticks = [vmin + (vmax - vmin) * f for f in [0, 0.25, 0.5, 0.75, 1.0]]
     cbar.set_ticks(cbar_ticks)
     cbar.ax.set_xticklabels([f'{t:.2g}' for t in cbar_ticks])
     title_extra = "" if threshold is None else " (white: removed features)"
     cbar.set_label(title + title_extra, fontsize=8, fontweight='bold')
-    
+
     if threshold is not None:
         cax_top = cbar.ax.twiny()
         cax_top.set_xlim(cbar.ax.get_xlim())
         cax_top.set_xticks([threshold])
         cax_top.xaxis.set_ticks_position('top')
-
+    
     buf = io.BytesIO()
     plt.savefig(buf, format='svg', bbox_inches='tight')
     plt.close()
