@@ -27,18 +27,44 @@ jobs:
       if: matrix.os == 'macos-latest'
       run: |
         brew update
-        brew install cmake
+        brew install hdf5 cmake
+        # Build ADIOS2 WITHOUT MPI for stubs test
+        git clone --depth=1 https://github.com/ornladios/ADIOS2.git
+        cd ADIOS2
+        cmake -DADIOS2_USE_MPI=OFF -DADIOS2_USE_HDF5=ON -DCMAKE_BUILD_TYPE=Release -B build
+        cmake --build build -j$(sysctl -n hw.logicalcpu)
+        sudo cmake --install build
 
     - name: Load Ubuntu Env
       if: matrix.os == 'ubuntu-latest'
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake g++ git
+        sudo apt-get install -y cmake g++ git libhdf5-dev
+        # Build ADIOS2 WITHOUT MPI for stubs test
+        git clone --depth=1 https://github.com/ornladios/ADIOS2.git
+        cd ADIOS2
+        cmake -DADIOS2_USE_MPI=OFF -DADIOS2_USE_HDF5=ON -DCMAKE_BUILD_TYPE=Release -B build
+        cmake --build build -j$(nproc)
+        sudo cmake --install build
 
-    - name: Install Python dependencies (without MPI/ADIOS2)
+    - name: Install Python dependencies (without MPI, with ADIOS2)
       run: |
         python -m pip install --upgrade pip setuptools wheel
-        python -m pip install numpy pandas scipy psutil tqdm matplotlib tabulate torch sympy pyyaml flake8 pytest
+        python -m pip install numpy pandas scipy psutil tqdm matplotlib tabulate torch sympy pyyaml adios2 flake8 pytest
+
+    - name: Install pyace from PR #95
+      run: |
+        git clone https://github.com/ICAMS/python-ace.git
+        cd python-ace
+        git fetch origin pull/95/head:pr-95
+        git checkout pr-95
+        pip install -e .
+        cd ..
+
+    - name: Install slate_wrapper
+      run: |
+        cd fitsnap3lib/lib/slate_solver
+        pip install -e .
 
     - name: Lint with flake8
       run: |
@@ -132,6 +158,20 @@ jobs:
       run: |
         python -m pip install --upgrade pip setuptools wheel
         python -m pip install numpy pandas scipy psutil tqdm matplotlib tabulate torch sympy pyyaml mpi4py adios2 flake8 pytest
+
+    - name: Install pyace from PR #95
+      run: |
+        git clone https://github.com/ICAMS/python-ace.git
+        cd python-ace
+        git fetch origin pull/95/head:pr-95
+        git checkout pr-95
+        pip install -e .
+        cd ..
+
+    - name: Install slate_wrapper
+      run: |
+        cd fitsnap3lib/lib/slate_solver
+        pip install -e .
 
     - name: Lint with flake8
       run: |
