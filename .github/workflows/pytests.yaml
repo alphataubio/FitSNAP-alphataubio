@@ -63,7 +63,7 @@ jobs:
 
     - name: Install SLATE library
       run: |
-        git clone https://github.com/icl-utk-edu/slate.git
+        git clone --recursive https://github.com/icl-utk-edu/slate.git
         cd slate
         mkdir build && cd build
         cmake -DCMAKE_BUILD_TYPE=Release \
@@ -77,7 +77,7 @@ jobs:
     - name: Install slate_wrapper
       run: |
         cd fitsnap3lib/lib/slate_solver
-        pip install -e .
+        pip install .
 
     - name: Lint with flake8
       run: |
@@ -183,7 +183,7 @@ jobs:
 
     - name: Install SLATE library
       run: |
-        git clone https://github.com/icl-utk-edu/slate.git
+        git clone --recursive https://github.com/icl-utk-edu/slate.git
         cd slate
         mkdir build && cd build
         cmake -DCMAKE_BUILD_TYPE=Release \
@@ -197,7 +197,7 @@ jobs:
     - name: Install slate_wrapper
       run: |
         cd fitsnap3lib/lib/slate_solver
-        pip install -e .
+        pip install .
 
     - name: Lint with flake8
       run: |
