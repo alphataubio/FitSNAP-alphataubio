@@ -19,7 +19,6 @@ embeddings = {
     "Ni": {"npot": "FinnisSinclair", "fs_parameters": [1, 1], "ndensity": 1}
   }
 
-
 bonds = {
     "AlAl": {"radbase": "ChebExpCos", "radparameters": [0.342],
              "rcut": 6.832, "dcut": 0.01, "core-repulsion": [0, 0.342], "r_in": 0.625, "delta_in": 0.01},
@@ -32,12 +31,13 @@ bonds = {
   }
 
 functions = {
-    #"ALL": {"lmin_by_orders": [0,0], "lmax_by_orders": [0,1], "nradmax_by_orders": [2,1]}
+    #"ALL": {"lmin_by_orders": [0], "lmax_by_orders": [0], "nradmax_by_orders": [1]}
+    #"ALL": {"lmin_by_orders": [0,0], "lmax_by_orders": [0,1], "nradmax_by_orders": [3,2]}
     #"ALL": {"lmin_by_orders": [0,0,0], "lmax_by_orders": [0,3,3], "nradmax_by_orders": [5,2,1]}
     #"ALL": {"lmin_by_orders": [0,0,0,0], "lmax_by_orders": [0,3,2,1], "nradmax_by_orders": [8,5,3,1]}
     "ALL": {"lmin_by_orders": [0,0,0,0,0], "lmax_by_orders": [0,3,3,2,1], "nradmax_by_orders": [24,8,4,2,1]}
   }
-
+  
 [CALCULATOR]
 calculator = LAMMPSPYACE
 energy = 1
@@ -60,13 +60,14 @@ detailed_errors = 0
 
 [SLATE]
 #method = RIDGE
-#alpha = 1e-9
+#alpha = 1e-6
 method = ARD
-pruning_method = lambda
+pruning_method = gamma
+threshold_gamma = 0.01
 scap = 1e-3
 scai = 1e-3
 max_iter = 100
-threshold_lambda = 1e6
+#threshold_lambda = 1e6
 
 [SCRAPER]
 scraper = ADIOS2
@@ -93,7 +94,6 @@ aimd-from-PBE-1000-npt  = 1.0  100.0  1e-2
 aimd-from-PBE-1000-nvt  = 1.0  100.0  1e-2
 aimd-from-PBE-3000-npt  = 1.0  100.0  1e-2
 aimd-from-PBE-3000-nvt  = 1.0  100.0  1e-2
-
 
 [OUTFILE]
 output_style = PACE
