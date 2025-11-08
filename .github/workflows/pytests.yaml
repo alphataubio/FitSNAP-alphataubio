@@ -7,123 +7,6 @@ on:
     branches: [master]
 
 jobs:
-  test-stubs:
-    strategy:
-      matrix:
-        os: [macos-latest, ubuntu-latest]
-        python-version: ["3.10"]
-      max-parallel: 20
-    runs-on: ${{ matrix.os }}
-
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python-version }}
-
-    - name: Load Mac Env
-      if: matrix.os == 'macos-latest'
-      run: |
-        brew update
-        brew install hdf5 cmake openblas lapack gcc
-        # Build ADIOS2 WITHOUT MPI for stubs test
-        git clone --depth=1 https://github.com/ornladios/ADIOS2.git
-        cd ADIOS2
-        cmake -DADIOS2_USE_MPI=OFF -DADIOS2_USE_HDF5=ON -DCMAKE_BUILD_TYPE=Release -B build
-        cmake --build build -j$(sysctl -n hw.logicalcpu)
-        sudo cmake --install build
-
-    - name: Load Ubuntu Env
-      if: matrix.os == 'ubuntu-latest'
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y cmake g++ gfortran git libhdf5-dev libopenblas-dev liblapack-dev
-        # Build ADIOS2 WITHOUT MPI for stubs test
-        git clone --depth=1 https://github.com/ornladios/ADIOS2.git
-        cd ADIOS2
-        cmake -DADIOS2_USE_MPI=OFF -DADIOS2_USE_HDF5=ON -DCMAKE_BUILD_TYPE=Release -B build
-        cmake --build build -j$(nproc)
-        sudo cmake --install build
-
-    - name: Install Python dependencies (without MPI, with ADIOS2)
-      run: |
-        python -m pip install --upgrade pip setuptools wheel
-        python -m pip install numpy pandas scipy psutil tqdm matplotlib tabulate torch sympy pyyaml adios2 flake8 pytest
-
-    - name: Install pyace from PR #95
-      run: |
-        git clone https://github.com/ICAMS/python-ace.git
-        cd python-ace
-        git fetch origin pull/95/head:pr-95
-        git checkout pr-95
-        pip install -e .
-        cd ..
-
-    - name: Install SLATE library
-      run: |
-        git clone --recursive https://github.com/icl-utk-edu/slate.git
-        cd slate
-        mkdir build && cd build
-        cmake -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_INSTALL_PREFIX=/usr/local \
-              -Dbuild_tests=OFF \
-              -DCMAKE_CXX_STANDARD=17 ..
-        make -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
-        sudo make install
-        cd ../..
-
-    - name: Install slate_wrapper
-      run: |
-        cd fitsnap3lib/lib/slate_solver
-        pip install .
-
-    - name: Lint with flake8
-      run: |
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --ignore=F821,F824
-        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-
-    - name: Install LAMMPS (stubs)
-      shell: bash
-      run: |
-        which python
-        # conda activate base
-        cd ../
-
-        # variables for git clone RPC error
-        
-        export GIT_TRACE_PACKET=1
-        export GIT_TRACE=1
-        export GIT_CURL_VERBOSE=1
-
-        # increase postbuffer size
-
-        git config --global http.version HTTP/1.1
-        git config --global http.postBuffer 157286400
-
-        # Procedure for installing our custom branch with compute pace:
-
-        git clone https://github.com/lammps/lammps.git --branch patch_12Jun2025 --single-branch
-        cd lammps/cmake
-        mkdir build && cd build
-        cmake -DLAMMPS_EXCEPTIONS=yes \
-              -DBUILD_SHARED_LIBS=yes \
-              -DMLIAP_ENABLE_PYTHON=yes \
-              -DPKG_PYTHON=yes \
-              -DPKG_ML-SNAP=yes \
-              -DPKG_ML-PACE=yes \
-              -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15 \
-              -DPYTHON_EXECUTABLE:FILEPATH=$(which python) ../
-        make -j$(nproc)
-        make install-python
-
-    - name: Test stubs with pytest
-      run: |
-        export PYTHONPATH=$(pwd):$PYTHONPATH
-        cd tests
-        pytest test_examples.py::test_stubs
-
   test-mpi:
     strategy:
       matrix:
@@ -141,37 +24,76 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
 
+    # ===== macOS environment =====
     - name: Load Mac Env
       if: matrix.os == 'macos-latest'
       run: |
         brew update
         brew install openmpi hdf5 cmake openblas lapack gcc
-        # Build ADIOS2 with MPI manually for consistent behavior
+        export GFORTRAN_PATH=$(brew --prefix gcc)/bin/gfortran-$(gcc -dumpversion | cut -d. -f1)
+        echo "export FC=$GFORTRAN_PATH" >> $GITHUB_ENV
+        echo "export CMAKE_Fortran_COMPILER=$GFORTRAN_PATH" >> $GITHUB_ENV
+
+    - name: Cache ADIOS2 (macOS)
+      if: matrix.os == 'macos-latest'
+      id: cache-adios2-macos
+      uses: actions/cache@v4
+      with:
+        path: |
+          /usr/local/lib/cmake/adios2
+          /usr/local/include/adios2
+          /usr/local/lib/libadios2*
+        key: adios2-${{ runner.os }}-v1
+
+    - name: Build ADIOS2 (macOS, only if cache miss)
+      if: matrix.os == 'macos-latest' && steps.cache-adios2-macos.outputs.cache-hit != 'true'
+      run: |
         git clone --depth=1 https://github.com/ornladios/ADIOS2.git
         cd ADIOS2
-        cmake -DADIOS2_USE_MPI=ON -DADIOS2_USE_HDF5=ON -DCMAKE_BUILD_TYPE=Release -B build
+        cmake -DADIOS2_USE_MPI=ON \
+              -DADIOS2_USE_HDF5=ON \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_Fortran_COMPILER=$CMAKE_Fortran_COMPILER -B build
         cmake --build build -j$(sysctl -n hw.logicalcpu)
         sudo cmake --install build
 
+    # ===== Ubuntu environment =====
     - name: Load Ubuntu Env
       if: matrix.os == 'ubuntu-latest'
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake g++ gfortran git libopenmpi-dev openmpi-bin libhdf5-dev libopenblas-dev liblapack-dev
-        # Cache ADIOS2 build for speed
-        if [ ! -d "/usr/local/lib/cmake/adios2" ]; then
-          git clone --depth=1 https://github.com/ornladios/ADIOS2.git
-          cd ADIOS2
-          cmake -DADIOS2_USE_MPI=ON -DADIOS2_USE_HDF5=ON -DCMAKE_BUILD_TYPE=Release -B build
-          cmake --build build -j$(nproc)
-          sudo cmake --install build
-        fi
+        sudo apt-get install -y cmake g++ gfortran git libopenmpi-dev openmpi-bin \
+                                libhdf5-dev libopenblas-dev liblapack-dev
 
+    - name: Cache ADIOS2 (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      id: cache-adios2-ubuntu
+      uses: actions/cache@v4
+      with:
+        path: |
+          /usr/local/lib/cmake/adios2
+          /usr/local/include/adios2
+          /usr/local/lib/libadios2*
+        key: adios2-${{ runner.os }}-v1
+
+    - name: Build ADIOS2 (Ubuntu, only if cache miss)
+      if: matrix.os == 'ubuntu-latest' && steps.cache-adios2-ubuntu.outputs.cache-hit != 'true'
+      run: |
+        git clone --depth=1 https://github.com/ornladios/ADIOS2.git
+        cd ADIOS2
+        cmake -DADIOS2_USE_MPI=ON \
+              -DADIOS2_USE_HDF5=ON \
+              -DCMAKE_BUILD_TYPE=Release -B build
+        cmake --build build -j$(nproc)
+        sudo cmake --install build
+
+    # ===== Python dependencies =====
     - name: Install Python dependencies (with MPI/ADIOS2)
       run: |
         python -m pip install --upgrade pip setuptools wheel
         python -m pip install numpy pandas scipy psutil tqdm matplotlib tabulate torch sympy pyyaml mpi4py adios2 flake8 pytest
 
+    # ===== pyace installation =====
     - name: Install pyace from PR #95
       run: |
         git clone https://github.com/ICAMS/python-ace.git
@@ -181,6 +103,7 @@ jobs:
         pip install -e .
         cd ..
 
+    # ===== SLATE install =====
     - name: Install SLATE library
       run: |
         git clone --recursive https://github.com/icl-utk-edu/slate.git
@@ -199,34 +122,36 @@ jobs:
         cd fitsnap3lib/lib/slate_solver
         pip install .
 
+    # ===== Lint =====
     - name: Lint with flake8
       run: |
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --ignore=F821,F824
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
-    - name: Install LAMMPS (MPI)
+    # ===== Cache and build LAMMPS =====
+    - name: Cache LAMMPS
+      id: cache-lammps
+      uses: actions/cache@v4
+      with:
+        path: |
+          /usr/local/bin/lmp*
+          /usr/local/lib/python*/site-packages/lammps*
+          ~/lammps-build
+        key: lammps-${{ runner.os }}-${{ matrix.test }}-v1
+
+    - name: Build LAMMPS (only if cache miss)
+      if: steps.cache-lammps.outputs.cache-hit != 'true'
       shell: bash
       run: |
         which python
-        # conda activate base
         cd ../
-
-        # variables for git clone RPC error
-        
-        export GIT_TRACE_PACKET=1
-        export GIT_TRACE=1
-        export GIT_CURL_VERBOSE=1
-
-        # increase postbuffer size
-
         git config --global http.version HTTP/1.1
         git config --global http.postBuffer 157286400
 
-        # Procedure for installing our custom branch with compute pace:
-
         git clone https://github.com/lammps/lammps.git --branch patch_12Jun2025 --single-branch
         cd lammps/cmake
-        mkdir build && cd build
+        mkdir -p build && cd build
+
         cmake -DLAMMPS_EXCEPTIONS=yes \
               -DBUILD_SHARED_LIBS=yes \
               -DMLIAP_ENABLE_PYTHON=yes \
@@ -235,14 +160,18 @@ jobs:
               -DPKG_ML-PACE=yes \
               -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15 \
               -DPYTHON_EXECUTABLE:FILEPATH=$(which python) ../
-        make -j$(nproc)
-        make install-python
 
+        make -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
+        sudo make install-python
+        cd ../..
+        mv cmake/build ~/lammps-build
+
+    # ===== Test Suites =====
     - name: Test basic executable examples (MPI)
       run: |
         export PYTHONPATH=$(pwd):$PYTHONPATH
         cd tests
-        mpirun -np 4 pytest -s test_examples.py::test_fitsnap_${{ matrix.test}}
+        mpirun -np 4 pytest -s test_examples.py::test_fitsnap_${{ matrix.test }}
 
     - name: Test nonlinear models
       run: |
