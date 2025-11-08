@@ -63,9 +63,9 @@ detailed_errors = 0
 #alpha = 1e-6
 method = ARD
 pruning_method = gamma
-threshold_gamma = 0.01
-scap = 1e-3
-scai = 1e-3
+threshold_gamma = 0.05
+scap = 1e-6
+scai = 1e-6
 max_iter = 100
 #threshold_lambda = 1e6
 
@@ -86,14 +86,14 @@ group_sections = name eweight fweight vweight
 group_types = str float float float float float
 smartweights = 1
 random_sampling = 0
-rattled-300             = 1.0  100.0  1e-2
-rattled-500             = 1.0  100.0  1e-2
-rattled-1000            = 1.0  100.0  1e-2
-rattled-relax           = 1.0  100.0  1e-2
-aimd-from-PBE-1000-npt  = 1.0  100.0  1e-2
-aimd-from-PBE-1000-nvt  = 1.0  100.0  1e-2
-aimd-from-PBE-3000-npt  = 1.0  100.0  1e-2
-aimd-from-PBE-3000-nvt  = 1.0  100.0  1e-2
+rattled-300             = 1.0  500.0  1.0
+rattled-500             = 1.0  500.0  1.0
+rattled-1000            = 1.0  500.0  1.0
+rattled-relax           = 1.0  100.0  0.1
+aimd-from-PBE-1000-npt  = 1.0  100.0  0.1
+aimd-from-PBE-1000-nvt  = 1.0  100.0  0.1
+aimd-from-PBE-3000-npt  = 1.0  100.0  0.1
+aimd-from-PBE-3000-nvt  = 1.0  100.0  0.1
 
 [OUTFILE]
 output_style = PACE
