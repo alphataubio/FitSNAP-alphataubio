@@ -34,12 +34,13 @@ class LammpsPyace(LammpsPace):
     # --------------------------------------------------------------------------------------------
 
     def __init__(self, name, pt, config):
+
         super().__init__(name, pt, config, calculator_section="PYACE")
-        
         self._data = {}
         self._i = 0
         self._row_index = 0
-    
+        
+
     # --------------------------------------------------------------------------------------------
 
     def get_width(self):
@@ -52,24 +53,34 @@ class LammpsPyace(LammpsPace):
             return self._ncoeff
         else:
             return self._ncoeff + self._numtypes
-            
+        
+
+    # --------------------------------------------------------------------------------------------
+    # everything is handled by LAMMPS compute pace (similar format as compute snap)
+
+    def _set_computes(self):
+
+        if self._bikflag:
+            self._lmp.command("compute pace all pace coupling_coefficients.yace 1 0")
+        else:
+            self._lmp.command("compute pace all pace coupling_coefficients.yace 0 0")
+ 
+        
     # --------------------------------------------------------------------------------------------
 
     def _collect_lammps(self):
+    
         num_atoms = self._data["NumAtoms"]
         n_coeff = self._ncoeff
         energy = self._data["Energy"]
-
         lmp_atom_ids  = self._extract_atom_ids(num_atoms)
         lmp_pos  = self._extract_atom_positions(num_atoms)
         lmp_types  = self._extract_atom_types(num_atoms)
+        lmp_volume = self._lmp.get_thermo("vol")
             
         assert np.all(lmp_atom_ids == 1 + np.arange(num_atoms)), "LAMMPS seems to have lost atoms \nGroup and configuration: {} {}".format(self._data["Group"],self._data["File"])
 
-        lmp_volume = self._lmp.get_thermo("vol")
-
         # Extract pace data, including reference potential data
-
         nrows_energy = 1
         bik_rows = 1
         ndim_force = 3
@@ -148,13 +159,9 @@ class LammpsPyace(LammpsPace):
             ref_stress = lmp_pace[irow:irow + nrows_virial, icolref]
             
             # Convert b vector from eV/Å³ to GPa
-                
             tmp1 = 160.2176565 * self._data["Stress"][[0, 1, 2, 1, 0, 0], [0, 1, 2, 2, 2, 1]].ravel()
             tmp2 = ref_stress/10000
             self.pt.shared_arrays['b'].array[index:index+ndim_virial] = tmp1 - tmp2
-            #self.pt.single_print(f"*** vb_sum_temp {vb_sum_temp}")
-            #self.pt.single_print(f"*** tmp1 {tmp1}")
-            #self.pt.single_print(f"*** ref_stress {ref_stress}")
 
             self.pt.shared_arrays['w'].array[index:index+ndim_virial] = self._data["vweight"]
             self.pt.fitsnap_dict['Row_Type'][dindex:dindex + ndim_virial] = ['Stress'] * ndim_virial
@@ -169,7 +176,12 @@ class LammpsPyace(LammpsPace):
         self.pt.fitsnap_dict['Testing'][self.distributed_index:dindex] = [bool(self._data['test_bool'])] * length
         self.shared_index = index
         self.distributed_index = dindex
+        
+        # Log validation data if enabled
+        if self.config.sections["OUTFILE"].validation:
+            pass
     
     # --------------------------------------------------------------------------------------------
+    
 
 
