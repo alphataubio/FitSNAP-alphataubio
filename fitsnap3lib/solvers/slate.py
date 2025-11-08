@@ -1,6 +1,8 @@
 from fitsnap3lib.solvers.slate_validation import SlateValidation
 import numpy as np
-import json
+import json, os
+from time import time
+from adios2 import Stream
 
 try:
     from slate_wrapper import slate_ridge_augmented_qr_cython, slate_ard_update_cython
@@ -137,17 +139,13 @@ class SLATE(SlateValidation):
         
         # Initialize gamma and lambda history tracking if validation is enabled
         if self.validation and pt._rank == 0:
-
-            from adios2 import Stream
-            output_prefix = self.config.sections['OUTFILE'].metrics.replace('.md', '')
-            adios2_stream = Stream(f"{output_prefix}.bp", 'w')
-            
-            # s.write_attribute('nconfigs', nconfigs) # number of features
-            # s.write_attribute('element_map', ','.join(element_list))
         
             # Get rank information from PYACE basis if available
             if "PYACE" in self.config.sections:
                 pyace_section = self.config.sections["PYACE"]
+                outfile_section = self.config.sections["OUTFILE"]
+                outfile_section.adios2_stream.write_attribute('nconfigs', pt.fitsnap_dict["nconfigs"])
+
                 if hasattr(pyace_section, 'ctilde_basis'):
                     basis_ranks = []
                     if not pyace_section.bzeroflag:
@@ -158,8 +156,8 @@ class SLATE(SlateValidation):
                     for element_basis_functions in pyace_section.ctilde_basis.basis:
                         for basis_function in element_basis_functions:
                             basis_ranks.append(int(basis_function.rank))
-                    adios2_stream.write_attribute('basis_ranks', basis_ranks)
-                    adios2_stream.write_attribute('blist', pyace_section.blist)
+                    outfile_section.adios2_stream.write_attribute('basis_ranks', basis_ranks)
+                    outfile_section.adios2_stream.write_attribute('blist', pyace_section.blist)
         
         pt.debug_single_print(f"ARD: m {m} n {n} var(bw)={var_bw:.9f} alpha={alpha_:.2f}")
         
@@ -167,8 +165,13 @@ class SLATE(SlateValidation):
             precision=4, suppress=False, floatmode='fixed', linewidth=np.inf,
             formatter={'float': '{:.3f}'.format}, threshold = 800, edgeitems=5
         )
+        
+        for key, value in sorted(os.environ.items()):
+            if key.startswith("SLURM_"):
+                print(f"*** {key} = {value}")
       
         # Iterative procedure of ARDRegression
+        start_time_iteration = time()
         for iter_ in range(self.max_iter):
             # Get active indices
             active_indices = np.where(lambda_mask)[0]
@@ -216,13 +219,23 @@ class SLATE(SlateValidation):
                 
             # Store gamma and lambda history if validation enabled
             if self.validation and pt._rank == 0:
-                adios2_stream.begin_step()
-                adios2_stream.write("gamma", gamma_, count=[n])
-                adios2_stream.write("lambda", lambda_, count=[n])
-                adios2_stream.end_step()
+                outfile_section.adios2_stream.begin_step()
+                outfile_section.adios2_stream.write("gamma", gamma_, count=[n])
+                outfile_section.adios2_stream.write("lambda", lambda_, count=[n])
+                outfile_section.adios2_stream.end_step()
                         
             alpha_ = (global_n_training - gamma_active.sum() + 2.0 * self.alpha_1) / (sse_ + 2.0 * self.alpha_2)
-            
+
+            if coef_old_ is not None:
+                coef_change = np.sum(np.abs(coef_old_ - coef_))
+                coef_change_str = f"coef_change {coef_change:g} tol {self.tol:g}"
+            else:
+                coef_change_str = ""
+                
+            end_time_iteration = time()
+            elapsed_iteration = end_time_iteration - start_time_iteration
+            start_time_iteration = end_time_iteration
+
             # Prune features based on selected method
             if self.pruning_method.lower() == 'gamma':
                 # Gamma-based pruning: keep features with gamma > threshold
@@ -230,7 +243,7 @@ class SLATE(SlateValidation):
                 if iter_ > 0:
                     lambda_mask = gamma_ > self.threshold_gamma
                 
-                pt.single_print(f"SLATE ARD: iteration {iter_} alpha {alpha_:.6f} sse {sse_:.6f} gamma_sum {gamma_active.sum():.6f} n_active {n_active}")
+                pt.single_print(f"SLATE ARD #{iter_}: elapsed {elapsed_iteration:.2f} alpha {alpha_:.6f} sse {sse_:.6f} gamma_sum {gamma_active.sum():.6f} n_active {n_active} {coef_change_str}")
                 
                 if self.config.debug:
                     # Show gamma distribution
@@ -246,8 +259,8 @@ class SLATE(SlateValidation):
                     lambda_mask = lambda_ < self.threshold_lambda
                 
                 pt.single_print(
-                    f"SLATE ARD: iteration {iter_} alpha {alpha_:.6f} sse {sse_:.6f} "
-                    f"gamma_sum {gamma_active.sum():.6f} n_active {n_active}\n    "
+                    f"SLATE ARD #{iter_}: elapsed {elapsed_iteration:.2f} alpha {alpha_:.6f} sse {sse_:.6f} "
+                    f"gamma_sum {gamma_active.sum():.6f} n_active {n_active} {coef_change_str}\n    "
                     f"lambda range [{lambda_[lambda_ > 0].min():.4e}, {lambda_.max():.4e}], "
                     f"keeping {np.sum(lambda_mask)}/{n} features "
                     f"with lambda < {self.threshold_lambda:.1f}"
@@ -255,13 +268,12 @@ class SLATE(SlateValidation):
             
             coef_[~lambda_mask] = 0
             
-            # Check for convergence
+            # Check for stopping criteria (convergence or SLURM timeout)
             if coef_old_ is not None:
-                coef_change = np.sum(np.abs(coef_old_ - coef_))
+                #coef_change = np.sum(np.abs(coef_old_ - coef_))
                 if coef_change < self.tol:
-                    if self.config.debug and pt._rank == 0:
-                        active_features = np.sum(lambda_mask)
-                        pt.single_print(f"ARD converged after {iter_} iterations, "
+                    active_features = np.sum(lambda_mask)
+                    pt.single_print(f"ARD converged after {iter_} iterations, "
                                       f"{active_features}/{n} features active")
                     break
             
@@ -278,9 +290,8 @@ class SLATE(SlateValidation):
         self.fit = coef_
         
         # Save gamma and lambda history using adios2 if validation enabled
-        if self.validation and pt._rank == 0:
-            adios2_stream.close()
-            pt.debug_single_print(f"Saved gamma and lambda history to {output_prefix}.bp using adios2")
+        if self.validation:
+            self.config.sections["OUTFILE"].adios2_stream.close()
         
         if self.config.debug and pt._rank == 0:
             active_features = np.sum(lambda_mask)
