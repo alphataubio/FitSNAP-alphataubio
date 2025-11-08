@@ -115,7 +115,7 @@ jobs:
         cmake -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_INSTALL_PREFIX=/usr/local \
               -Dbuild_tests=OFF \
-              -DCMAKE_Fortran_COMPILER=$GFORTRAN_PATH
+              -DCMAKE_Fortran_COMPILER=$GFORTRAN_PATH \
               -DCMAKE_CXX_STANDARD=17 ..
         make -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
         sudo make install
