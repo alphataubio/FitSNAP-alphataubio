@@ -107,11 +107,15 @@ jobs:
     - name: Install SLATE library
       run: |
         git clone --recursive https://github.com/icl-utk-edu/slate.git
+        export GFORTRAN_PATH=$(brew --prefix gcc)/bin/gfortran-$(gcc -dumpversion | cut -d. -f1)
+        echo "export FC=$GFORTRAN_PATH" 
+        echo "CMAKE_Fortran_COMPILER=$GFORTRAN_PATH"
         cd slate
         mkdir build && cd build
         cmake -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_INSTALL_PREFIX=/usr/local \
               -Dbuild_tests=OFF \
+              -DCMAKE_Fortran_COMPILER=$GFORTRAN_PATH
               -DCMAKE_CXX_STANDARD=17 ..
         make -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
         sudo make install
