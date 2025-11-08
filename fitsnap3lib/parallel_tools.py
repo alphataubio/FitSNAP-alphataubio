@@ -332,10 +332,10 @@ class ParallelTools():
     @_rank_zero_decorator
     def single_timeit(self, method):
         def timed(*args, **kw):
-            ts = time()
+            start_time = time()
             result = method(*args, **kw)
-            te = time()
-            elapsed = te - ts
+            end_time = time()
+            elapsed = end_time - start_time
             hours = int(elapsed // 3600)
             minutes = int((elapsed % 3600) // 60)
             seconds = int(elapsed % 60)
