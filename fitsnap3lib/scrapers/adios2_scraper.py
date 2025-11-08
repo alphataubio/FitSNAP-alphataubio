@@ -143,6 +143,7 @@ class ADIOS2(Scraper):
         # Broadcast metadata to all ranks
         if self.pt.stubs == 0:
             self.nconfigs = self.comm.bcast(self.nconfigs, root=0)
+            self.pt.add_2_fitsnap("nconfigs", self.nconfigs)
             self.element_map = self.comm.bcast(self.element_map, root=0)
             self.has_forces = self.comm.bcast(self.has_forces, root=0)
             self.has_stress = self.comm.bcast(self.has_stress, root=0)
