@@ -30,9 +30,6 @@ jobs:
       run: |
         brew update
         brew install openmpi hdf5 cmake openblas lapack gcc
-        export GFORTRAN_PATH=$(brew --prefix gcc)/bin/gfortran-$(gcc -dumpversion | cut -d. -f1)
-        echo "export FC=$GFORTRAN_PATH" >> $GITHUB_ENV
-        echo "export CMAKE_Fortran_COMPILER=$GFORTRAN_PATH" >> $GITHUB_ENV
 
     - name: Cache ADIOS2 (macOS)
       if: matrix.os == 'macos-latest'
@@ -53,7 +50,7 @@ jobs:
         cmake -DADIOS2_USE_MPI=ON \
               -DADIOS2_USE_HDF5=ON \
               -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_Fortran_COMPILER=$CMAKE_Fortran_COMPILER -B build
+              -B build
         cmake --build build -j$(sysctl -n hw.logicalcpu)
         sudo cmake --install build
 
@@ -107,15 +104,12 @@ jobs:
     - name: Install SLATE library
       run: |
         git clone --recursive https://github.com/icl-utk-edu/slate.git
-        export GFORTRAN_PATH=$(brew --prefix gcc)/bin/gfortran-$(gcc -dumpversion | cut -d. -f1)
-        echo "export FC=$GFORTRAN_PATH" 
-        echo "CMAKE_Fortran_COMPILER=$GFORTRAN_PATH"
         cd slate
         mkdir build && cd build
         cmake -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_INSTALL_PREFIX=/usr/local \
               -Dbuild_tests=OFF \
-              -DCMAKE_Fortran_COMPILER=$GFORTRAN_PATH \
+              -DCMAKE_Fortran_COMPILER=$(which gfortran) \
               -DCMAKE_CXX_STANDARD=17 ..
         make -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
         sudo make install
