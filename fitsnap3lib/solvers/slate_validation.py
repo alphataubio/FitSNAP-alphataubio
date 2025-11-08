@@ -318,9 +318,10 @@ class SlateValidation(SlateCommon):
         
         output_prefix = self.config.sections['OUTFILE'].metrics.replace('.md', '')
         adios2_path = f"{output_prefix}.bp"
-        with adios2.FileReader(adios2_path) as f:
-            basis_ranks = f.read_attribute("basis_ranks")
-            blist = f.read_attribute("blist")
+        with adios2.FileReader(adios2_path) as adios2_file:
+            basis_ranks = adios2_file.read_attribute("basis_ranks")
+            blist = adios2_file.read_attribute("blist")
+            self.pt.all_print(f"*** basis_ranks {basis_ranks} blist {blist}")
         with adios2.Stream(adios2_path, "r") as adios2_stream:
             gamma_history, lambda_history = [], []
             for _ in adios2_stream.steps():
