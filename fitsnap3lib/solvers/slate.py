@@ -290,7 +290,7 @@ class SLATE(SlateValidation):
         self.fit = coef_
         
         # Save gamma and lambda history using adios2 if validation enabled
-        if self.validation:
+        if self.validation and self.pt._rank == 0:
             self.config.sections["OUTFILE"].adios2_stream.close()
         
         if self.config.debug and pt._rank == 0:
