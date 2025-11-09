@@ -29,7 +29,7 @@ class Outfile(Section):
         self.potential_name = self.check_path(self.get_value("OUTFILE", "potential", "fitsnap_potential"))
         self.validation = self.get_value("OUTFILE", "validation", None)
         
-        if self.validation:
+        if self.validation and self.pt._rank == 0:
             from adios2 import Stream
             output_prefix = self.metric_file.replace('.md', '')
             self.adios2_stream = Stream(f"{output_prefix}.bp", 'w')
