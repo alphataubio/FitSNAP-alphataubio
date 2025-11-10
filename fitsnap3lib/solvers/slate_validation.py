@@ -321,7 +321,6 @@ class SlateValidation(SlateCommon):
         with adios2.FileReader(adios2_path) as adios2_file:
             basis_ranks = adios2_file.read_attribute("basis_ranks")
             blist = adios2_file.read_attribute("blist")
-            self.pt.all_print(f"*** basis_ranks {basis_ranks} blist {blist}")
         with adios2.Stream(adios2_path, "r") as adios2_stream:
             gamma_history, lambda_history = [], []
             for _ in adios2_stream.steps():
@@ -329,20 +328,19 @@ class SlateValidation(SlateCommon):
                 lambda_history.append(adios2_stream.read("lambda"))
             gamma_array = np.array(gamma_history)
             lambda_array = np.log10(np.array(lambda_history)+1e-10)
-
+            
         blist_rank = defaultdict(list)
         rank_indices = defaultdict(list)
         for i, (r, f) in enumerate(zip(basis_ranks, blist)):
-            blist_rank[r].append(re.split(r" ns \[|\] ls \[| \[0\]$", f))
+            blist_rank[r].append(re.split(r" ls \[|\] ns \[| \[0\]$", f))
             rank_indices[r].append(i)
-
-        
+            
         # Create the gamma heatmap plot - 4x1 layout with custom colormap
         notebook["cells"].append({"cell_type": "markdown", "metadata": {}, "source": ["## Gamma Heatmaps\n"]})
 
         threshold = self.threshold_gamma if self.pruning_method.lower() == 'gamma' else None
-        for n in range(int(basis_ranks.min()), int(basis_ranks.max())+1):
-            img_base64 = plot_rank_n(n, blist_rank, rank_indices, 'Gamma', gamma_array.T, threshold, 'min')
+        for rank in range(int(basis_ranks.min()), int(basis_ranks.max())+1):
+            img_base64 = plot_rank_n(rank, blist_rank, rank_indices, 'Gamma', gamma_array.T, threshold, 'min')
             notebook["cells"].append({
                 "cell_type": "markdown", "metadata": {}, "source": [
                     f'<div align="center"><img src="data:image/svg+xml;base64,{img_base64}"></div>'
@@ -470,6 +468,10 @@ def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=
 
     if (heatmap_rows := len(rank_indices[rank])) == 0:
         return
+        
+    #sorted_rank_indices = sorted(rank_indices[rank])
+    sorted_blist = sorted(blist_rank[rank], key=lambda basis: basis[1])
+
     label_spacing = .025*rank*n_iterations
     if rank == 0:
         xlim, xticks_extra = -1.5, [-.5, -.5]
@@ -491,39 +493,39 @@ def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=
         cbar_extend = 'max'
         turbo.set_over('white')
 
-    fig, ax = plt.subplots(figsize=(10,max(3,heatmap_rows*10/72)), layout="constrained")
+    fig, ax = plt.subplots(figsize=figsize, layout="constrained")
     im = ax.imshow(history_array[rank_indices[rank]], aspect="auto", cmap=turbo, vmin=vmin, vmax=vmax)
 
     # --- atom labels ---
-    atoms = Counter([basis[0] for basis in blist_rank[rank]])
-    y, y_positions, texts, ls_x = 0, [], [], (xticks_extra[1]-.5)/2
+    atoms = Counter([basis[0] for basis in sorted_blist])
+    y, y_positions, texts = 0, [], []
     for k, v in atoms.items():
-        for j in range(v):
-            y_positions.append(y + j)
-            texts.append(blist_rank[rank][y + j][-1].replace(']', ''))
         ax.add_patch(Rectangle((xlim, y - 0.5), xticks_extra[0]-xlim, v, fc='w', ec="k", zorder=9))
         ax.text((xlim+xticks_extra[0])/2, (atom_y := y + v / 2 - 0.5), k,
                 ha="center", va="center", fontsize=10, fontweight="bold", zorder=10)
-        if rank == 1:
-            ax.add_patch(Rectangle((xticks_extra[1], y - .5), xticks_extra[1]-xticks_extra[0], v, fc='w', ec="k", zorder=9))
-            ax.text(ls_x, atom_y, '0', ha="center", va="center", fontsize=8, zorder=10)
         y += v
 
     if rank >= 1:
-    
-        # --- ns labels ---
-        y, ns = 0, Counter([f"{basis[0]}_{basis[1]}" for basis in blist_rank[rank]])
-        ax.text((ns_x:=(xticks_extra[0]+xticks_extra[1])/2), 1.01*heatmap_rows, 'ns', 
-                ha="center", va="center", fontsize=10, fontweight="bold")
-        for k, v in ns.items():
-            ax.add_patch(Rectangle((xticks_extra[0], y - 0.5), xticks_extra[1]-xticks_extra[0], v, fc='w', ec="k", zorder=9))
-            ax.text(ns_x, y + v / 2 - 0.5, k.split('_')[-1], ha="center", va="center", fontsize=8, zorder=10)
-            y += v
- 
         # --- ls labels ---
-        if rank >= 2:
-            ax.text((xticks_extra[1]-.5)/2, 1.01*heatmap_rows, 'ls', ha="center", va="center", fontsize=10, fontweight="bold")
-            draw_labels(ax, y_positions, texts, x=ls_x)
+        y, ls = 0, Counter([f"{basis[0]}_{basis[1]}" for basis in sorted_blist])
+        
+        #for b in sorted_blist:
+        #    print(f"{b}\n")
+
+
+        ax.text((ls_x:=(xticks_extra[0]+xticks_extra[1])/2), heatmap_rows, 'ls', ha="center", va="top", fontsize=10, fontweight="bold")
+        for k, v in sorted(ls.items()):
+            print(f"*** k {k} v {v}")
+            ax.add_patch(Rectangle((xticks_extra[0], y - 0.5), xticks_extra[1]-xticks_extra[0], v, fc='w', ec="k", zorder=9))
+            ax.text(ls_x, y + v / 2 - 0.5, k.split('_')[-1], ha="center", va="center", fontsize=8, zorder=10)
+            for j in range(v):
+                y_positions.append(y + j)
+                texts.append(sorted_blist[y + j][-1].replace(']', ''))
+            y += v
+
+        # --- ns labels ---
+        ax.text((ns_x:=(xticks_extra[1]-.5)/2), heatmap_rows, 'ns', ha="center", va="top", fontsize=10, fontweight="bold")
+        draw_labels(ax, y_positions, texts, x=ns_x)
 
     tick_values = MaxNLocator(steps=[1, 5, 10],integer=True).tick_values(0, n_iterations)
     tick_positions = [t - .5 for t in tick_values]
