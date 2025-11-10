@@ -240,7 +240,7 @@ class SLATE(SlateValidation):
             if self.pruning_method.lower() == 'gamma':
                 # Gamma-based pruning: keep features with gamma > threshold
                 
-                if iter_ > 0:
+                if iter_ >= 3:
                     lambda_mask = gamma_ > self.threshold_gamma
                 
                 pt.single_print(f"SLATE ARD #{iter_}: elapsed {elapsed_iteration:.2f} alpha {alpha_:.6f} sse {sse_:.6f} gamma_sum {gamma_active.sum():.6f} n_active {n_active} {coef_change_str}")
@@ -252,10 +252,11 @@ class SLATE(SlateValidation):
                     pt.single_print(f"  Gamma range: [{gamma_[gamma_ > 0].min():.4f}, {gamma_.max():.4f}]")
                     pt.single_print(f"  Gamma stats: mean={gamma_nonzero.mean():.3f}, median={np.median(gamma_nonzero):.3f}")
                     pt.single_print(f"  Gamma > 0.5: {np.sum(gamma_ > 0.5)}, > 0.3: {np.sum(gamma_ > 0.3)}, > 0.1: {np.sum(gamma_ > 0.1)}")
+                    
             else:
                 # Lambda-based pruning: keep features with lambda < threshold (original method)
 
-                if iter_ > 0:
+                if iter_ >= 3:
                     lambda_mask = lambda_ < self.threshold_lambda
                 
                 pt.single_print(
