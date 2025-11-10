@@ -104,6 +104,14 @@ class LammpsPyace(LammpsPace):
         irow = 0
         bik_rows = 1
         icolref = ncols_descriptors
+        
+        if self.config.sections["REFERENCE"].units == "metal":
+            factor = 1000.0      # ev -> meV
+        elif self.config.sections["REFERENCE"].units == "real":
+            factor = 23.060549   # eV -> kcal/mol
+        else:
+            factor = 1.0
+
         if self.config.sections["CALCULATOR"].energy:
         
             b_sum_temp = lmp_pace[irow, :ncols_descriptors] / num_atoms
@@ -117,10 +125,10 @@ class LammpsPyace(LammpsPace):
                     onehot_atoms[self._type_mapping[atom] - 1] += 1
                 onehot_atoms /= len(self._data["AtomTypes"])
                 b_sum_temp = np.concatenate((onehot_atoms, b_sum_temp), axis=0)
-        
+                
             self.pt.shared_arrays['a'].array[index] = b_sum_temp
             ref_energy = lmp_pace[irow, icolref]
-            self.pt.shared_arrays['b'].array[index] = (energy - ref_energy) / num_atoms
+            self.pt.shared_arrays['b'].array[index] = factor*(energy - ref_energy) / num_atoms
             self.pt.shared_arrays['w'].array[index] = self._data["eweight"]
             self.pt.fitsnap_dict['Row_Type'][dindex:dindex + bik_rows] = ['Energy'] * nrows_energy
             self.pt.fitsnap_dict['Atom_I'][dindex:dindex + bik_rows] = [int(i) for i in range(nrows_energy)]
@@ -137,10 +145,10 @@ class LammpsPyace(LammpsPace):
             if not self._bzeroflag:
                 onehot_atoms = np.zeros((db_atom_temp.shape[0], self._numtypes))
                 db_atom_temp = np.concatenate([onehot_atoms, db_atom_temp], axis=1)
-
+                
             self.pt.shared_arrays['a'].array[s] = db_atom_temp
             ref_forces = lmp_pace[irow:irow + nrows_force, icolref]
-            self.pt.shared_arrays['b'].array[s] = self._data["Forces"].ravel() - ref_forces
+            self.pt.shared_arrays['b'].array[s] = factor*(self._data["Forces"].ravel() - ref_forces)
             self.pt.shared_arrays['w'].array[s] = self._data["fweight"]
             self.pt.fitsnap_dict['Row_Type'][dindex:dindex + nrows_force] = ['Force'] * nrows_force
             self.pt.fitsnap_dict['Atom_I'][dindex:dindex + nrows_force] = [int(np.floor(i/3)) for i in range(nrows_force)]

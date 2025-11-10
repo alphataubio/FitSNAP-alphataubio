@@ -32,16 +32,16 @@ class Reference(Section):
     @property
     def energy_units(self):
         if self.units == "metal":
-            return "eV"
+            return "meV/atom"
         elif self.units == "real":
-            return "kcal/mol"
+            return "kcal/mol/atom"
         else:
             return "?"
 
     @property
     def force_units(self):
         if self.units == "metal":
-            return "eV/A"
+            return "meV/A"
         elif self.units == "real":
             return "kcal/mol/A"
         else:
