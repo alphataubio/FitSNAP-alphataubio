@@ -15,34 +15,47 @@ elements = Al Ni
 bzeroflag = 0
 
 embeddings = {
-    "Al": {"npot": "FinnisSinclair", "fs_parameters": [1, 1], "ndensity": 1},
-    "Ni": {"npot": "FinnisSinclair", "fs_parameters": [1, 1], "ndensity": 1}
+    "ALL": {"npot": "FinnisSinclairShiftedScaled", "fs_parameters": [1, 1], "ndensity": 1},
   }
 
+# ChebExpCos, ChebPow, ChebLinear, SBessel
+
 bonds = {
-    "AlAl": {"radbase": "ChebExpCos", "radparameters": [0.342],
+    "AlAl": {"radbase": "ChebPow", "radparameters": [0.342],
              "rcut": 6.832, "dcut": 0.01, "core-repulsion": [0, 0.342], "r_in": 0.625, "delta_in": 0.01},
-    "AlNi": {"radbase": "ChebExpCos", "radparameters": [0.318],
+    "AlNi": {"radbase": "ChebPow", "radparameters": [0.318],
              "rcut": 6.356, "dcut": 0.01, "core-repulsion": [0, 0.318], "r_in": 0.650, "delta_in": 0.01},
-    "NiAl": {"radbase": "ChebExpCos", "radparameters": [0.318],
+    "NiAl": {"radbase": "ChebPow", "radparameters": [0.318],
              "rcut": 6.356, "dcut": 0.01, "core-repulsion": [0, 0.318], "r_in": 0.650, "delta_in": 0.01},
-    "NiNi": {"radbase": "ChebExpCos", "radparameters": [0.281],
+    "NiNi": {"radbase": "ChebPow", "radparameters": [0.281],
              "rcut": 5.610, "dcut": 0.01, "core-repulsion": [0, 0.281], "r_in": 0.540, "delta_in": 0.01}
   }
 
 functions = {
-    #"ALL": {"lmin_by_orders": [0], "lmax_by_orders": [0], "nradmax_by_orders": [1]}
+    
+    #"ALL": {"lmin_by_orders": [0], "lmax_by_orders": [0], "nradmax_by_orders": [2]}
+    
     #"ALL": {"lmin_by_orders": [0,0], "lmax_by_orders": [0,1], "nradmax_by_orders": [3,2]}
-    #"ALL": {"lmin_by_orders": [0,0,0], "lmax_by_orders": [0,3,3], "nradmax_by_orders": [5,2,1]}
+    
+    #"ALL": {"lmin_by_orders": [0,0,0], "lmax_by_orders": [0,2,1], "nradmax_by_orders": [5,2,1]},
+    #('Ni', 'Ni', 'Ni'): {"lmin_by_orders": [0,0,0], "lmax_by_orders": [0,3,3], "nradmax_by_orders": [5,2,1]}
+    
+    #"ALL": { 'lmax_by_orders': [0, 1, 1], 'nradmax_by_orders': [3, 2, 1] },
+    #('Ni', 'Ni'): { 'lmax_by_orders': [0, 2, 4], 'nradmax_by_orders': [5, 3, 2] },
+
     #"ALL": {"lmin_by_orders": [0,0,0,0], "lmax_by_orders": [0,3,2,1], "nradmax_by_orders": [8,5,3,1]}
-    "ALL": {"lmin_by_orders": [0,0,0,0,0], "lmax_by_orders": [0,3,3,2,1], "nradmax_by_orders": [24,8,4,2,1]}
+    
+    "ALL": {"lmax_by_orders": [0,3,3,3,3], "nradmax_by_orders": [30,8,5,3,2]},
+    #"NiNiNiNiNi": {"lmax_by_orders": [0,3,3,4,4], "nradmax_by_orders": [24,8,4,2,1]},
+  
   }
   
 [CALCULATOR]
 calculator = LAMMPSPYACE
-energy = 1
-force = 1
-stress = 1
+energy = 1    # goal < 1.64 meV/atom
+force  = 1    # goal < 28 meV/A
+stress = 1    # goal < 0.09 GPa
+
 
 [REFERENCE]
 units = metal
@@ -53,21 +66,19 @@ pair_coeff2 = 1 1 zbl 1    13 13
 pair_coeff3 = 1 2 zbl 2    13 28
 pair_coeff4 = 2 2 zbl 3    28 28
 
+
 [SOLVER]
 solver = SLATE
 compute_testerrs = 1
 detailed_errors = 0
 
 [SLATE]
-#method = RIDGE
-#alpha = 1e-6
 method = ARD
 pruning_method = gamma
 threshold_gamma = 0.05
-scap = 1e-6
-scai = 1e-6
+scap = 1e-3
+scai = 1e-3
 max_iter = 100
-#threshold_lambda = 1e6
 
 [SCRAPER]
 scraper = ADIOS2
@@ -89,11 +100,11 @@ random_sampling = 0
 rattled-300             = 1.0  500.0  1.0
 rattled-500             = 1.0  500.0  1.0
 rattled-1000            = 1.0  500.0  1.0
-rattled-relax           = 1.0  100.0  0.1
-aimd-from-PBE-1000-npt  = 1.0  100.0  0.1
-aimd-from-PBE-1000-nvt  = 1.0  100.0  0.1
-aimd-from-PBE-3000-npt  = 1.0  100.0  0.1
-aimd-from-PBE-3000-nvt  = 1.0  100.0  0.1
+rattled-relax           = 1.0  100.0  5.0
+aimd-from-PBE-1000-npt  = 1.0  100.0  5.0
+aimd-from-PBE-1000-nvt  = 1.0  100.0  5.0
+aimd-from-PBE-3000-npt  = 1.0  100.0  5.0
+aimd-from-PBE-3000-nvt  = 1.0  100.0  5.0
 
 [OUTFILE]
 output_style = PACE
