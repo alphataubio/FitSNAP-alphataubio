@@ -15,7 +15,7 @@ elements = Al Ni
 bzeroflag = 0
 
 embeddings = {
-    "ALL": {"npot": "FinnisSinclairShiftedScaled", "fs_parameters": [1, 1], "ndensity": 1},
+    "ALL": {"npot": "FinnisSinclairShiftedScaled", "fs_parameters": [1,1,1,0.5], "ndensity": 2},
   }
 
 # ChebExpCos, ChebPow, ChebLinear, SBessel
@@ -41,7 +41,7 @@ functions = {
     
     #'BINARY':  { 'lmax_by_orders': [0],   'nradmax_by_orders': [1]   },
     #'Al':      { 'lmax_by_orders': [0],   'nradmax_by_orders': [1]   },
-    #'Ni':      { 'lmax_by_orders': [0,1], 'nradmax_by_orders': [3]   },
+    #'Ni':      { 'lmax_by_orders': [0], 'nradmax_by_orders': [1]   },
 
     #'BINARY': { 'lmax_by_orders': [0, 0, 0], 'nradmax_by_orders': [1, 1, 1] },
     #'Al':     { 'lmax_by_orders': [0, 0, 0], 'nradmax_by_orders': [1, 1, 1] },
