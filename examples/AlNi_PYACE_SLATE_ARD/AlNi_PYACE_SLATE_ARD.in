@@ -21,32 +21,35 @@ embeddings = {
 # ChebExpCos, ChebPow, ChebLinear, SBessel
 
 bonds = {
-    "AlAl": {"radbase": "ChebPow", "radparameters": [0.342],
+    "AlAl": {"radbase": "ChebExpCos", "radparameters": [0.342],
              "rcut": 6.832, "dcut": 0.01, "core-repulsion": [0, 0.342], "r_in": 0.625, "delta_in": 0.01},
-    "AlNi": {"radbase": "ChebPow", "radparameters": [0.318],
+    "AlNi": {"radbase": "ChebExpCos", "radparameters": [0.318],
              "rcut": 6.356, "dcut": 0.01, "core-repulsion": [0, 0.318], "r_in": 0.650, "delta_in": 0.01},
-    "NiAl": {"radbase": "ChebPow", "radparameters": [0.318],
+    "NiAl": {"radbase": "ChebExpCos", "radparameters": [0.318],
              "rcut": 6.356, "dcut": 0.01, "core-repulsion": [0, 0.318], "r_in": 0.650, "delta_in": 0.01},
-    "NiNi": {"radbase": "ChebPow", "radparameters": [0.281],
+    "NiNi": {"radbase": "ChebExpCos", "radparameters": [0.281],
              "rcut": 5.610, "dcut": 0.01, "core-repulsion": [0, 0.281], "r_in": 0.540, "delta_in": 0.01}
   }
 
 functions = {
     
-    #"ALL": {"lmin_by_orders": [0], "lmax_by_orders": [0], "nradmax_by_orders": [2]}
+    #"ALL": {"lmax_by_orders": [0], "nradmax_by_orders": [2]}
+    #"ALL": {"lmax_by_orders": [0,1], "nradmax_by_orders": [3,2]}
+    #"ALL": {"lmax_by_orders": [0,1,1], "nradmax_by_orders": [3,2,1]},
+    #"ALL": {"lmax_by_orders": [0,3,2,1], "nradmax_by_orders": [8,5,3,1]}
+    #"ALL": {"lmax_by_orders": [0,3,3,3,3], "nradmax_by_orders": [30,8,5,3,2]},
     
-    #"ALL": {"lmin_by_orders": [0,0], "lmax_by_orders": [0,1], "nradmax_by_orders": [3,2]}
-    
-    #"ALL": {"lmin_by_orders": [0,0,0], "lmax_by_orders": [0,2,1], "nradmax_by_orders": [5,2,1]},
-    #('Ni', 'Ni', 'Ni'): {"lmin_by_orders": [0,0,0], "lmax_by_orders": [0,3,3], "nradmax_by_orders": [5,2,1]}
-    
-    #"ALL": { 'lmax_by_orders': [0, 1, 1], 'nradmax_by_orders': [3, 2, 1] },
-    #('Ni', 'Ni'): { 'lmax_by_orders': [0, 2, 4], 'nradmax_by_orders': [5, 3, 2] },
+    #'BINARY':  { 'lmax_by_orders': [0],   'nradmax_by_orders': [1]   },
+    #'Al':      { 'lmax_by_orders': [0],   'nradmax_by_orders': [1]   },
+    #'Ni':      { 'lmax_by_orders': [0,1], 'nradmax_by_orders': [3]   },
 
-    #"ALL": {"lmin_by_orders": [0,0,0,0], "lmax_by_orders": [0,3,2,1], "nradmax_by_orders": [8,5,3,1]}
-    
-    "ALL": {"lmax_by_orders": [0,3,3,3,3], "nradmax_by_orders": [30,8,5,3,2]},
-    #"NiNiNiNiNi": {"lmax_by_orders": [0,3,3,4,4], "nradmax_by_orders": [24,8,4,2,1]},
+    #'BINARY': { 'lmax_by_orders': [0, 0, 0], 'nradmax_by_orders': [1, 1, 1] },
+    #'Al':     { 'lmax_by_orders': [0, 0, 0], 'nradmax_by_orders': [1, 1, 1] },
+    #'Ni':     { 'lmax_by_orders': [0, 1, 1, 2], 'nradmax_by_orders': [8, 3, 2, 1] },
+
+    'BINARY': { 'lmax_by_orders': [0, 0, 0],       'nradmax_by_orders': [1, 1, 1] },
+    'Al':     { 'lmax_by_orders': [0, 4, 4],       'nradmax_by_orders': [20, 8, 3] },
+    'Ni':     { 'lmax_by_orders': [0, 4, 4, 3, 2], 'nradmax_by_orders': [20, 8, 5, 3, 2] },
   
   }
   
