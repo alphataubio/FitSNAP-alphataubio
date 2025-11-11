@@ -94,6 +94,14 @@ class LammpsPyace(LammpsPace):
         index = self.shared_index
         dindex = self.distributed_index
         lmp_pace = _extract_compute_np(self._lmp, "pace", 0, 2, (nrows_pace, ncols_pace))
+        
+        np.set_printoptions(
+            precision=4, suppress=False, floatmode='fixed', linewidth=np.inf,
+            formatter={'float': '{:.6f}'.format}, threshold = 800, edgeitems=50
+        )
+        
+        #self.pt.single_print(f"\n\n*** i {self._i} num_atoms {num_atoms} n_coeff {n_coeff} lmp_pace\n{lmp_pace}")
+        
 
         if (np.isinf(lmp_pace)).any() or (np.isnan(lmp_pace)).any():
             self.pt.single_print('! WARNING! applying np.nan_to_num()')
@@ -188,6 +196,8 @@ class LammpsPyace(LammpsPace):
         # Log validation data if enabled
         if self.config.sections["OUTFILE"].validation:
             pass
+            
+        #if self._i > 0: quit()
     
     # --------------------------------------------------------------------------------------------
     
