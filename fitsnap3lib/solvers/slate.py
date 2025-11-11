@@ -165,10 +165,6 @@ class SLATE(SlateValidation):
             precision=4, suppress=False, floatmode='fixed', linewidth=np.inf,
             formatter={'float': '{:.3f}'.format}, threshold = 800, edgeitems=5
         )
-        
-        for key, value in sorted(os.environ.items()):
-            if key.startswith("SLURM_"):
-                print(f"*** {key} = {value}")
       
         # Iterative procedure of ARDRegression
         start_time_iteration = time()

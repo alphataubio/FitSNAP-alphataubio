@@ -2,11 +2,12 @@ from fitsnap3lib.solvers.slate_common import SlateCommon
 
 import numpy as np
 import matplotlib.pyplot as plt
+import pandas as pd
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.patches import Rectangle
 from matplotlib.ticker import MaxNLocator
 from collections import Counter, defaultdict
-import re, json, io, base64, adios2
+import os, re, json, io, base64, adios2
 
 try:
     from slate_wrapper import slate_ridge_augmented_qr_cython, slate_ard_update_cython
@@ -61,8 +62,7 @@ class SlateValidation(SlateCommon):
         if self.pt._rank != 0 or not self.config.sections["OUTFILE"].validation:
             return
     
-        import pandas as pd
-        import os
+
         
         output_prefix = self.config.sections['OUTFILE'].metrics.replace('.md', '')
         notebook_file = f"{output_prefix}.ipynb"
@@ -78,14 +78,16 @@ class SlateValidation(SlateCommon):
             "nbformat_minor": 4
         }
         
-        # Cell 1: Title
+        # -------- TITLE --------
+
         notebook["cells"].append({
             "cell_type": "markdown",
             "metadata": {},
             "source": [f"# SLATE {self.method} Validation Report\n{output_prefix}\n", "\n"]
         })
-        
-        # Cell 2: Config dictionary (collapsed by default)
+                
+        # -------- CONFIGURATION --------
+ 
         notebook["cells"].append({
             "cell_type": "markdown",
             "metadata": {
@@ -95,8 +97,7 @@ class SlateValidation(SlateCommon):
             },
             "source": ["## Configuration"]
         })
-        
-        # Extract relevant config info
+
         config_dict = {}
         for section_name, section in self.config.sections.items():
             if hasattr(section, '__dict__'):
@@ -121,8 +122,30 @@ class SlateValidation(SlateCommon):
                 "    if key in config.get('SLATE', {}): print(f'  {key}: {config[\"SLATE\"][key]}')"
             ]
         })
+
+        # -------- SLURM --------
         
-        # Cell 3: Error analysis tables as markdown
+        notebook["cells"].append({
+            "cell_type": "markdown",
+            "metadata": {
+              "collapsed": True,
+              "jp-MarkdownHeadingCollapsed": True,
+              "jupyter": {"outputs_hidden": True}
+            },
+            "source": ["## SLURM"]
+        })
+        
+        slurm_keys = [f"{k} = {v}" for k,v in sorted(os.environ.items()) if k.startswith("SLURM_")]
+        slurm_source = "\n".join(slurm_keys) if len(slurm_keys)>0 else "n/a\n"
+
+        notebook["cells"].append({
+            "cell_type": "raw",
+            "metadata": {},
+            "source": [slurm_source]
+        })
+        
+        # -------- ERROR ANALYSIS --------
+        
         notebook["cells"].append({
             "cell_type": "markdown",
             "metadata": {},
@@ -515,7 +538,6 @@ def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=
 
         ax.text((ls_x:=(xticks_extra[0]+xticks_extra[1])/2), heatmap_rows, 'ls', ha="center", va="top", fontsize=10, fontweight="bold")
         for k, v in sorted(ls.items()):
-            print(f"*** k {k} v {v}")
             ax.add_patch(Rectangle((xticks_extra[0], y - 0.5), xticks_extra[1]-xticks_extra[0], v, fc='w', ec="k", zorder=9))
             ax.text(ls_x, y + v / 2 - 0.5, k.split('_')[-1], ha="center", va="center", fontsize=8, zorder=10)
             for j in range(v):
