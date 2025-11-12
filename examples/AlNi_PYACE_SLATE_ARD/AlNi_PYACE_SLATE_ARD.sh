@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=AlNi_PYACE
-#SBATCH --nodes=2
+#SBATCH --nodes=4
 #SBATCH --ntasks-per-node=192
 #SBATCH --time=1-00:00:00
 #SBATCH --mail-type=all
