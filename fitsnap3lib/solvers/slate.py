@@ -1,15 +1,13 @@
+
 from fitsnap3lib.solvers.slate_validation import SlateValidation
+import sys, os, json, time, signal, adios2
 import numpy as np
-import json, os
-from time import time
-from adios2 import Stream
+from mpi4py import MPI
 
 try:
     from slate_wrapper import slate_ridge_augmented_qr_cython, slate_ard_update_cython
 except ImportError:
     try:
-        import sys
-        import os
         slate_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'lib', 'slate_solver')
         if slate_path not in sys.path:
             sys.path.insert(0, slate_path)
@@ -17,14 +15,44 @@ except ImportError:
     except ImportError as e:
         print(f"Warning: Could not import SLATE ARD functions: {e}")
         slate_ard_update_cython = None
+    
+# -------------------------------- STOPPING CRITERIA --------------------------------
 
-try:
-    from mpi4py import MPI
-except ImportError:
-    MPI = None
+SIGUSR1_signal_received = False
+
+def handle_SIGUSR1(signum, frame):
+    global SIGUSR1_signal_received
+    SIGUSR1_signal_received = True
+
+signal.signal(signal.SIGUSR1, handle_SIGUSR1)
+
+def get_slurm_time_left():
+    try:
+        start = int(os.environ.get("SLURM_JOB_START_TIME", 0))
+        limit = int(os.environ.get("SLURM_TIME_LIMIT", 0)) * 60  # minutes → seconds
+        now = int(time.time())
+        if start and limit:
+            return start + limit - now
+    except Exception:
+        pass
+    return float("inf")
+
+def mixed_relative_change(coef_old, coef_new, rtol=1e-3, atol=1e-6):
+    if coef_old is None:
+        return False, False, None, None
+    abs_change = np.linalg.norm(coef_new - coef_old)
+    rel_change = abs_change / (np.linalg.norm(coef_old) + atol)
+    if rel_change < rtol:
+        return True, False, rel_change, abs_change
+    elif abs_change < atol:
+        return False, True, rel_change, abs_change
+    else:
+        return False, False, rel_change, abs_change
+
+
+# --------------------------------------------------------------------------------------------
 
 class SLATE(SlateValidation):
-
 
     # --------------------------------------------------------------------------------------------
 
@@ -167,15 +195,16 @@ class SLATE(SlateValidation):
         )
       
         # Iterative procedure of ARDRegression
-        start_time_iteration = time()
-        for iter_ in range(self.max_iter):
+        iteration = 0
+        start_time_iteration = time.time()
+        
+        while True:
             # Get active indices
             active_indices = np.where(lambda_mask)[0]
             n_active = len(active_indices)
             
             if n_active == 0:
-                if self.config.debug and pt._rank == 0:
-                    pt.single_print(f"ARD: all features pruned at iteration {iter_}")
+                pt.debug_single_print(f"ARD: all features pruned at iteration {iteration}")
                 break
                         
             # Pack active columns of a into first columns of aw (both are column-major for SLATE)
@@ -222,25 +251,11 @@ class SLATE(SlateValidation):
                         
             alpha_ = (global_n_training - gamma_active.sum() + 2.0 * self.alpha_1) / (sse_ + 2.0 * self.alpha_2)
 
-            if coef_old_ is not None:
-                coef_change = np.sum(np.abs(coef_old_ - coef_))
-                coef_change_str = f"coef_change {coef_change:g} tol {self.tol:g}"
-            else:
-                coef_change_str = ""
-                
-            end_time_iteration = time()
-            elapsed_iteration = end_time_iteration - start_time_iteration
-            start_time_iteration = end_time_iteration
-
             # Prune features based on selected method
             if self.pruning_method.lower() == 'gamma':
-                # Gamma-based pruning: keep features with gamma > threshold
                 
-                if iter_ >= 3:
-                    lambda_mask = gamma_ > self.threshold_gamma
-                
-                pt.single_print(f"SLATE ARD #{iter_}: elapsed {elapsed_iteration:.2f} alpha {alpha_:.6f} sse {sse_:.6f} gamma_sum {gamma_active.sum():.6f} n_active {n_active} {coef_change_str}")
-                
+                if iteration >= 3: lambda_mask = gamma_ > self.threshold_gamma
+                                
                 if self.config.debug:
                     # Show gamma distribution
                     gamma_nonzero = gamma_[gamma_ > 0]
@@ -250,13 +265,11 @@ class SLATE(SlateValidation):
                     pt.single_print(f"  Gamma > 0.5: {np.sum(gamma_ > 0.5)}, > 0.3: {np.sum(gamma_ > 0.3)}, > 0.1: {np.sum(gamma_ > 0.1)}")
                     
             else:
-                # Lambda-based pruning: keep features with lambda < threshold (original method)
 
-                if iter_ >= 3:
-                    lambda_mask = lambda_ < self.threshold_lambda
+                if iteration >= 3: lambda_mask = lambda_ < self.threshold_lambda
                 
                 pt.single_print(
-                    f"SLATE ARD #{iter_}: elapsed {elapsed_iteration:.2f} alpha {alpha_:.6f} sse {sse_:.6f} "
+                    f"SLATE ARD #{iteration}: elapsed {elapsed_iteration:.2f} alpha {alpha_:.6f} sse {sse_:.6f} "
                     f"gamma_sum {gamma_active.sum():.6f} n_active {n_active} {coef_change_str}\n    "
                     f"lambda range [{lambda_[lambda_ > 0].min():.4e}, {lambda_.max():.4e}], "
                     f"keeping {np.sum(lambda_mask)}/{n} features "
@@ -264,17 +277,42 @@ class SLATE(SlateValidation):
                 )
             
             coef_[~lambda_mask] = 0
-            
-            # Check for stopping criteria (convergence or SLURM timeout)
-            if coef_old_ is not None:
-                #coef_change = np.sum(np.abs(coef_old_ - coef_))
-                if coef_change < self.tol:
-                    active_features = np.sum(lambda_mask)
-                    pt.single_print(f"ARD converged after {iter_} iterations, "
-                                      f"{active_features}/{n} features active")
-                    break
-            
+
+            # Log iteration
+
+            end_time_iteration = time.time()
+            elapsed_iteration = end_time_iteration - start_time_iteration
+            start_time_iteration = end_time_iteration
+
+            coef_rel_converged, coef_abs_converged, coef_rel_change, coef_abs_change = mixed_relative_change(coef_old_, coef_)
+            coef_change_str = "" if coef_old_ is None else f"coef_rel_change {coef_rel_change:g} coef_abs_change {coef_abs_change:g}"
             coef_old_ = np.copy(coef_)
+
+            pt.single_print(f"SLATE ARD #{iteration}: elapsed {elapsed_iteration:.2f} alpha {alpha_:.6f} sse {sse_:.6f} gamma_sum {gamma_active.sum():.6f} n_active {n_active} {coef_change_str}")
+            
+            iteration += 1
+            
+            # Check for stopping criteria
+            
+            if iteration > self.max_iter:
+                pt.single_print(f"SLATE ARD: stopping... reached max_iter {self.max_iter}")
+                break
+
+            if coef_rel_converged:
+                pt.single_print(f"SLATE ARD: stopping... coef_rel_change {coef_rel_change} < {self.rtol}")
+                break
+
+            if coef_abs_converged:
+                pt.single_print(f"SLATE ARD: stopping... coef_abs_change {coef_abs_change} < {self.atol}")
+                break
+
+            if SIGUSR1_signal_received:
+                pt.single_print(f"SLATE ARD: stopping... received SIGUSR1 signal")
+                break
+
+            if (slurm_time_left := get_slurm_time_left()) < 2 * elapsed_iteration:
+                pt.single_print(f"SLATE ARD: stopping... {slurm_time_left/60:.1f} minutes < 2 * elapsed_iteration {elapsed_iteration/60} minutes")
+                break
         
         # Store final solution
         if "PYACE" in self.config.sections:

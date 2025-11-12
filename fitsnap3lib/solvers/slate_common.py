@@ -70,7 +70,8 @@ class SlateCommon(Solver):
                 self.alpha = slate_config.alpha
             elif self.method == 'ARD':
                 self.max_iter = slate_config.max_iter
-                self.tol = slate_config.tol
+                self.rtol = slate_config.rtol
+                self.atol = slate_config.atol
                 
                 # Store config parameters for adaptive hyperparameter computation
                 self.directmethod = slate_config.directmethod
