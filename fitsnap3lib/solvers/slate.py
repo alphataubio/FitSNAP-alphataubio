@@ -28,11 +28,10 @@ signal.signal(signal.SIGUSR1, handle_SIGUSR1)
 
 def get_slurm_time_left():
     try:
-        start = int(os.environ.get("SLURM_JOB_START_TIME", 0))
-        limit = int(os.environ.get("SLURM_TIME_LIMIT", 0)) * 60  # minutes → seconds
+        end = int(os.environ.get("SLURM_JOB_END_TIME", 0))
         now = int(time.time())
-        if start and limit:
-            return start + limit - now
+        if end and now:
+            return end - now
     except Exception:
         pass
     return float("inf")
@@ -283,12 +282,14 @@ class SLATE(SlateValidation):
             end_time_iteration = time.time()
             elapsed_iteration = end_time_iteration - start_time_iteration
             start_time_iteration = end_time_iteration
+            
+            slurm_time_left = get_slurm_time_left()
 
             coef_rel_converged, coef_abs_converged, coef_rel_change, coef_abs_change = mixed_relative_change(coef_old_, coef_)
             coef_change_str = "" if coef_old_ is None else f"coef_rel_change {coef_rel_change:g} coef_abs_change {coef_abs_change:g}"
             coef_old_ = np.copy(coef_)
 
-            pt.single_print(f"SLATE ARD #{iteration}: elapsed {elapsed_iteration:.2f} alpha {alpha_:.6f} sse {sse_:.6f} gamma_sum {gamma_active.sum():.6f} n_active {n_active} {coef_change_str}")
+            pt.single_print(f"SLATE ARD #{iteration}: elapsed {elapsed_iteration/60:.2f}m alpha {alpha_:.6f} sse {sse_:.6f} gamma_sum {gamma_active.sum():.6f} n_active {n_active} {coef_change_str} slurm_time_left {slurm_time_left/60}m")
             
             iteration += 1
             
@@ -310,7 +311,7 @@ class SLATE(SlateValidation):
                 pt.single_print(f"SLATE ARD: stopping... received SIGUSR1 signal")
                 break
 
-            if (slurm_time_left := get_slurm_time_left()) < 2 * elapsed_iteration:
+            if slurm_time_left < 2 * elapsed_iteration:
                 pt.single_print(f"SLATE ARD: stopping... {slurm_time_left/60:.1f} minutes < 2 * elapsed_iteration {elapsed_iteration/60} minutes")
                 break
         
