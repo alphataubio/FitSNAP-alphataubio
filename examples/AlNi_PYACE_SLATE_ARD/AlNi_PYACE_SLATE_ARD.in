@@ -15,7 +15,7 @@ elements = Al Ni
 bzeroflag = 0
 
 embeddings = {
-    "ALL": {"npot": "FinnisSinclair", "fs_parameters": [1,1], "ndensity": 1},
+    "ALL": {"npot": "FinnisSinclairShiftedScaled", "fs_parameters": [1,1,1,0.5], "ndensity": 2},
   }
 
 # ChebExpCos, ChebPow, ChebLinear, SBessel
@@ -79,8 +79,8 @@ detailed_errors = 0
 method = ARD
 pruning_method = gamma
 threshold_gamma = 0.01
-scap = 1e-2
-scai = 1e-2
+scap = 10.0
+scai = 10.0
 max_iter = 10
 
 [SCRAPER]
@@ -109,8 +109,8 @@ aimd-from-PBE-3000-nvt  = 1.0  100.0  1.0
 
 [OUTFILE]
 output_style = PACE
-metrics = AlNi_PYACE_SLATE_ARD.md
-potential = AlNi_PYACE_SLATE_ARD
+metrics = AlNi_PYACE_SLATE_ARD_v6.md
+potential = AlNi_PYACE_SLATE_ARD_v6
 validation = 1
 
 [EXTRAS]

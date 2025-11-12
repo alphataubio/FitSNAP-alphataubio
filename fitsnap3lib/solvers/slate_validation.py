@@ -373,16 +373,19 @@ class SlateValidation(SlateCommon):
         # Cell 6: Create and display lambda heatmaps
         # Create the lambda heatmap plot
         
-        notebook["cells"].append({"cell_type": "markdown", "metadata": {}, "source": ["## Lambda Heatmaps\n"]})
+        if False:
+
+            notebook["cells"].append({"cell_type": "markdown", "metadata": {}, "source": ["## Lambda Heatmaps\n"]})
         
-        threshold = self.threshold_lambda if self.pruning_method.lower() == 'lambda' else None
-        for n in range(int(basis_ranks.min()), int(basis_ranks.max())+1):
-            img_base64 = plot_rank_n(n, blist_rank, rank_indices, 'Log10(Lambda)', lambda_array.T, threshold, 'max')
-            notebook["cells"].append({
-                "cell_type": "markdown", "metadata": {}, "source": [
-                    f'<div align="center"><img src="data:image/svg+xml;base64,{img_base64}"></div>'
-                ]
-            })
+            threshold = self.threshold_lambda if self.pruning_method.lower() == 'lambda' else None
+            for n in range(int(basis_ranks.min()), int(basis_ranks.max())+1):
+                img_base64 = plot_rank_n(n, blist_rank, rank_indices, 'Log10(Lambda)', lambda_array.T, threshold, 'max')
+                notebook["cells"].append({
+                    "cell_type": "markdown", "metadata": {}, "source": [
+                        f'<div align="center"><img src="data:image/svg+xml;base64,{img_base64}"></div>'
+                    ]
+                })
+
 
         # Cell 7: Summary statistics with side-by-side gamma and lambda distributions
         
