@@ -6,8 +6,8 @@ class Slate(Section):
     def __init__(self, name, config, pt, infile, args):
         super().__init__(name, config, pt, infile, args)
         self.allowedkeys = ['method', 'alpha',
-            'max_iter', 'tol', 
-            'alphabig', 'alphasmall', 'lambdabig', 'lambdasmall', 
+            'max_iter', 'rtol', 'atol',
+            'alphabig', 'alphasmall', 'lambdabig', 'lambdasmall',
             'threshold_lambda', 'threshold_gamma', 'pruning_method',
             'directmethod', 'scap', 'scai', 'logcut']
                        
@@ -25,7 +25,8 @@ class Slate(Section):
         self.max_iter = self.get_value("SLATE", "max_iter", "100", "int")
         
         # Stop the algorithm if w has converged
-        self.tol = self.get_value("SLATE", "tol", "1e-3", "float")
+        self.rtol = self.get_value("SLATE", "rtol", "1e-3", "float")
+        self.atol = self.get_value("SLATE", "atol", "1e-6", "float")
         
         # Direct method hyperparameters (used if directmethod=1)
         self.alphabig = self.get_value("SLATE", "alphabig", "1.0E-12", "float")
