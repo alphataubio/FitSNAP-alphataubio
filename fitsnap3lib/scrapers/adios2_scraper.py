@@ -298,7 +298,7 @@ class ADIOS2(Scraper):
             'Lattice': lattice.copy(),
             'QMLattice': lattice.copy().T,  # Transpose for compatibility with parent class
             'Energy': float(self.energy[config_idx]),
-            'eweight': self.group_table[group_name]['eweight'],
+            #'eweight': self.group_table[group_name]['eweight'],
             'test_bool': bool(self.test_bool[config_idx]),
         }
         
@@ -306,13 +306,13 @@ class ADIOS2(Scraper):
         if self.has_forces and self.use_forces:
             forces = self.forces_flat[pos_start:pos_end]
             data_dict['Forces'] = forces.copy()
-            data_dict['fweight'] = self.group_table[group_name]['fweight'] / (3*natoms)
+            #data_dict['fweight'] = self.group_table[group_name]['fweight'] / (3*natoms)
         
         # Extract stress if available (3x3 matrix)
         if self.has_stress and self.use_stress:
             stress = self.stresses[config_idx].reshape((3, 3))
             data_dict['Stress'] = stress.copy()
-            data_dict['vweight'] = self.group_table[group_name]['vweight']
+            #data_dict['vweight'] = self.group_table[group_name]['vweight']
         
         # Apply weights from config file using parent class method
         # We need to temporarily set self.data for parent methods to work
@@ -326,7 +326,7 @@ class ADIOS2(Scraper):
         self._translate_coords()
         
         # Apply weighting (off, only normalized fweight/natoms)
-        # self._weighting(natoms)
+        self._weighting(natoms)
         
         result = self.data
         self.data = old_data

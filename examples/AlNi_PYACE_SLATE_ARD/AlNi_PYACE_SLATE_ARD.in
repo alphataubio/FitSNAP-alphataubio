@@ -98,6 +98,7 @@ dataPath = omat24_AlNi.bp
 [GROUPS]
 group_sections = name eweight fweight vweight
 group_types = str float float float float float
+smartweights = 1
 rattled-300             = 1.0  10.0  1.0
 rattled-500             = 1.0  10.0  1.0
 rattled-1000            = 1.0  10.0  1.0
