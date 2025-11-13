@@ -289,7 +289,7 @@ class SLATE(SlateValidation):
             coef_change_str = "" if coef_old_ is None else f"coef_rel_change {coef_rel_change:.2g} coef_abs_change {coef_abs_change:.2g}"
             coef_old_ = np.copy(coef_)
 
-            pt.single_print(f"SLATE ARD #{iteration} ({elapsed_iteration/60:.1f}m): alpha {alpha_:.2f} sse {sse_:.2f} gamma_sum {gamma_active.sum():.2f} n_active {n_active} {coef_change_str} slurm_time_left {slurm_time_left/60:.1f}m")
+            pt.single_print(f"SLATE ARD #{iteration} ({elapsed_iteration/60:.1f}m): alpha {alpha_:.2g} sse {sse_:.2g} gamma_sum {gamma_active.sum():.1f} n_active {n_active} {coef_change_str} slurm_time_left {slurm_time_left/60:.1f}m")
             
             iteration += 1
             
