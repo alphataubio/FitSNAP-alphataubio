@@ -139,6 +139,16 @@ jobs:
 
     - name: Install slate_wrapper
       run: |
+        # Set compilers for Python build - same as SLATE build
+        if [ "${{ matrix.os }}" = "macos-latest" ]; then
+          export FC=$(find /opt/homebrew/bin -name 'gfortran-*' 2>/dev/null | head -n 1)
+          GCC_VERSION=$(basename $FC | sed 's/gfortran-//')
+          export CXX=/opt/homebrew/bin/g++-${GCC_VERSION}
+          export CC=/opt/homebrew/bin/gcc-${GCC_VERSION}
+          # Also set OpenMP library path for macOS
+          export LDFLAGS="-L/opt/homebrew/opt/libomp/lib"
+          export CPPFLAGS="-I/opt/homebrew/opt/libomp/include"
+        fi
         cd fitsnap3lib/lib/slate_solver
         pip install .
 
