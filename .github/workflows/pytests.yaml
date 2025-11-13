@@ -104,14 +104,17 @@ jobs:
     # ===== SLATE install =====
     - name: Install SLATE library
       run: |
-        find /opt/homebrew -print
+        # Find gfortran from homebrew gcc installation
+        export FC=$(find /opt/homebrew/bin -name 'gfortran-*' | head -n 1)
+        echo "Found Fortran compiler: $FC"
+        
         git clone --recursive https://github.com/icl-utk-edu/slate.git
         cd slate
         mkdir build && cd build
         cmake -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_INSTALL_PREFIX=/usr/local \
               -Dbuild_tests=OFF \
-              -DCMAKE_Fortran_COMPILER=/opt/homebrew/bin/gfortran \
+              -DCMAKE_Fortran_COMPILER=$FC \
               -DCMAKE_CXX_STANDARD=17 ..
         make -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
         sudo make install
