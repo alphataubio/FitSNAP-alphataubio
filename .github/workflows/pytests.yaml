@@ -201,7 +201,7 @@ jobs:
       run: |
         export PYTHONPATH=$(pwd):$PYTHONPATH
         cd tests
-        mpirun -np 4 pytest -s test_examples.py::test_fitsnap_${{ matrix.test }}
+        mpirun --oversubscribe -np 4 pytest -s test_examples.py::test_fitsnap_${{ matrix.test }}
 
     - name: Test nonlinear models
       run: |
