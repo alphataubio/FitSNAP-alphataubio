@@ -104,8 +104,15 @@ jobs:
     # ===== SLATE install =====
     - name: Install SLATE library
       run: |
-        # Find gfortran from homebrew gcc installation
-        export FC=$(find /opt/homebrew/bin -name 'gfortran-*' | head -n 1)
+        # Find gfortran - works for both macOS (homebrew) and Ubuntu
+        if [ "${{ matrix.os }}" = "macos-latest" ]; then
+          export FC=$(find /opt/homebrew/bin -name 'gfortran-*' 2>/dev/null | head -n 1)
+          if [ -z "$FC" ]; then
+            export FC=$(which gfortran 2>/dev/null || echo "")
+          fi
+        else
+          export FC=$(which gfortran)
+        fi
         echo "Found Fortran compiler: $FC"
         
         git clone --recursive https://github.com/icl-utk-edu/slate.git
