@@ -15,7 +15,7 @@ elements = Al Ni
 bzeroflag = 0
 
 embeddings = {
-    "ALL": {"npot": "FinnisSinclairShiftedScaled", "fs_parameters": [1,1,1,0.5], "ndensity": 2},
+    "ALL": {"npot": "FinnisSinclairShiftedScaled", "fs_parameters": [1,1], "ndensity": 1},
   }
 
 # ChebExpCos, ChebPow, ChebLinear, SBessel
@@ -47,9 +47,9 @@ functions = {
     #'Al':     { 'lmax_by_orders': [0, 0, 0], 'nradmax_by_orders': [1, 1, 1] },
     #'Ni':     { 'lmax_by_orders': [0, 1, 1, 2], 'nradmax_by_orders': [8, 3, 2, 1] },
 
-    'BINARY': { 'lmax_by_orders': [0,4,4,2,1], 'nradmax_by_orders': [20,8,4,2,1] },
-    'Al':     { 'lmax_by_orders': [0,4,4,1  ], 'nradmax_by_orders': [20,8,4,2  ] },
-    'Ni':     { 'lmax_by_orders': [0,4,4,3,2], 'nradmax_by_orders': [20,8,6,4,2] },
+    'BINARY': { 'lmax_by_orders': [0,4,4,3,2], 'nradmax_by_orders': [20,4,3,2,1] },
+    'Al':     { 'lmax_by_orders': [0,3,2,1  ], 'nradmax_by_orders': [20,3,2,1  ] },
+    'Ni':     { 'lmax_by_orders': [0,4,4,3,2], 'nradmax_by_orders': [20,4,3,2,1] },
   
   }
   
@@ -79,8 +79,8 @@ detailed_errors = 0
 method = ARD
 pruning_method = gamma
 threshold_gamma = 0.01
-scap = 1e-1
-scai = 1e-1
+scap = 1e8
+scai = 1e8
 max_iter = 10
 
 [SCRAPER]
