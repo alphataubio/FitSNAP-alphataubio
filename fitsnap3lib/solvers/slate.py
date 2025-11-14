@@ -126,9 +126,15 @@ class SLATE(SlateValidation):
         # Center and scale in-place to my local slice
         aw[local_slice] -= mean_aw
         aw[local_slice] /= std_aw
-        bw[local_slice] -= mean_bw
-        bw[local_slice] /= std_bw
-                
+        #bw[local_slice] -= mean_bw
+        #bw[local_slice] /= std_bw
+
+        np.set_printoptions(
+            precision=4, suppress=False, floatmode='fixed', linewidth=np.inf,
+            formatter={'float': '{:.3g}'.format}, threshold = 800, edgeitems=5
+        )
+        #pt.single_print(f"SLATE ARD: m {m} n {n} mean_aw {mean_aw:} std_aw {std_aw} mean_bw {mean_bw:.2g} std_bw {std_bw:.2g}")
+
         # Compute adaptive hyperparameters
         ap = 1.0  # inverse variance ("alpha prior")
         
@@ -187,13 +193,6 @@ class SLATE(SlateValidation):
                             basis_ranks.append(int(basis_function.rank))
                     outfile_section.adios2_stream.write_attribute('basis_ranks', basis_ranks)
                     outfile_section.adios2_stream.write_attribute('blist', pyace_section.blist)
-        
-        pt.single_print(f"SLATE ARD: m {m} n {n} mean_bw {mean_bw:.2g} std_bw {std_bw:.2g} ")
-        
-        np.set_printoptions(
-            precision=4, suppress=False, floatmode='fixed', linewidth=np.inf,
-            formatter={'float': '{:.3f}'.format}, threshold = 800, edgeitems=5
-        )
       
         # Iterative procedure of ARDRegression
         iteration = 0
@@ -286,12 +285,13 @@ class SLATE(SlateValidation):
             start_time_iteration = end_time_iteration
             
             slurm_time_left = get_slurm_time_left()
+            slurm_time_left_str = "" if np.isinf(slurm_time_left) else f" slurm_time_left {slurm_time_left/60:.1f}m"
 
             coef_rel_converged, coef_abs_converged, coef_rel_change, coef_abs_change = mixed_relative_change(coef_old_, coef_)
-            coef_change_str = "" if coef_old_ is None else f"coef_rel_change {coef_rel_change:.2g} coef_abs_change {coef_abs_change:.2g}"
+            coef_change_str = " " if coef_old_ is None else f" coef_rel_change {coef_rel_change:.2g} coef_abs_change {coef_abs_change:.2g}"
             coef_old_ = np.copy(coef_)
 
-            pt.single_print(f"SLATE ARD #{iteration} ({elapsed_iteration/60:.1f}m): alpha {alpha_:.2g} sse {sse_:.2g} gamma_sum {gamma_active.sum():.1f} n_active {n_active} {coef_change_str} slurm_time_left {slurm_time_left/60:.1f}m")
+            pt.single_print(f"SLATE ARD #{iteration} ({elapsed_iteration/60:.1f}m): alpha {alpha_:.3g} sse {sse_:.3g} gamma_sum {gamma_active.sum():.1f} n_active {n_active}{coef_change_str}{slurm_time_left_str}")
             
             iteration += 1
             
@@ -325,7 +325,7 @@ class SLATE(SlateValidation):
             else:
                 pyace_section.lambda_mask = lambda_mask[pyace_section.numtypes:]
 
-        self.fit = coef_ * std_bw / std_aw
+        self.fit = coef_ * std_aw + mean_aw  # * std_bw/
         
         # Save gamma and lambda history using adios2 if validation enabled
         if self.validation and self.pt._rank == 0:
