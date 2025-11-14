@@ -101,6 +101,8 @@ class SLATE(SlateValidation):
                     local_w[i] = 0.0
         else:
             local_m_training = a_end_idx - a_start_idx + 1
+            
+        local_m_training = np.atleast_1d(local_m_training)
 
         # -------- IN-PLACE WEIGHTING/CENTERING/SCALING --------
         eps = np.finfo(np.float64).eps
@@ -110,10 +112,11 @@ class SLATE(SlateValidation):
         # Compute mean/std of weighted a (per column) and b across MPI
         local_sum_aw, local_sum_bw = np.sum(aw[local_slice], axis=0), np.atleast_1d(np.sum(bw[local_slice]))
         local_sum_aw2, local_sum_bw2 = np.sum(aw[local_slice]**2, axis=0), np.atleast_1d(np.sum(bw[local_slice]**2))
-        local_values = np.concatenate([local_sum_aw, local_sum_aw2, local_sum_bw, local_sum_bw2])
+        local_values = np.concatenate([local_sum_aw, local_sum_aw2, local_sum_bw, local_sum_bw2, local_m_training])
         global_values = pt._comm.allreduce(local_values, op=MPI.SUM)
         global_sum_aw, global_sum_aw2 = global_values[:n], global_values[n:2*n]
         global_sum_bw, global_sum_bw2 = global_values[2*n], global_values[2*n + 1]
+        global_m_training = global_values[2*n + 2]
         mean_aw = global_sum_aw / m
         mean_bw = global_sum_bw / m
         var_aw = global_sum_aw2 / m - mean_aw**2
@@ -247,7 +250,7 @@ class SLATE(SlateValidation):
                 outfile_section.adios2_stream.write("lambda", lambda_, count=[n])
                 outfile_section.adios2_stream.end_step()
                         
-            alpha_ = (global_n_training - gamma_active.sum() + 2.0 * self.alpha_1) / (sse_ + 2.0 * self.alpha_2)
+            alpha_ = (global_m_training - gamma_active.sum() + 2.0 * self.alpha_1) / (sse_ + 2.0 * self.alpha_2)
 
             # Prune features based on selected method
             if self.pruning_method.lower() == 'gamma':
@@ -322,7 +325,7 @@ class SLATE(SlateValidation):
             else:
                 pyace_section.lambda_mask = lambda_mask[pyace_section.numtypes:]
 
-        self.fit = coef_ / std_a * std_b
+        self.fit = coef_ * std_bw / std_aw
         
         # Save gamma and lambda history using adios2 if validation enabled
         if self.validation and self.pt._rank == 0:
