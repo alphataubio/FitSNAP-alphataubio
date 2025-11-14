@@ -79,8 +79,8 @@ detailed_errors = 0
 method = ARD
 pruning_method = gamma
 threshold_gamma = 0.01
-scap = 1e8
-scai = 1e8
+scap = 1e-4
+scai = 1e-4
 max_iter = 10
 
 [SCRAPER]

@@ -75,11 +75,11 @@ class SLATE(SlateValidation):
         """
         
         pt = self.pt
+
+        # Note: a, b, w remain unchanged - only aw, bw get modified
         a = pt.shared_arrays['a'].array  # X: design matrix (local portion)
         b = pt.shared_arrays['b'].array  # y: target vector (local portion)
         w = pt.shared_arrays['w'].array  # weights
-        
-        # Note: a, b, w remain unchanged - only aw, bw get modified
         aw = pt.shared_arrays['aw'].array
         bw = pt.shared_arrays['bw'].array
 
@@ -92,43 +92,42 @@ class SLATE(SlateValidation):
         lld = aw.shape[0]  # local leading dimension
 
         # -------- TRAINING/TESTING SPLIT --------
-        # Zero out test samples (they won't contribute to the fit)
+        # Zero out test samples and count training samples
         if 'Testing' in pt.fitsnap_dict and pt.fitsnap_dict['Testing'] is not None:
             testing_mask = pt.fitsnap_dict['Testing'][local_slice]
+            local_m_training = np.sum(~np.array(testing_mask, dtype=bool))
             for i in range(a_end_idx-a_start_idx+1):
                 if testing_mask[i]:
-                    #aw[a_start_idx+i,:] = 0.0
-                    #bw[a_start_idx+i] = 0.0
-                    #w[a_start_idx+i] = 0.0
                     local_w[i] = 0.0
-                    
-        # Apply weights to my local slice
+        else:
+            local_m_training = a_end_idx - a_start_idx + 1
+
+        # -------- IN-PLACE WEIGHTING/CENTERING/SCALING --------
+        eps = np.finfo(np.float64).eps
+        # Apply weights to a and b
         aw[local_slice] = local_w[:, np.newaxis] * a[local_slice]
         bw[local_slice] = local_w * b[local_slice]
-
-        # Initialize ARD parameters
-        eps = np.finfo(np.float64).eps
-        
-        # Compute initial alpha from variance of y (requires MPI reduction)
-        # Count training samples (after zeroing out test samples above)
-        if 'Testing' in pt.fitsnap_dict and pt.fitsnap_dict['Testing'] is not None:
-            testing_mask = pt.fitsnap_dict['Testing'][local_slice]
-            local_n_training = np.sum(~np.array(testing_mask, dtype=bool))
-        else:
-            local_n_training = a_end_idx - a_start_idx + 1
-        
-        # Compute variance (test samples are already zero'd in bw, so they won't affect mean/variance)
-        local_bw = bw[local_slice]
-        local_sum_bw = np.sum(local_bw)
-        local_sum_bw2 = np.sum(local_bw**2)
-        global_sum_bw = pt._comm.allreduce(local_sum_bw, op=MPI.SUM)
-        global_sum_bw2 = pt._comm.allreduce(local_sum_bw2, op=MPI.SUM)
-        global_n_training = pt._comm.allreduce(local_n_training, op=MPI.SUM)
-        mean_bw = global_sum_bw / global_n_training
-        var_bw = (global_sum_bw2 / global_n_training) - mean_bw**2
+        # Compute mean/std of weighted a (per column) and b across MPI
+        local_sum_aw, local_sum_bw = np.sum(aw[local_slice], axis=0), np.atleast_1d(np.sum(bw[local_slice]))
+        local_sum_aw2, local_sum_bw2 = np.sum(aw[local_slice]**2, axis=0), np.atleast_1d(np.sum(bw[local_slice]**2))
+        local_values = np.concatenate([local_sum_aw, local_sum_aw2, local_sum_bw, local_sum_bw2])
+        global_values = pt._comm.allreduce(local_values, op=MPI.SUM)
+        global_sum_aw, global_sum_aw2 = global_values[:n], global_values[n:2*n]
+        global_sum_bw, global_sum_bw2 = global_values[2*n], global_values[2*n + 1]
+        mean_aw = global_sum_aw / m
+        mean_bw = global_sum_bw / m
+        var_aw = global_sum_aw2 / m - mean_aw**2
+        var_bw = global_sum_bw2 / m - mean_bw**2
+        std_aw = np.sqrt(var_aw + eps)
+        std_bw = np.sqrt(var_bw + eps)
+        # Center and scale in-place to my local slice
+        aw[local_slice] -= mean_aw
+        aw[local_slice] /= std_aw
+        bw[local_slice] -= mean_bw
+        bw[local_slice] /= std_bw
                 
-        # Compute adaptive hyperparameters (matching legacy ARD)
-        ap = 1.0 / (var_bw + eps)  # inverse variance ("alpha prior")
+        # Compute adaptive hyperparameters
+        ap = 1.0  # inverse variance ("alpha prior")
         
         pt.debug_single_print(f"inverse variance in training data: {ap:.6f}, logscale for threshold_lambda: {np.log10(ap):.6f}")
         
@@ -158,7 +157,7 @@ class SLATE(SlateValidation):
             pt.debug_single_print(f"automated threshold_lambda will be 10**({self.logcut:.6f} + {np.abs(np.log10(ap)):.3f})={self.threshold_lambda:.2g}")
             pt.single_print(f"SLATE ARD: scap {self.scap:.2g} scai {self.scai:.2g} ap {ap:.2g} alpha_1 {self.alpha_1:.2g} alpha_2 {self.alpha_2:.2g} lambda_1 {self.lambda_1:.2g} lambda_2 {self.lambda_2:.2g}")
         
-        alpha_ = 1.0 / (var_bw + eps)
+        alpha_ = 1.0
         lambda_ = np.ones(n, dtype=np.float64)
         coef_ = np.zeros(n, dtype=np.float64)
         lambda_mask = np.ones(n, dtype=bool)
@@ -186,7 +185,7 @@ class SLATE(SlateValidation):
                     outfile_section.adios2_stream.write_attribute('basis_ranks', basis_ranks)
                     outfile_section.adios2_stream.write_attribute('blist', pyace_section.blist)
         
-        pt.debug_single_print(f"ARD: m {m} n {n} var(bw)={var_bw:.9f} alpha={alpha_:.2f}")
+        pt.single_print(f"SLATE ARD: m {m} n {n} mean_bw {mean_bw:.2g} std_bw {std_bw:.2g} ")
         
         np.set_printoptions(
             precision=4, suppress=False, floatmode='fixed', linewidth=np.inf,
@@ -312,7 +311,7 @@ class SLATE(SlateValidation):
                 break
 
             if slurm_time_left < 2 * elapsed_iteration:
-                pt.single_print(f"SLATE ARD: stopping... {slurm_time_left/60:.1f} minutes < 2 * elapsed_iteration {elapsed_iteration/60:.1f} minutes")
+                pt.single_print(f"SLATE ARD: stopping... SLURM time left {slurm_time_left/60:.1f} minutes < 2 * last iteration {elapsed_iteration/60:.1f} minutes")
                 break
         
         # Store final solution
@@ -323,7 +322,7 @@ class SLATE(SlateValidation):
             else:
                 pyace_section.lambda_mask = lambda_mask[pyace_section.numtypes:]
 
-        self.fit = coef_
+        self.fit = coef_ / std_a * std_b
         
         # Save gamma and lambda history using adios2 if validation enabled
         if self.validation and self.pt._rank == 0:
