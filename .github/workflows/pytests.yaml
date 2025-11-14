@@ -25,25 +25,15 @@ jobs:
         python-version: ${{ matrix.python-version }}
 
     # ===== macOS environment =====
+    
     - name: Load Mac Env
       if: matrix.os == 'macos-latest'
       run: |
         brew update
         brew install openmpi cmake openblas lapack gcc libomp
 
-    - name: Cache ADIOS2 (macOS)
+    - name: Build ADIOS2 (macOS)
       if: matrix.os == 'macos-latest'
-      id: cache-adios2-macos
-      uses: actions/cache@v4
-      with:
-        path: |
-          /usr/local/lib/cmake/adios2
-          /usr/local/include/adios2
-          /usr/local/lib/libadios2*
-        key: adios2-${{ runner.os }}-v1
-
-    - name: Build ADIOS2 (macOS, only if cache miss)
-      if: matrix.os == 'macos-latest' && steps.cache-adios2-macos.outputs.cache-hit != 'true'
       run: |
         git clone --depth=1 https://github.com/ornladios/ADIOS2.git
         cd ADIOS2
@@ -55,6 +45,7 @@ jobs:
         sudo cmake --install build
 
     # ===== Ubuntu environment =====
+    
     - name: Load Ubuntu Env
       if: matrix.os == 'ubuntu-latest'
       run: |
@@ -62,19 +53,8 @@ jobs:
         sudo apt-get install -y cmake g++ gfortran git libopenmpi-dev openmpi-bin \
                                 libopenblas-dev liblapack-dev
 
-    - name: Cache ADIOS2 (Ubuntu)
+    - name: Build ADIOS2 (Ubuntu)
       if: matrix.os == 'ubuntu-latest'
-      id: cache-adios2-ubuntu
-      uses: actions/cache@v4
-      with:
-        path: |
-          /usr/local/lib/cmake/adios2
-          /usr/local/include/adios2
-          /usr/local/lib/libadios2*
-        key: adios2-${{ runner.os }}-v1
-
-    - name: Build ADIOS2 (Ubuntu, only if cache miss)
-      if: matrix.os == 'ubuntu-latest' && steps.cache-adios2-ubuntu.outputs.cache-hit != 'true'
       run: |
         git clone --depth=1 https://github.com/ornladios/ADIOS2.git
         cd ADIOS2
@@ -86,12 +66,14 @@ jobs:
         sudo cmake --install build
 
     # ===== Python dependencies =====
+    
     - name: Install Python dependencies (with MPI/ADIOS2)
       run: |
         python -m pip install --upgrade pip setuptools wheel
         python -m pip install numpy pandas scipy psutil tqdm matplotlib tabulate torch sympy pyyaml mpi4py adios2 flake8 pytest
 
     # ===== pyace installation =====
+    
     - name: Install pyace from PR #95
       run: |
         git clone https://github.com/ICAMS/python-ace.git
@@ -102,6 +84,7 @@ jobs:
         cd ..
 
     # ===== SLATE install =====
+    
     - name: Install SLATE library
       run: |
         # Find gfortran - works for both macOS (homebrew) and Ubuntu
@@ -153,50 +136,40 @@ jobs:
         pip install .
 
     # ===== Lint =====
+    
     - name: Lint with flake8
       run: |
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --ignore=F821,F824
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
-    # ===== Cache and build LAMMPS =====
-    - name: Cache LAMMPS
-      id: cache-lammps
-      uses: actions/cache@v4
-      with:
-        path: |
-          /usr/local/bin/lmp*
-          /usr/local/lib/python*/site-packages/lammps*
-          ~/lammps-build
-        key: lammps-${{ runner.os }}-${{ matrix.test }}-v1
+    # ===== Build LAMMPS =====
 
-    - name: Build LAMMPS (only if cache miss)
-      if: steps.cache-lammps.outputs.cache-hit != 'true'
-      shell: bash
-      run: |
-        which python
-        cd ../
-        git config --global http.version HTTP/1.1
-        git config --global http.postBuffer 157286400
+    - name: Build LAMMPS
+    shell: bash
+    run: |
+    which python
+    cd ../
+    git config --global http.version HTTP/1.1
+    git config --global http.postBuffer 157286400
 
-        git clone https://github.com/lammps/lammps.git --branch patch_12Jun2025 --single-branch
-        cd lammps/cmake
-        mkdir -p build && cd build
+    git clone https://github.com/lammps/lammps.git --branch patch_12Jun2025 --single-branch
+    cd lammps/cmake
+    mkdir -p build && cd build
 
-        cmake -DLAMMPS_EXCEPTIONS=yes \
-              -DBUILD_SHARED_LIBS=yes \
-              -DMLIAP_ENABLE_PYTHON=yes \
-              -DPKG_PYTHON=yes \
-              -DPKG_ML-SNAP=yes \
-              -DPKG_ML-PACE=yes \
-              -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15 \
-              -DPYTHON_EXECUTABLE:FILEPATH=$(which python) ../
+    cmake -DLAMMPS_EXCEPTIONS=yes \
+    -DBUILD_SHARED_LIBS=yes \
+    -DMLIAP_ENABLE_PYTHON=yes \
+    -DPKG_PYTHON=yes \
+    -DPKG_ML-SNAP=yes \
+    -DPKG_ML-PACE=yes \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15 \
+    -DPYTHON_EXECUTABLE:FILEPATH=$(which python) ../
 
-        make -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
-        sudo make install-python
-        cd ../..
-        mv cmake/build ~/lammps-build
+    make -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
+    sudo make install-python
 
     # ===== Test Suites =====
+    
     - name: Test basic executable examples (MPI)
       run: |
         export PYTHONPATH=$(pwd):$PYTHONPATH
