@@ -145,28 +145,27 @@ jobs:
     # ===== Build LAMMPS =====
 
     - name: Build LAMMPS
-    shell: bash
-    run: |
-    which python
-    cd ../
-    git config --global http.version HTTP/1.1
-    git config --global http.postBuffer 157286400
+      run: |
+        which python
+        cd ../
+        git config --global http.version HTTP/1.1
+        git config --global http.postBuffer 157286400
 
-    git clone https://github.com/lammps/lammps.git --branch patch_12Jun2025 --single-branch
-    cd lammps/cmake
-    mkdir -p build && cd build
+        git clone https://github.com/lammps/lammps.git --branch patch_12Jun2025 --single-branch
+        cd lammps/cmake
+        mkdir -p build && cd build
 
-    cmake -DLAMMPS_EXCEPTIONS=yes \
-    -DBUILD_SHARED_LIBS=yes \
-    -DMLIAP_ENABLE_PYTHON=yes \
-    -DPKG_PYTHON=yes \
-    -DPKG_ML-SNAP=yes \
-    -DPKG_ML-PACE=yes \
-    -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15 \
-    -DPYTHON_EXECUTABLE:FILEPATH=$(which python) ../
+        cmake -DLAMMPS_EXCEPTIONS=yes \
+          -DBUILD_SHARED_LIBS=yes \
+          -DMLIAP_ENABLE_PYTHON=yes \
+          -DPKG_PYTHON=yes \
+          -DPKG_ML-SNAP=yes \
+          -DPKG_ML-PACE=yes \
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15 \
+          -DPYTHON_EXECUTABLE:FILEPATH=$(which python) ../
 
-    make -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
-    sudo make install-python
+        make -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
+        sudo make install-python
 
     # ===== Test Suites =====
     
