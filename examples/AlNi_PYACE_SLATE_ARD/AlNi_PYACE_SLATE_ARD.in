@@ -47,9 +47,9 @@ functions = {
     #'Al':     { 'lmax_by_orders': [0, 0, 0], 'nradmax_by_orders': [1, 1, 1] },
     #'Ni':     { 'lmax_by_orders': [0, 1, 1, 2], 'nradmax_by_orders': [8, 3, 2, 1] },
 
-    'BINARY': { 'lmax_by_orders': [0,4,4,3,2], 'nradmax_by_orders': [20,4,3,2,1] },
-    'Al':     { 'lmax_by_orders': [0,3,2,1  ], 'nradmax_by_orders': [20,3,2,1  ] },
-    'Ni':     { 'lmax_by_orders': [0,4,4,3,2], 'nradmax_by_orders': [20,4,3,2,1] },
+    'BINARY': { 'lmax_by_orders': [0,1,1,1,4], 'nradmax_by_orders': [5,1,1,1,2] },
+    'Al':     { 'lmax_by_orders': [0,1,1,1,4], 'nradmax_by_orders': [5,1,1,1,2] },
+    'Ni':     { 'lmax_by_orders': [0,1,1,1,4], 'nradmax_by_orders': [5,1,1,1,2] },
   
   }
   

@@ -200,12 +200,20 @@ jobs:
     - name: Test basic executable examples (MPI)
       run: |
         export PYTHONPATH=$(pwd):$PYTHONPATH
+        # Set library path for ADIOS2 on macOS
+        if [ "${{ matrix.os }}" = "macos-latest" ]; then
+          export DYLD_LIBRARY_PATH=/usr/local/lib:$DYLD_LIBRARY_PATH
+        fi
         cd tests
         mpirun --oversubscribe -np 4 pytest -s test_examples.py::test_fitsnap_${{ matrix.test }}
 
     - name: Test nonlinear models
       run: |
         export PYTHONPATH=$(pwd):$PYTHONPATH
+        # Set library path for ADIOS2 on macOS
+        if [ "${{ matrix.os }}" = "macos-latest" ]; then
+          export DYLD_LIBRARY_PATH=/usr/local/lib:$DYLD_LIBRARY_PATH
+        fi
         cd tests
         pytest -s test_pytorch.py::test_fd_single_elem
         pytest -s test_pytorch.py::test_fd_multi_elem
