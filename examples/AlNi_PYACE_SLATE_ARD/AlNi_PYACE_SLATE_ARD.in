@@ -34,7 +34,7 @@ bonds = {
 functions = {
     
     #"ALL": {"lmax_by_orders": [0], "nradmax_by_orders": [2]}
-    #"ALL": {"lmax_by_orders": [0,1], "nradmax_by_orders": [3,2]}
+    #"ALL": {"lmax_by_orders": [0,1], "nradmax_by_orders": [2,1]}
     #"ALL": {"lmax_by_orders": [0,1,1], "nradmax_by_orders": [3,2,1]},
     #"ALL": {"lmax_by_orders": [0,3,2,1], "nradmax_by_orders": [8,5,3,1]}
     #"ALL": {"lmax_by_orders": [0,3,3,3,3], "nradmax_by_orders": [30,8,5,3,2]},
@@ -57,17 +57,21 @@ functions = {
 calculator = LAMMPSPYACE
 energy = 1    # goal < 1.64 meV/atom
 force  = 1    # goal < 28 meV/A
-stress = 1    # goal < 0.09 GPa
+stress = 0    # goal < 0.09 GPa
 
 
 [REFERENCE]
 units = metal
 atom_style = atomic
-pair_style = hybrid/overlay zero 6.842222 zbl 4.782556 5.465778 zbl 4.448889 5.084444 zbl 3.927000 4.488000
-pair_coeff1 = * * zero
-pair_coeff2 = 1 1 zbl 1    13 13
-pair_coeff3 = 1 2 zbl 2    13 28
-pair_coeff4 = 2 2 zbl 3    28 28
+
+pair_style = zero 6.842222
+pair_coeff = * *
+
+#pair_style = hybrid/overlay zero 6.842222 zbl 4.782556 5.465778 zbl 4.448889 5.084444 zbl 3.927000 4.488000
+#pair_coeff1 = * * zero
+#pair_coeff2 = 1 1 zbl 1    13 13
+#pair_coeff3 = 1 2 zbl 2    13 28
+#pair_coeff4 = 2 2 zbl 3    28 28
 
 
 [SOLVER]
