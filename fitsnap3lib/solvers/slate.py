@@ -164,7 +164,7 @@ class SLATE(SlateValidation):
                 # Auto-compute threshold: 10^(int(abs(log10(ap))) + logcut)
                 self.threshold_lambda = 10**(int(np.abs(np.log10(ap))) + self.logcut)
             pt.debug_single_print(f"automated threshold_lambda will be 10**({self.logcut:.6f} + {np.abs(np.log10(ap)):.3f})={self.threshold_lambda:.2g}")
-            pt.single_print(f"SLATE ARD: scap {self.scap:.2g} scai {self.scai:.2g} ap {ap:.2g} alpha_1 {self.alpha_1:.2g} alpha_2 {self.alpha_2:.2g} lambda_1 {self.lambda_1:.2g} lambda_2 {self.lambda_2:.2g}")
+            pt.single_print(f"SLATE ARD: m {m} n {n} scap {self.scap:.2g} scai {self.scai:.2g} ap {ap:.2g} alpha_1 {self.alpha_1:.2g} alpha_2 {self.alpha_2:.2g} lambda_1 {self.lambda_1:.2g} lambda_2 {self.lambda_2:.2g}")
         
         alpha_ = 1.0
         lambda_ = np.ones(n, dtype=np.float64)

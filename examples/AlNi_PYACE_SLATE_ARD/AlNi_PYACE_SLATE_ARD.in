@@ -15,7 +15,7 @@ elements = Al Ni
 bzeroflag = 0
 
 embeddings = {
-    "ALL": {"npot": "FinnisSinclairShiftedScaled", "fs_parameters": [1,1], "ndensity": 1},
+    "ALL": {"npot": "FinnisSinclair", "fs_parameters": [1,1], "ndensity": 1},
   }
 
 # ChebExpCos, ChebPow, ChebLinear, SBessel
@@ -81,10 +81,10 @@ detailed_errors = 0
 
 [SLATE]
 method = ARD
-pruning_method = gamma
-threshold_gamma = 0.01
-scap = 1e-3
-scai = 1e-3
+pruning_method = lambda
+threshold_lambda = 100
+scap = 1e-4
+scai = 1e-4
 max_iter = 10
 
 [SCRAPER]
