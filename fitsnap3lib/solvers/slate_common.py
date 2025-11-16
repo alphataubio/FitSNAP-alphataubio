@@ -98,8 +98,36 @@ class SlateCommon(Solver):
     # --------------------------------------------------------------------------------------------
 
     def perform_fit(self):
+    
+        fs_dict = pt.fitsnap_dict
+
+        if self.validation:
+
+            pass
+            
+            #all_testing = pt._comm.gather(list(fs_dict['Testing'][local_slice] if 'Testing' in fs_dict else [False]*len(preds)), root=0)
+            #all_row_types = pt._comm.gather(list(fs_dict['Row_Type'][local_slice] if 'Row_Type' in fs_dict else ['Energy']*len(preds)), root=0)
+            #stream.write_attribute("testing", np.array(testing_flat, dtype=np.int8))
+            #stream.write_attribute("row_types", row_types_flat)
+
+            # Get rank information from PYACE basis if available
+            if "PYACE" in self.config.sections:
+                pyace_section = self.config.sections["PYACE"]
+
+                if hasattr(pyace_section, 'ctilde_basis'):
+                    basis_ranks = []
+                    if not pyace_section.bzeroflag:
+                        basis_ranks.extend([0] * len(pyace_section.types))
+                    for element_basis_rank1_functions in pyace_section.ctilde_basis.basis_rank1:
+                        for basis_rank1_function in element_basis_rank1_functions:
+                            basis_ranks.append(int(basis_rank1_function.rank))
+                    for element_basis_functions in pyace_section.ctilde_basis.basis:
+                        for basis_function in element_basis_functions:
+                            basis_ranks.append(int(basis_function.rank))
+                    stream.write_attribute('basis_ranks', basis_ranks)
+                    stream.write_attribute('blist', pyace_section.blist)
         
-        if self.method == "ARD":
+        if self.method.upper() == "ARD":
             self.perform_fit_ard()
         else:
             self.perform_fit_ridge()
@@ -164,6 +192,15 @@ class SlateCommon(Solver):
 
         sqrt_alpha = np.sqrt(self.alpha)
         n = a.shape[1]
+        
+        # DEBUG: Print regularization info
+        if self.config.debug and pt._rank == 0:
+            pt.single_print(f"\n=== DEBUG: Regularization ===")
+            pt.single_print(f"alpha = {self.alpha}")
+            pt.single_print(f"sqrt_alpha = {sqrt_alpha}")
+            pt.single_print(f"Number of features (n) = {n}")
+            pt.single_print(f"Number of regularization rows = {reg_num_rows}")
+            pt.single_print(f"==============================\n")
     
         for i in range(reg_num_rows):
             if reg_col_idx+i < n: # avoid out of bounds padding from multiple nodes
@@ -213,124 +250,152 @@ class SlateCommon(Solver):
 
     def error_analysis(self):
         """
-        Scalable error analysis using hierarchical MPI reduction for group metrics.
-        Implements the same logic as solver.py but distributed across multiple nodes.
+        Scalable error analysis using mpi4py collective operations.
+        
+        Algorithm:
+        1. Each rank computes local group statistics (counts, sums, weighted sums)
+        2. Gather local stats to rank 0 using comm.gather()
+        3. Rank 0 merges all stats and broadcasts merged data to all ranks
+        4. Two-pass R² calculation:
+           - Pass 1: Compute global means from merged stats (already done)
+           - Pass 2: Each rank computes local SS_tot contributions
+           - Gather SS_tot to rank 0 and reduce
+        5. Rank 0 computes final metrics (MAE, RMSE, R²) and formats as DataFrame
+        
+        Uses standard mpi4py collectives (gather, bcast) instead of custom tree reductions.
         """
 
         pt = self.pt
-
-        # -------- SCALABLE GROUP METRICS COMPUTATION --------
         
-        if self.fit is not None:
-            # Only compute error analysis if we have a fit
-            # a, b, w are unchanged from original data (only aw, bw were modified by SLATE)
+        if self.fit is None:
+            return
             
-            fs_dict = pt.fitsnap_dict
+        # a, b, w are unchanged from original data (only aw, bw were modified by SLATE)
+        fs_dict = pt.fitsnap_dict
+        
+        # Create DataFrame like the legacy solver does
+        from pandas import DataFrame
+        
+        # Use only local slice (excluding regularization rows) for error analysis
+        start_idx, end_idx = pt.fitsnap_dict["sub_a_indices"]
+        local_slice = slice(start_idx, end_idx+1)
+        local_a = pt.shared_arrays['a'].array[local_slice]
+        local_b = pt.shared_arrays['b'].array[local_slice]
+        local_w = pt.shared_arrays['w'].array[local_slice]
+        
+        df_local = DataFrame(local_a)
+        df_local['truths'] = local_b.tolist()
+        
+        # Check for numerical issues before prediction
+        if np.any(np.isnan(local_a)) or np.any(np.isinf(local_a)):
+            self.pt.single_print(f"WARNING: NaN or Inf found in descriptor matrix (local_a)")
+            self.pt.single_print(f"  NaN count: {np.sum(np.isnan(local_a))}, Inf count: {np.sum(np.isinf(local_a))}")
+        if np.any(np.isnan(self.fit)) or np.any(np.isinf(self.fit)):
+            self.pt.single_print(f"WARNING: NaN or Inf found in fit coefficients")
+            self.pt.single_print(f"  NaN count: {np.sum(np.isnan(self.fit))}, Inf count: {np.sum(np.isinf(self.fit))}")
+        
+        # Compute predictions with NaN/Inf handling
+        with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
+            preds = local_a @ self.fit
+        
+        # Replace NaN/Inf with 0 for error analysis (or could skip these rows)
+        if np.any(np.isnan(preds)) or np.any(np.isinf(preds)):
+            num_bad = np.sum(np.isnan(preds) | np.isinf(preds))
+            self.pt.single_print(f"WARNING: {num_bad} NaN/Inf predictions found, replacing with corresponding truth values for error analysis")
+            bad_mask = np.isnan(preds) | np.isinf(preds)
+            preds[bad_mask] = local_b[bad_mask]
+        
+        df_local['preds'] = preds.tolist()
+        df_local['weights'] = local_w.tolist()
+        
+        # Gather predictions and truths to rank 0 for scatterplots
+        # ALL RANKS participate in gather to avoid deadlock
+        if self.validation:
+            all_preds = pt._comm.gather(preds, root=0)
+            all_truths = pt._comm.gather(local_b, root=0)
             
-            # Create DataFrame like the legacy solver does
-            from pandas import DataFrame
+            # Only rank 0 writes to adios2
+            if pt._rank == 0:
+                outfile_section = self.config.sections["OUTFILE"]
+                if hasattr(outfile_section, 'adios2_stream') and outfile_section.adios2_stream is not None:
+                    stream = outfile_section.adios2_stream
+                    
+                    # Flatten gathered data
+                    preds_flat = np.concatenate(all_preds)
+                    truths_flat = np.concatenate(all_truths)
+                    
+                    # Write to adios2 (rank 0 only)
+                    stream.begin_step()
+                    stream.write("predictions", preds_flat, count=preds_flat.shape)
+                    stream.write("truths", truths_flat, count=truths_flat.shape)
+                    stream.end_step()
+                    stream.close()
+
+        
+        # Add metadata columns for local slice
+        for key in ['Groups', 'Testing', 'Row_Type']:
+            if key in fs_dict and isinstance(fs_dict[key], list):
+                local_values = fs_dict[key][local_slice]
+                df_local[key] = local_values
+            else:
+                # Set defaults
+                if key == 'Groups':
+                    df_local[key] = ['*ALL'] * len(df_local)
+                elif key == 'Testing':
+                    df_local[key] = [False] * len(df_local)
+                elif key == 'Row_Type':
+                    df_local[key] = ['Energy'] * len(df_local)
+        
+        # Compute local group sums
+        local_group_data = self._compute_local_group_sums_from_df(df_local)
+                
+        # Gather all local group data to rank 0 and merge
+        all_group_data = pt._comm.gather(local_group_data, root=0)
+        
+        if pt._rank == 0:
+            # Merge all group data on rank 0
+            global_group_data = self._merge_group_data(all_group_data)
             
-            # Use only local slice (excluding regularization rows) for error analysis
-            start_idx, end_idx = pt.fitsnap_dict["sub_a_indices"]
-            local_slice = slice(start_idx, end_idx+1)
-            local_a = pt.shared_arrays['a'].array[local_slice]
-            local_b = pt.shared_arrays['b'].array[local_slice]
-            local_w = pt.shared_arrays['w'].array[local_slice]
-            
-            df_local = DataFrame(local_a)
-            df_local['truths'] = local_b.tolist()
-            
-            # Check for numerical issues before prediction
-            if np.any(np.isnan(local_a)) or np.any(np.isinf(local_a)):
-                self.pt.single_print(f"WARNING: NaN or Inf found in descriptor matrix (local_a)")
-                self.pt.single_print(f"  NaN count: {np.sum(np.isnan(local_a))}, Inf count: {np.sum(np.isinf(local_a))}")
-            if np.any(np.isnan(self.fit)) or np.any(np.isinf(self.fit)):
-                self.pt.single_print(f"WARNING: NaN or Inf found in fit coefficients")
-                self.pt.single_print(f"  NaN count: {np.sum(np.isnan(self.fit))}, Inf count: {np.sum(np.isinf(self.fit))}")
-            
-            # Compute predictions with NaN/Inf handling
-            with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
-                preds = local_a @ self.fit
-            
-            # Replace NaN/Inf with 0 for error analysis (or could skip these rows)
-            if np.any(np.isnan(preds)) or np.any(np.isinf(preds)):
-                num_bad = np.sum(np.isnan(preds) | np.isinf(preds))
-                self.pt.single_print(f"WARNING: {num_bad} NaN/Inf predictions found, replacing with corresponding truth values for error analysis")
-                # Replace bad predictions with truth values (gives 0 error for those points)
-                # Alternatively, you could filter these rows out entirely
-                bad_mask = np.isnan(preds) | np.isinf(preds)
-                preds[bad_mask] = local_b[bad_mask]
-            
-            df_local['preds'] = preds.tolist()
-            df_local['weights'] = local_w.tolist()
-            
-            # Add metadata columns for local slice
-            for key in ['Groups', 'Testing', 'Row_Type']:
-                if key in fs_dict and isinstance(fs_dict[key], list):
-                    local_values = fs_dict[key][local_slice]
-                    df_local[key] = local_values
-                else:
-                    # Set defaults
-                    if key == 'Groups':
-                        df_local[key] = ['*ALL'] * len(df_local)
-                    elif key == 'Testing':
-                        df_local[key] = [False] * len(df_local)
-                    elif key == 'Row_Type':
-                        df_local[key] = ['Energy'] * len(df_local)
-            
-            # Convert local DataFrame to group metrics using legacy solver approach
-            local_group_data = self._compute_local_group_sums_from_df(df_local)
-            
-            # Hierarchical reduction across all MPI ranks
-            global_group_data = self._hierarchical_group_reduce(local_group_data, pt._comm)
-            
-            # Two-pass algorithm for exact R² calculation
-            # First, add '*ALL' groups to global data on ALL ranks
+            # Add '*ALL' groups by aggregating
             global_group_data_with_all = self._add_all_groups_to_global_data(global_group_data)
             
-            if pt._rank == 0:
-                final_results = self._compute_final_metrics_twopass_from_df(
-                    global_group_data_with_all, df_local, pt._comm
-                )
-                
-                # Convert to pandas DataFrame format matching solver.py
-                self._format_results_as_dataframe(final_results)
-            else:
-                # Non-root ranks participate in two-pass but don't store results
-                self._compute_final_metrics_twopass_from_df(
-                    global_group_data_with_all, df_local, pt._comm
-                )
-                self.errors = []
+            # Broadcast merged data to all ranks for two-pass R² calculation
+            global_group_data_with_all = pt._comm.bcast(global_group_data_with_all, root=0)
+        else:
+            global_group_data_with_all = pt._comm.bcast(None, root=0)
+        
+        # Two-pass algorithm for exact R² calculation
+        final_results = self._compute_final_metrics_twopass(global_group_data_with_all, df_local, pt._comm)
+        
+        if pt._rank == 0:
+            self._format_results_as_dataframe(final_results)
+        else:
+            self.errors = []
     
     # --------------------------------------------------------------------------------------------
 
-    def _compute_local_group_sums(self, groups, testing, row_types, truths, preds, weights):
-        """Compute partial sums for each group on local data"""
+    def _merge_group_data(self, all_group_data):
+        """Merge group data from all ranks on rank 0"""
         from collections import defaultdict
         
-        local_group_data = defaultdict(lambda: {
+        merged = defaultdict(lambda: {
             'n': 0,
             'sum_weights': 0.0,
             'sum_truths_weighted': 0.0,
             'sum_ae': 0.0,
-            'sum_se': 0.0
+            'sum_se': 0.0,
+            'sum_truths_unweighted': 0.0,
+            'sum_ae_unweighted': 0.0,
+            'sum_se_unweighted': 0.0
         })
         
-        for i in range(len(truths)):
-            group_key = (groups[i], testing[i], row_types[i])
-            
-            weight = weights[i]
-            truth = truths[i]
-            pred = preds[i]
-            
-            stats = local_group_data[group_key]
-            stats['n'] += 1
-            stats['sum_weights'] += weight
-            stats['sum_truths_weighted'] += weight * truth
-            stats['sum_ae'] += weight * abs(truth - pred)
-            stats['sum_se'] += weight * (truth - pred)**2
+        for local_data in all_group_data:
+            for group_key, stats in local_data.items():
+                for key in ['n', 'sum_weights', 'sum_truths_weighted', 'sum_ae', 'sum_se',
+                           'sum_truths_unweighted', 'sum_ae_unweighted', 'sum_se_unweighted']:
+                    merged[group_key][key] += stats[key]
         
-        return dict(local_group_data)
+        return dict(merged)
 
     # --------------------------------------------------------------------------------------------
 
@@ -375,117 +440,15 @@ class SlateCommon(Solver):
 
     # --------------------------------------------------------------------------------------------
 
-    def _hierarchical_group_reduce(self, local_group_data, comm):
-        """Hierarchical reduction to avoid O(P²) memory growth"""
-        rank = comm.Get_rank()
-        size = comm.Get_size()
-        
-        # Use tree reduction: log(P) steps instead of P steps
-        step = 1
-        current_data = local_group_data.copy()
-        
-        while step < size:
-            if rank % (2 * step) == 0:  # Receiver
-                source = rank + step
-                if source < size:
-                    # Receive data from partner
-                    partner_data = comm.recv(source=source, tag=0)
-                    
-                    # Merge with current data
-                    for group_key, group_stats in partner_data.items():
-                        if group_key not in current_data:
-                            current_data[group_key] = group_stats.copy()
-                        else:
-                            # Aggregate the sums
-                            for key in ['n', 'sum_weights', 'sum_truths_weighted', 'sum_ae', 'sum_se',
-                                       'sum_truths_unweighted', 'sum_ae_unweighted', 'sum_se_unweighted']:
-                                current_data[group_key][key] += group_stats[key]
-            
-            elif rank % (2 * step) == step:  # Sender
-                dest = rank - step
-                comm.send(current_data, dest=dest, tag=0)
-                break  # This rank is done
-            
-            step *= 2
-        
-        # Broadcast final result from rank 0 to all ranks
-        if rank == 0:
-            final_data = current_data
-        else:
-            final_data = None
-        
-        final_data = comm.bcast(final_data, root=0)
-        return final_data
-
-    # --------------------------------------------------------------------------------------------
-
-    def _compute_final_metrics_twopass(self, global_group_data, local_groups, local_testing, local_row_types, local_truths, local_weights, comm):
-        """Two-pass algorithm for exact R² with minimal communication"""
+    def _compute_final_metrics_twopass(self, global_group_data, df_local, comm):
+        """Two-pass algorithm for exact R² using mpi4py collectives"""
         rank = comm.Get_rank()
         
-        # Pass 1: Compute global means (already have this from reduction)
-        global_means = {}
-        for group_key, stats in global_group_data.items():
-            if stats['sum_weights'] > 0:
-                global_means[group_key] = stats['sum_truths_weighted'] / stats['sum_weights']
-            else:
-                global_means[group_key] = 0.0
-        
-        # Pass 2: Compute SS_tot using global means
-        local_ss_tot = {}
-        for i in range(len(local_truths)):
-            group_key = (local_groups[i], local_testing[i], local_row_types[i])
-            if group_key in global_means:
-                weight = local_weights[i]
-                truth = local_truths[i]
-                global_mean = global_means[group_key]
-                
-                if group_key not in local_ss_tot:
-                    local_ss_tot[group_key] = 0.0
-                local_ss_tot[group_key] += weight * (truth - global_mean)**2
-        
-        # Reduce SS_tot values (much smaller than full data)
-        global_ss_tot = self._hierarchical_reduce_dict(local_ss_tot, comm)
-        
-        # Compute final metrics (only on rank 0)
-        if rank == 0:
-            final_results = []
-            for group_key, stats in global_group_data.items():
-                if stats['sum_weights'] > 0:
-                    mae = stats['sum_ae'] / stats['sum_weights']
-                    rmse = np.sqrt(stats['sum_se'] / stats['sum_weights'])
-                    
-                    ss_tot = global_ss_tot.get(group_key, 0.0)
-                    rsq = 1 - (stats['sum_se'] / ss_tot) if ss_tot != 0 else 0
-                    
-                    final_results.append({
-                        'group': group_key,
-                        'ncount': stats['n'],
-                        'mae': mae,
-                        'rmse': rmse,
-                        'rsq': rsq,
-                        '_sum_weights': stats['sum_weights'],
-                        '_sum_ae': stats['sum_ae'],
-                        '_sum_se': stats['sum_se'],
-                        '_sum_ss_tot': ss_tot
-                    })
-            
-            return final_results
-        
-        return None
-
-    # --------------------------------------------------------------------------------------------
-
-    def _compute_final_metrics_twopass_from_df(self, global_group_data, df_local, comm):
-        """Two-pass algorithm for exact R² with DataFrame input"""
-        rank = comm.Get_rank()
-        
-        # Pass 1: Compute global means (both weighted and unweighted)
+        # Pass 1: Compute global means (already have from global_group_data)
         global_means_weighted = {}
         global_means_unweighted = {}
         
         for group_key, stats in global_group_data.items():
-            # Calculate mean for all groups (including '*ALL')
             # Weighted mean
             if stats['sum_weights'] > 0:
                 global_means_weighted[group_key] = stats['sum_truths_weighted'] / stats['sum_weights']
@@ -498,7 +461,7 @@ class SlateCommon(Solver):
             else:
                 global_means_unweighted[group_key] = 0.0
         
-        # Pass 2: Compute SS_tot using global means
+        # Pass 2: Compute local SS_tot contributions using global means
         local_ss_tot_weighted = {}
         local_ss_tot_unweighted = {}
         
@@ -522,7 +485,7 @@ class SlateCommon(Solver):
                 local_ss_tot_unweighted[group_key] += (truth - unweighted_mean)**2
                 
                 # Also contribute to "*ALL" groups
-                all_key = ('*ALL',) + group_key[1:]  # Replace Groups with '*ALL'
+                all_key = ('*ALL',) + group_key[1:]
                 
                 if all_key in global_means_weighted:
                     # Weighted SS_tot for *ALL group
@@ -537,32 +500,42 @@ class SlateCommon(Solver):
                         local_ss_tot_unweighted[all_key] = 0.0
                     local_ss_tot_unweighted[all_key] += (truth - all_unweighted_mean)**2
         
-        # Reduce SS_tot values (much smaller than full data)
-        global_ss_tot_weighted = self._hierarchical_reduce_dict(local_ss_tot_weighted, comm)
-        global_ss_tot_unweighted = self._hierarchical_reduce_dict(local_ss_tot_unweighted, comm)
+        # Gather local SS_tot to rank 0 and reduce
+        all_ss_tot_weighted = comm.gather(local_ss_tot_weighted, root=0)
+        all_ss_tot_unweighted = comm.gather(local_ss_tot_unweighted, root=0)
         
         # Compute final metrics (only on rank 0)
         if rank == 0:
+            # Merge SS_tot from all ranks
+            global_ss_tot_weighted = {}
+            global_ss_tot_unweighted = {}
+            
+            for local_dict in all_ss_tot_weighted:
+                for key, value in local_dict.items():
+                    global_ss_tot_weighted[key] = global_ss_tot_weighted.get(key, 0.0) + value
+            
+            for local_dict in all_ss_tot_unweighted:
+                for key, value in local_dict.items():
+                    global_ss_tot_unweighted[key] = global_ss_tot_unweighted.get(key, 0.0) + value
+            
             final_results = []
             for group_key, stats in global_group_data.items():
                 if stats['n'] > 0:
-                    # Weighted metrics (using proper statistical methodology)
+                    # Weighted metrics
                     weighted_mae = stats['sum_ae'] / stats['sum_weights'] if stats['sum_weights'] > 0 else 0
                     weighted_rmse = np.sqrt(stats['sum_se'] / stats['sum_weights']) if stats['sum_weights'] > 0 else 0
                     
                     ss_tot_weighted = global_ss_tot_weighted.get(group_key, 0.0)
                     weighted_rsq = 1 - (stats['sum_se'] / ss_tot_weighted) if ss_tot_weighted != 0 else 0
-                    # Clip negative R² to 0
-                    weighted_rsq = max(0.0, weighted_rsq)
+                    weighted_rsq = max(0.0, weighted_rsq)  # Clip negative R² to 0
                     
-                    # Unweighted metrics (standard calculation)
+                    # Unweighted metrics
                     unweighted_mae = stats['sum_ae_unweighted'] / stats['n']
                     unweighted_rmse = np.sqrt(stats['sum_se_unweighted'] / stats['n'])
                     
                     ss_tot_unweighted = global_ss_tot_unweighted.get(group_key, 0.0)
                     unweighted_rsq = 1 - (stats['sum_se_unweighted'] / ss_tot_unweighted) if ss_tot_unweighted != 0 else 0
-                    # Clip negative R² to 0
-                    unweighted_rsq = max(0.0, unweighted_rsq)
+                    unweighted_rsq = max(0.0, unweighted_rsq)  # Clip negative R² to 0
                     
                     final_results.append({
                         'group': group_key,
@@ -586,31 +559,6 @@ class SlateCommon(Solver):
 
     # --------------------------------------------------------------------------------------------
 
-    def _hierarchical_reduce_dict(self, local_dict, comm):
-        """Reduce dictionary values hierarchically"""
-        rank = comm.Get_rank()
-        size = comm.Get_size()
-        
-        step = 1
-        current_dict = local_dict.copy()
-        
-        while step < size:
-            if rank % (2 * step) == 0:
-                source = rank + step
-                if source < size:
-                    partner_dict = comm.recv(source=source, tag=1)
-                    for key, value in partner_dict.items():
-                        current_dict[key] = current_dict.get(key, 0.0) + value
-            elif rank % (2 * step) == step:
-                dest = rank - step
-                comm.send(current_dict, dest=dest, tag=1)
-                break
-            step *= 2
-        
-        return current_dict if rank == 0 else {}
- 
-    # --------------------------------------------------------------------------------------------
-
     def _format_results_as_dataframe(self, results):
         """Convert results to pandas DataFrame format matching solver.py"""
         from pandas import DataFrame, concat
@@ -619,13 +567,11 @@ class SlateCommon(Solver):
             self.errors = DataFrame()
             return
         
-        # Add '*ALL' groups by aggregating across Groups dimension
-        all_results = self._add_all_groups(results)
-        
+        # '*ALL' groups already added by _add_all_groups_to_global_data()
         # Create both weighted and unweighted versions
         formatted_results = []
         
-        for result in all_results:
+        for result in results:
             group_key = result['group']
             
             # Use the correctly computed weighted and unweighted metrics
@@ -671,12 +617,6 @@ class SlateCommon(Solver):
         
         self.errors = df
   
-    # --------------------------------------------------------------------------------------------
-
-    def _add_all_groups(self, group_results):
-        """Add '*ALL' groups - now just returns results since aggregation happens earlier"""
-        return group_results
-    
     # --------------------------------------------------------------------------------------------
 
     def _add_all_groups_to_global_data(self, global_group_data):

@@ -9,6 +9,9 @@ from matplotlib.ticker import MaxNLocator
 from collections import Counter, defaultdict
 import os, re, json, io, base64, adios2
 
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend
+        
 try:
     from slate_wrapper import slate_ridge_augmented_qr_cython, slate_ard_update_cython
 except ImportError:
@@ -312,6 +315,110 @@ class SlateValidation(SlateCommon):
                         "metadata": {},
                         "source": subsystem_lines
                     })
+                    
+        # Create scatterplots for predictions vs truths
+        output_prefix = self.config.sections['OUTFILE'].metrics.replace('.md', '')
+        adios2_path = f"{output_prefix}.bp"
+        with adios2.FileReader(adios2_path) as adios2_file:
+            groups = list(adios2_file.read_attribute("groups"))
+            testing = adios2_file.read_attribute("testing")
+            row_types = list(adios2_file.read_attribute("row_types"))
+            preds = adios2_file.read("predictions", step_selection=[0,1])
+            truths = adios2_file.read("truths", step_selection=[0,1])
+
+        # Create scatterplots for each row type
+        unique_row_types = sorted(set(row_types))
+            
+        for row_type in unique_row_types:
+            if row_type not in ['Energy', 'Force', 'Stress']:
+                continue
+                    
+            # Filter data for this row type
+            mask = np.array([rt == row_type for rt in row_types])
+            preds_rt = preds[mask]
+            truths_rt = truths[mask]
+            groups_rt = [groups[i] for i in range(len(groups)) if mask[i]]
+            testing_rt = testing[mask]
+            
+            if len(preds_rt) == 0:
+                continue
+                
+            # Get units for axis labels
+            reference_section = self.config.sections["REFERENCE"]
+            if row_type == 'Energy':
+                units = reference_section.energy_units
+            elif row_type == 'Force':
+                units = reference_section.force_units
+            elif row_type == 'Stress':
+                units = reference_section.stress_units
+            else:
+                units = ""
+                
+            # Create figure
+            fig, ax = plt.subplots(figsize=(10, 10))
+                
+            # Get unique groups and assign colors using tab20
+            unique_groups = sorted(set(groups_rt))
+            n_groups = len(unique_groups)
+                
+            # tab20 has 20 colors in pairs (light, dark)
+            # We'll use light for training, dark for testing
+            tab20 = plt.cm.get_cmap('tab20')
+                
+            for idx, group in enumerate(unique_groups):
+                # Get color pair indices (0,1), (2,3), (4,5), etc.
+                color_idx_light = (idx * 2) % 20
+                color_idx_dark = (idx * 2 + 1) % 20
+                    
+                # Training data (light color)
+                train_mask = np.array([(g == group and not t) for g, t in zip(groups_rt, testing_rt)])
+                if np.any(train_mask):
+                    ax.scatter(truths_rt[train_mask], preds_rt[train_mask],
+                              c=[tab20(color_idx_light)], alpha=0.6, s=30,
+                              label=f"{group} (train)", edgecolors='none')
+                    
+                # Testing data (dark color)
+                test_mask = np.array([(g == group and t) for g, t in zip(groups_rt, testing_rt)])
+                if np.any(test_mask):
+                    ax.scatter(truths_rt[test_mask], preds_rt[test_mask],
+                              c=[tab20(color_idx_dark)], alpha=0.8, s=50,
+                              label=f"{group} (test)", marker='s', edgecolors='black', linewidths=0.5)
+                
+            # Plot perfect prediction line
+            lims = [min(truths_rt.min(), preds_rt.min()), max(truths_rt.max(), preds_rt.max())]
+            ax.plot(lims, lims, 'k--', alpha=0.5, lw=2, label='Perfect prediction')
+                
+            # Labels and styling
+            ax.set_xlabel(f'True {row_type} ({units})', fontsize=14, fontweight='bold')
+            ax.set_ylabel(f'Predicted {row_type} ({units})', fontsize=14, fontweight='bold')
+            ax.set_title(f'{row_type} Predictions vs Truth', fontsize=16, fontweight='bold')
+            ax.grid(True, alpha=0.3)
+            ax.set_aspect('equal', adjustable='box')
+                
+            # Legend
+            ax.legend(loc='outside right upper', framealpha=1, fontsize=12)
+                
+            # Save to base64
+            buf = io.BytesIO()
+            plt.tight_layout()
+            plt.savefig(buf, format='svg', bbox_inches='tight')
+            plt.close()
+            svg_text = buf.getvalue().decode('utf-8')
+            buf.close()
+            img_base64 = base64.b64encode(svg_text.encode('utf-8')).decode('utf-8')
+                
+            # Add to notebook
+            notebook["cells"].append({
+                "cell_type": "markdown",
+                "metadata": {},
+                "source": [
+                    f"### {row_type} Scatterplot\n\n",
+                        f'<div align="center"><img src="data:image/svg+xml;base64,{img_base64}" '
+                        'style="width:80%;height:auto;"></div>'
+                ]
+            
+            })
+
 
         if self.method == 'ARD':
             self.validation_notebook_ard(notebook)
@@ -324,70 +431,85 @@ class SlateValidation(SlateCommon):
 
 
     def validation_notebook_ard(self, notebook):
-    
-        # Cell 4: Load gamma and lambda history from adios2
-        notebook["cells"].append({
-            "cell_type": "markdown",
-            "metadata": {},
-            "source": ["## Gamma and Lambda Evolution Heatmaps"]
-        })
         
-        # Cell 5: Create and display gamma heatmaps
         # Load data from adios2 to create plots
-
-        import matplotlib
-        matplotlib.use('Agg')  # Non-interactive backend
-        import matplotlib.pyplot as plt
         
         output_prefix = self.config.sections['OUTFILE'].metrics.replace('.md', '')
         adios2_path = f"{output_prefix}.bp"
         with adios2.FileReader(adios2_path) as adios2_file:
             basis_ranks = adios2_file.read_attribute("basis_ranks")
             blist = adios2_file.read_attribute("blist")
-        with adios2.Stream(adios2_path, "r") as adios2_stream:
-            gamma_history, lambda_history = [], []
-            for _ in adios2_stream.steps():
-                gamma_history.append(adios2_stream.read("gamma"))
-                lambda_history.append(adios2_stream.read("lambda"))
-            gamma_array = np.array(gamma_history)
-            lambda_array = np.log10(np.array(lambda_history)+1e-10)
-            
+            num_steps = adios2_file.num_steps()-1 # last step was preds/truths
+            gamma_history = adios2_file.read("gamma", step_selection=[0,num_steps])
+            lambda_history = adios2_file.read("lambda", step_selection=[0,num_steps])
+            gamma_array = gamma_history.reshape((num_steps,len(blist)))
+            lambda_array = np.log10(lambda_history.reshape((num_steps,len(blist)))+1e-10)
+        
         blist_rank = defaultdict(list)
         rank_indices = defaultdict(list)
         for i, (r, f) in enumerate(zip(basis_ranks, blist)):
             blist_rank[r].append(re.split(r" ls \[|\] ns \[| \[0\]$", f))
             rank_indices[r].append(i)
             
-        # Create the gamma heatmap plot - 4x1 layout with custom colormap
-        notebook["cells"].append({"cell_type": "markdown", "metadata": {}, "source": ["## Gamma Heatmaps\n"]})
-
-        threshold = self.threshold_gamma if self.pruning_method.lower() == 'gamma' else None
-        for rank in range(int(basis_ranks.min()), int(basis_ranks.max())+1):
-            img_base64 = plot_rank_n(rank, blist_rank, rank_indices, 'Gamma', gamma_array.T, threshold, 'min')
-            notebook["cells"].append({
-                "cell_type": "markdown", "metadata": {}, "source": [
-                    f'<div align="center"><img src="data:image/svg+xml;base64,{img_base64}"></div>'
-                ]
-            })
-
-        # Cell 6: Create and display lambda heatmaps
-        # Create the lambda heatmap plot
+        # Create and display gamma heatmaps
         
-        if False:
-
-            notebook["cells"].append({"cell_type": "markdown", "metadata": {}, "source": ["## Lambda Heatmaps\n"]})
+        if self.pruning_method.lower() == 'gamma':
         
-            threshold = self.threshold_lambda if self.pruning_method.lower() == 'lambda' else None
-            for n in range(int(basis_ranks.min()), int(basis_ranks.max())+1):
-                img_base64 = plot_rank_n(n, blist_rank, rank_indices, 'Log10(Lambda)', lambda_array.T, threshold, 'max')
+            notebook["cells"].append({"cell_type": "markdown", "metadata": {},
+                "source": ["## Gamma Heatmaps\n"]})
+
+            threshold = self.threshold_gamma if self.pruning_method.lower() == 'gamma' else None
+            
+            for rank in range(int(basis_ranks.min()), int(basis_ranks.max())+1):
+                
+                img_base64 = plot_rank_n(
+                    rank,
+                    blist_rank,
+                    rank_indices,
+                    'Gamma',
+                    gamma_array.T,
+                    threshold,
+                    'min'
+                )
+                
                 notebook["cells"].append({
-                    "cell_type": "markdown", "metadata": {}, "source": [
+                    "cell_type": "markdown",
+                    "metadata": {},
+                    "source": [
                         f'<div align="center"><img src="data:image/svg+xml;base64,{img_base64}"></div>'
                     ]
                 })
 
+        # Create and display lambda heatmaps
+        
+        if self.pruning_method.lower() == 'lambda':
 
-        # Cell 7: Summary statistics with side-by-side gamma and lambda distributions
+            notebook["cells"].append({"cell_type": "markdown", "metadata": {},
+                "source": ["## Lambda Heatmaps\n"]})
+        
+            threshold = self.threshold_lambda if self.pruning_method.lower() == 'lambda' else None
+            
+            for rank in range(int(basis_ranks.min()), int(basis_ranks.max())+1):
+            
+                img_base64 = plot_rank_n(
+                    rank,
+                    blist_rank,
+                    rank_indices,
+                    'Log10(Lambda)',
+                    lambda_array.T,
+                    threshold,
+                    'max'
+                )
+                
+                notebook["cells"].append({
+                    "cell_type": "markdown",
+                    "metadata": {},
+                    "source": [
+                        f'<div align="center"><img src="data:image/svg+xml;base64,{img_base64}"></div>'
+                    ]
+                })
+
+        # Summary statistics with side-by-side gamma and lambda distributions
         
         n_iterations, n_features = gamma_array.shape
         # Create summary plots - (n_iterations) x 2 grid
@@ -425,9 +547,7 @@ class SlateValidation(SlateCommon):
                     p.set_facecolor(turbo(c))
                 
                 # Add statistics text
-                n_active = np.sum(gamma_at_iter > 0.01)
-                stats_text = f'Active: {n_active}/{n_features} ({100*n_active/n_features:.1f}%)\\n'
-                stats_text += f'Range: [{gamma_at_iter.min():.3f}, {gamma_at_iter.max():.3f}]\\n'
+                stats_text = f'Range: [{gamma_at_iter.min():.3f}, {gamma_at_iter.max():.3f}] '
                 stats_text += f'Mean: {gamma_nonzero.mean():.3f}'
                 ax_gamma.text(0.98, 0.98, stats_text,
                             transform=ax_gamma.transAxes, fontsize=9, verticalalignment='top',
@@ -455,8 +575,7 @@ class SlateValidation(SlateCommon):
 
             # Add statistics text
             n_small_lambda = np.sum(lambda_at_iter < 1e3)
-            stats_text = f'Active (λ<1e3): {n_small_lambda}/{n_features} ({100*n_small_lambda/n_features:.1f}%)\\n'
-            stats_text += f'Log range: [{lambda_at_iter.min():.1f}, {lambda_at_iter.max():.1f}]\\n'
+            stats_text = f'Log range: [{lambda_at_iter.min():.1f}, {lambda_at_iter.max():.1f}] '
             stats_text += f'Log mean: {lambda_at_iter.mean():.1f}'
             ax_lambda.text(0.98, 0.98, stats_text,
                         transform=ax_lambda.transAxes, fontsize=9, verticalalignment='top',

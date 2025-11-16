@@ -124,8 +124,8 @@ class SLATE(SlateValidation):
         std_aw = np.sqrt(var_aw + eps)
         std_bw = np.sqrt(var_bw + eps)
         # Center and scale in-place to my local slice
-        aw[local_slice] -= mean_aw
-        aw[local_slice] /= std_aw
+        #aw[local_slice] -= mean_aw
+        #aw[local_slice] /= std_aw
         #bw[local_slice] -= mean_bw
         #bw[local_slice] /= std_bw
 
@@ -172,30 +172,8 @@ class SLATE(SlateValidation):
         lambda_mask = np.ones(n, dtype=bool)
         coef_old_ = None
         
-        # Initialize gamma and lambda history tracking if validation is enabled
-        if self.validation and pt._rank == 0:
-        
-            # Get rank information from PYACE basis if available
-            if "PYACE" in self.config.sections:
-                pyace_section = self.config.sections["PYACE"]
-                outfile_section = self.config.sections["OUTFILE"]
-                outfile_section.adios2_stream.write_attribute('nconfigs', pt.fitsnap_dict["nconfigs"])
-
-                if hasattr(pyace_section, 'ctilde_basis'):
-                    basis_ranks = []
-                    if not pyace_section.bzeroflag:
-                        basis_ranks.extend([0] * len(pyace_section.types))
-                    for element_basis_rank1_functions in pyace_section.ctilde_basis.basis_rank1:
-                        for basis_rank1_function in element_basis_rank1_functions:
-                            basis_ranks.append(int(basis_rank1_function.rank))
-                    for element_basis_functions in pyace_section.ctilde_basis.basis:
-                        for basis_function in element_basis_functions:
-                            basis_ranks.append(int(basis_function.rank))
-                    outfile_section.adios2_stream.write_attribute('basis_ranks', basis_ranks)
-                    outfile_section.adios2_stream.write_attribute('blist', pyace_section.blist)
-      
         # Iterative procedure of ARDRegression
-        iteration = 0
+        iteration = 1
         start_time_iteration = time.time()
         
         while True:
@@ -244,38 +222,22 @@ class SLATE(SlateValidation):
                 
             # Store gamma and lambda history if validation enabled
             if self.validation and pt._rank == 0:
-                outfile_section.adios2_stream.begin_step()
-                outfile_section.adios2_stream.write("gamma", gamma_, count=[n])
-                outfile_section.adios2_stream.write("lambda", lambda_, count=[n])
-                outfile_section.adios2_stream.end_step()
+                stream.begin_step()
+                stream.write("gamma", gamma_, count=[n])
+                stream.write("lambda", lambda_, count=[n])
+                stream.end_step()
                         
             alpha_ = (global_m_training - gamma_active.sum() + 2.0 * self.alpha_1) / (sse_ + 2.0 * self.alpha_2)
 
             # Prune features based on selected method
-            if self.pruning_method.lower() == 'gamma':
-                
-                if iteration >= 3: lambda_mask = gamma_ > self.threshold_gamma
-                                
-                if self.config.debug:
-                    # Show gamma distribution
-                    gamma_nonzero = gamma_[gamma_ > 0]
-                    pt.single_print(f"  Gamma pruning: keeping {np.sum(lambda_mask)}/{n} features with gamma > {self.threshold_gamma:.3f}")
-                    pt.single_print(f"  Gamma range: [{gamma_[gamma_ > 0].min():.4f}, {gamma_.max():.4f}]")
-                    pt.single_print(f"  Gamma stats: mean={gamma_nonzero.mean():.3f}, median={np.median(gamma_nonzero):.3f}")
-                    pt.single_print(f"  Gamma > 0.5: {np.sum(gamma_ > 0.5)}, > 0.3: {np.sum(gamma_ > 0.3)}, > 0.1: {np.sum(gamma_ > 0.1)}")
-                    
-            else:
+            if iteration >= 3:
+                if self.pruning_method.lower() == 'gamma':
+                    lambda_mask = gamma_ > self.threshold_gamma
+                elif self.pruning_method.lower() == 'lambda':
+                    lambda_mask = lambda_ < self.threshold_lambda
+                else:
+                    raise NotImplementedError(f"SLATE ARD: pruning_method {self.pruning_method} not implemented")
 
-                if iteration >= 3: lambda_mask = lambda_ < self.threshold_lambda
-                
-                pt.single_print(
-                    f"SLATE ARD #{iteration}: elapsed {elapsed_iteration:.2f} alpha {alpha_:.6f} sse {sse_:.6f} "
-                    f"gamma_sum {gamma_active.sum():.6f} n_active {n_active} {coef_change_str}\n    "
-                    f"lambda range [{lambda_[lambda_ > 0].min():.4e}, {lambda_.max():.4e}], "
-                    f"keeping {np.sum(lambda_mask)}/{n} features "
-                    f"with lambda < {self.threshold_lambda:.1f}"
-                )
-            
             coef_[~lambda_mask] = 0
 
             # Log iteration
@@ -325,11 +287,11 @@ class SLATE(SlateValidation):
             else:
                 pyace_section.lambda_mask = lambda_mask[pyace_section.numtypes:]
 
-        self.fit = coef_ * std_aw + mean_aw  # * std_bw/
+        self.fit = coef_ # * std_aw + mean_aw  # * std_bw/
         
         # Save gamma and lambda history using adios2 if validation enabled
-        if self.validation and self.pt._rank == 0:
-            self.config.sections["OUTFILE"].adios2_stream.close()
+        #if self.validation and self.pt._rank == 0:
+        #    self.config.sections["OUTFILE"].adios2_stream.close()
         
         if self.config.debug and pt._rank == 0:
             active_features = np.sum(lambda_mask)

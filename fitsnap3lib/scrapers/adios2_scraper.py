@@ -1,6 +1,7 @@
 from fitsnap3lib.scrapers.scrape import Scraper
 import numpy as np
 import logging
+from itertools import islice
 
 try:
     from adios2 import Stream
@@ -231,11 +232,14 @@ class ADIOS2(Scraper):
                     self.group_table[group_name]['training_size'] += 1
             
             # Print summary
-            max_len = max(len(s) for s in self.unique_group_names)
+            sorted_group_names = sorted(self.unique_group_names)
+            pt.add_2_fitsnap("sorted_group_names", sorted_group_names)
+
+            max_len = max(len(s) for s in sorted_group_names)
             total_train = total_test = 0
             self.pt.single_print(f"    {'GROUP':<{max_len}}  TRAINING  VALIDATION")
             
-            for group_name in sorted(self.unique_group_names):
+            for group_name in sorted_group_names:
                 train_size = self.group_table[group_name]['training_size']
                 test_size = self.group_table[group_name]['testing_size']
                 total_train += train_size
@@ -248,7 +252,10 @@ class ADIOS2(Scraper):
             self.group_table = self.comm.bcast(self.group_table, root=0)
         
         # Process configurations assigned to this rank
-        for config_idx in self.my_config_indices:
+        max_configs_per_rank = self.config.sections["SCRAPER"].max_configs_per_rank
+        if max_configs_per_rank is None:
+            max_configs_per_rank = len(self.my_config_indices)
+        for config_idx in islice(self.my_config_indices, max_configs_per_rank):
             try:
                 data_dict = self._extract_config(config_idx)
                 if data_dict is not None:
@@ -298,7 +305,6 @@ class ADIOS2(Scraper):
             'Lattice': lattice.copy(),
             'QMLattice': lattice.copy().T,  # Transpose for compatibility with parent class
             'Energy': float(self.energy[config_idx]),
-            #'eweight': self.group_table[group_name]['eweight'],
             'test_bool': bool(self.test_bool[config_idx]),
         }
         
@@ -306,13 +312,11 @@ class ADIOS2(Scraper):
         if self.has_forces and self.use_forces:
             forces = self.forces_flat[pos_start:pos_end]
             data_dict['Forces'] = forces.copy()
-            #data_dict['fweight'] = self.group_table[group_name]['fweight'] / (3*natoms)
         
         # Extract stress if available (3x3 matrix)
         if self.has_stress and self.use_stress:
             stress = self.stresses[config_idx].reshape((3, 3))
             data_dict['Stress'] = stress.copy()
-            #data_dict['vweight'] = self.group_table[group_name]['vweight']
         
         # Apply weights from config file using parent class method
         # We need to temporarily set self.data for parent methods to work
@@ -334,9 +338,3 @@ class ADIOS2(Scraper):
         
         return result
 
-    def __del__(self):
-        """
-        Clean up resources on destruction.
-        """
-        # Stream context manager handles cleanup
-        pass
