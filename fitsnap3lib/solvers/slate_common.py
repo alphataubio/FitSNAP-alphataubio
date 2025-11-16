@@ -99,16 +99,13 @@ class SlateCommon(Solver):
 
     def perform_fit(self):
     
-        fs_dict = pt.fitsnap_dict
+        fs_dict = self.pt.fitsnap_dict
 
-        if self.validation:
+        if self.validation and self.pt._rank == 0:
 
-            pass
-            
-            #all_testing = pt._comm.gather(list(fs_dict['Testing'][local_slice] if 'Testing' in fs_dict else [False]*len(preds)), root=0)
-            #all_row_types = pt._comm.gather(list(fs_dict['Row_Type'][local_slice] if 'Row_Type' in fs_dict else ['Energy']*len(preds)), root=0)
-            #stream.write_attribute("testing", np.array(testing_flat, dtype=np.int8))
-            #stream.write_attribute("row_types", row_types_flat)
+            stream = self.config.sections["OUTFILE"].adios2_stream
+            stream.write_attribute('nconfigs', fs_dict["nconfigs"])
+            stream.write_attribute("sorted_group_names", fs_dict["sorted_group_names"])
 
             # Get rank information from PYACE basis if available
             if "PYACE" in self.config.sections:
@@ -311,8 +308,11 @@ class SlateCommon(Solver):
         # Gather predictions and truths to rank 0 for scatterplots
         # ALL RANKS participate in gather to avoid deadlock
         if self.validation:
-            all_preds = pt._comm.gather(preds, root=0)
+            all_preds = pt._comm.gather(preds, root=0) #.astype(np.float32)
             all_truths = pt._comm.gather(local_b, root=0)
+            all_groups = pt._comm.gather(list(fs_dict['Groups'][local_slice]), root=0)
+            all_testing = pt._comm.gather(list(fs_dict['Testing'][local_slice] if 'Testing' in fs_dict else [False]*len(preds)), root=0)
+            all_row_types = pt._comm.gather(list(fs_dict['Row_Type'][local_slice] if 'Row_Type' in fs_dict else ['Energy']*len(preds)), root=0)
             
             # Only rank 0 writes to adios2
             if pt._rank == 0:
@@ -323,11 +323,40 @@ class SlateCommon(Solver):
                     # Flatten gathered data
                     preds_flat = np.concatenate(all_preds)
                     truths_flat = np.concatenate(all_truths)
+                    groups_flat = [g for sublist in all_groups for g in sublist]
+                    testing_flat = [t for sublist in all_testing for t in sublist]
+                    row_types_flat = [r for sublist in all_row_types for r in sublist]
                     
-                    # Write to adios2 (rank 0 only)
+                    # Get sorted group names and unique row types
+                    sorted_group_names = fs_dict["sorted_group_names"]
+                    unique_row_types = sorted(set(row_types_flat))
+                    
+                    # Write separate variables for each (row_type, group_idx, testing) combination
+                    # Each variable has shape (n_points, 2) with columns [predictions, truths]
                     stream.begin_step()
-                    stream.write("predictions", preds_flat, count=preds_flat.shape)
-                    stream.write("truths", truths_flat, count=truths_flat.shape)
+                    for row_type in unique_row_types:
+                        row_type_lower = row_type.lower()
+                        for group_idx, group_name in enumerate(sorted_group_names):
+                            for testing_flag in [False, True]:
+                                # Filter data for this combination
+                                mask = [(g == group_name and t == testing_flag and r == row_type) 
+                                        for g, t, r in zip(groups_flat, testing_flat, row_types_flat)]
+                                mask = np.array(mask)
+                                
+                                if np.any(mask):
+                                    # Get predictions and truths for this subset
+                                    subset_preds = preds_flat[mask]
+                                    subset_truths = truths_flat[mask]
+                                    
+                                    # Stack into (n_points, 2) array: [predictions, truths]
+                                    data_array = np.column_stack([subset_truths, subset_preds])
+                                    
+                                    # Variable name: energy_0_training, forces_1_testing, etc.
+                                    testing_str = "testing" if testing_flag else "training"
+                                    var_name = f"{row_type_lower}_{group_idx}_{testing_str}"
+                                    
+                                    stream.write(var_name, data_array, count=data_array.shape)
+                    
                     stream.end_step()
                     stream.close()
 
@@ -527,7 +556,7 @@ class SlateCommon(Solver):
                     
                     ss_tot_weighted = global_ss_tot_weighted.get(group_key, 0.0)
                     weighted_rsq = 1 - (stats['sum_se'] / ss_tot_weighted) if ss_tot_weighted != 0 else 0
-                    weighted_rsq = max(0.0, weighted_rsq)  # Clip negative R² to 0
+                    #weighted_rsq = max(0.0, weighted_rsq)  # Clip negative R² to 0
                     
                     # Unweighted metrics
                     unweighted_mae = stats['sum_ae_unweighted'] / stats['n']
@@ -535,7 +564,7 @@ class SlateCommon(Solver):
                     
                     ss_tot_unweighted = global_ss_tot_unweighted.get(group_key, 0.0)
                     unweighted_rsq = 1 - (stats['sum_se_unweighted'] / ss_tot_unweighted) if ss_tot_unweighted != 0 else 0
-                    unweighted_rsq = max(0.0, unweighted_rsq)  # Clip negative R² to 0
+                    #unweighted_rsq = max(0.0, unweighted_rsq)  # Clip negative R² to 0
                     
                     final_results.append({
                         'group': group_key,

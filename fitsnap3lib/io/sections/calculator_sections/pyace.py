@@ -139,13 +139,13 @@ class PyAce(Section):
                 for function in element_basis_rank1_functions:
                     element = self.elements[function.mu0]
                     elements = " ". join([self.elements[mu] for mu in function.mus])
-                    self.blist.append(f"{element} {elements} ls {function.ls} ns {function.ns} ")
+                    self.blist.append(f"{element} {elements} ns {function.ns} ls {function.ls}")
 
             for element_basis_functions in ctilde_basis.basis:
                 for function in element_basis_functions:
                     element = self.elements[function.mu0]
                     elements = " ". join([self.elements[mu] for mu in function.mus])
-                    self.blist.append(f"{element} {elements} ls {function.ls} ns {function.ns} ")
+                    self.blist.append(f"{element} {elements} ns {function.ns} ls {function.ls}")
 
             if 'EXTRAS' in self.sections and self.sections['EXTRAS'].debug:
                 for element_basis_rank1_functions in b_basis.basis_rank1:

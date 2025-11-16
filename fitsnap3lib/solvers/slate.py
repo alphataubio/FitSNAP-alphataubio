@@ -102,41 +102,21 @@ class SLATE(SlateValidation):
         else:
             local_m_training = a_end_idx - a_start_idx + 1
             
-        local_m_training = np.atleast_1d(local_m_training)
-
         # -------- IN-PLACE WEIGHTING/CENTERING/SCALING --------
         eps = np.finfo(np.float64).eps
         # Apply weights to a and b
         aw[local_slice] = local_w[:, np.newaxis] * a[local_slice]
         bw[local_slice] = local_w * b[local_slice]
-        # Compute mean/std of weighted a (per column) and b across MPI
-        local_sum_aw, local_sum_bw = np.sum(aw[local_slice], axis=0), np.atleast_1d(np.sum(bw[local_slice]))
-        local_sum_aw2, local_sum_bw2 = np.sum(aw[local_slice]**2, axis=0), np.atleast_1d(np.sum(bw[local_slice]**2))
-        local_values = np.concatenate([local_sum_aw, local_sum_aw2, local_sum_bw, local_sum_bw2, local_m_training])
+        # Compute mean/std of weighted b across MPI
+        local_sum_bw, local_sum_bw2 = np.sum(bw[local_slice]), np.sum(bw[local_slice]**2)
+        local_values = np.array([local_sum_bw, local_sum_bw2, local_m_training])
         global_values = pt._comm.allreduce(local_values, op=MPI.SUM)
-        global_sum_aw, global_sum_aw2 = global_values[:n], global_values[n:2*n]
-        global_sum_bw, global_sum_bw2 = global_values[2*n], global_values[2*n + 1]
-        global_m_training = global_values[2*n + 2]
-        mean_aw = global_sum_aw / m
+        global_sum_bw, global_sum_bw2, global_m_training = global_values.tolist()
         mean_bw = global_sum_bw / m
-        var_aw = global_sum_aw2 / m - mean_aw**2
         var_bw = global_sum_bw2 / m - mean_bw**2
-        std_aw = np.sqrt(var_aw + eps)
-        std_bw = np.sqrt(var_bw + eps)
-        # Center and scale in-place to my local slice
-        #aw[local_slice] -= mean_aw
-        #aw[local_slice] /= std_aw
-        #bw[local_slice] -= mean_bw
-        #bw[local_slice] /= std_bw
-
-        np.set_printoptions(
-            precision=4, suppress=False, floatmode='fixed', linewidth=np.inf,
-            formatter={'float': '{:.3g}'.format}, threshold = 800, edgeitems=5
-        )
-        #pt.single_print(f"SLATE ARD: m {m} n {n} mean_aw {mean_aw:} std_aw {std_aw} mean_bw {mean_bw:.2g} std_bw {std_bw:.2g}")
 
         # Compute adaptive hyperparameters
-        ap = 1.0  # inverse variance ("alpha prior")
+        ap = 1.0 / (var_bw + eps)  # inverse variance ("alpha prior")
         
         pt.debug_single_print(f"inverse variance in training data: {ap:.6f}, logscale for threshold_lambda: {np.log10(ap):.6f}")
         
@@ -222,6 +202,7 @@ class SLATE(SlateValidation):
                 
             # Store gamma and lambda history if validation enabled
             if self.validation and pt._rank == 0:
+                stream = self.config.sections["OUTFILE"].adios2_stream
                 stream.begin_step()
                 stream.write("gamma", gamma_, count=[n])
                 stream.write("lambda", lambda_, count=[n])
@@ -288,10 +269,6 @@ class SLATE(SlateValidation):
                 pyace_section.lambda_mask = lambda_mask[pyace_section.numtypes:]
 
         self.fit = coef_ # * std_aw + mean_aw  # * std_bw/
-        
-        # Save gamma and lambda history using adios2 if validation enabled
-        #if self.validation and self.pt._rank == 0:
-        #    self.config.sections["OUTFILE"].adios2_stream.close()
         
         if self.config.debug and pt._rank == 0:
             active_features = np.sum(lambda_mask)

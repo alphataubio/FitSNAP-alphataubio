@@ -319,105 +319,132 @@ class SlateValidation(SlateCommon):
         # Create scatterplots for predictions vs truths
         output_prefix = self.config.sections['OUTFILE'].metrics.replace('.md', '')
         adios2_path = f"{output_prefix}.bp"
-        with adios2.FileReader(adios2_path) as adios2_file:
-            groups = list(adios2_file.read_attribute("groups"))
-            testing = adios2_file.read_attribute("testing")
-            row_types = list(adios2_file.read_attribute("row_types"))
-            preds = adios2_file.read("predictions", step_selection=[0,1])
-            truths = adios2_file.read("truths", step_selection=[0,1])
 
-        # Create scatterplots for each row type
-        unique_row_types = sorted(set(row_types))
+        try:
+            # Read sorted_group_names attribute
+            with adios2.FileReader(adios2_path) as adios2_file:
+                sorted_group_names = list(adios2_file.read_attribute("sorted_group_names"))
             
-        for row_type in unique_row_types:
-            if row_type not in ['Energy', 'Force', 'Stress']:
-                continue
+            # Read all variables for each row type
+            with adios2.Stream(adios2_path, "r") as adios2_stream:
+                # Iterate to last step
+                for step in adios2_stream.steps():
+                    pass
+                
+                # Get available variables to determine which row types exist
+                available_vars = adios2_stream.available_variables()
+                
+                # Determine unique row types from variable names
+                unique_row_types = set()
+                for var_name in available_vars.keys():
+                    if '_' in var_name:
+                        parts = var_name.split('_')
+                        if len(parts) >= 3 and parts[-1] in ['training', 'testing']:
+                            row_type = parts[0].capitalize()
+                            unique_row_types.add(row_type)
+                
+                for row_type in sorted(unique_row_types):
+                    if row_type not in ['Energy', 'Force', 'Stress']:
+                        continue
                     
-            # Filter data for this row type
-            mask = np.array([rt == row_type for rt in row_types])
-            preds_rt = preds[mask]
-            truths_rt = truths[mask]
-            groups_rt = [groups[i] for i in range(len(groups)) if mask[i]]
-            testing_rt = testing[mask]
-            
-            if len(preds_rt) == 0:
-                continue
-                
-            # Get units for axis labels
-            reference_section = self.config.sections["REFERENCE"]
-            if row_type == 'Energy':
-                units = reference_section.energy_units
-            elif row_type == 'Force':
-                units = reference_section.force_units
-            elif row_type == 'Stress':
-                units = reference_section.stress_units
-            else:
-                units = ""
-                
-            # Create figure
-            fig, ax = plt.subplots(figsize=(10, 10))
-                
-            # Get unique groups and assign colors using tab20
-            unique_groups = sorted(set(groups_rt))
-            n_groups = len(unique_groups)
-                
-            # tab20 has 20 colors in pairs (light, dark)
-            # We'll use light for training, dark for testing
-            tab20 = plt.cm.get_cmap('tab20')
-                
-            for idx, group in enumerate(unique_groups):
-                # Get color pair indices (0,1), (2,3), (4,5), etc.
-                color_idx_light = (idx * 2) % 20
-                color_idx_dark = (idx * 2 + 1) % 20
+                    # Get units for axis labels
+                    reference_section = self.config.sections["REFERENCE"]
+                    if row_type == 'Energy':
+                        units = reference_section.energy_units
+                    elif row_type == 'Force':
+                        units = reference_section.force_units
+                    elif row_type == 'Stress':
+                        units = reference_section.stress_units
+                    else:
+                        units = ""
                     
-                # Training data (light color)
-                train_mask = np.array([(g == group and not t) for g, t in zip(groups_rt, testing_rt)])
-                if np.any(train_mask):
-                    ax.scatter(truths_rt[train_mask], preds_rt[train_mask],
-                              c=[tab20(color_idx_light)], alpha=0.6, s=30,
-                              label=f"{group} (train)", edgecolors='none')
+                    # Create figure
+                    fig, ax = plt.subplots(figsize=(6, 6), layout='constrained')
+                    tab20 = plt.cm.get_cmap('tab20')
                     
-                # Testing data (dark color)
-                test_mask = np.array([(g == group and t) for g, t in zip(groups_rt, testing_rt)])
-                if np.any(test_mask):
-                    ax.scatter(truths_rt[test_mask], preds_rt[test_mask],
-                              c=[tab20(color_idx_dark)], alpha=0.8, s=50,
-                              label=f"{group} (test)", marker='s', edgecolors='black', linewidths=0.5)
-                
-            # Plot perfect prediction line
-            lims = [min(truths_rt.min(), preds_rt.min()), max(truths_rt.max(), preds_rt.max())]
-            ax.plot(lims, lims, 'k--', alpha=0.5, lw=2, label='Perfect prediction')
-                
-            # Labels and styling
-            ax.set_xlabel(f'True {row_type} ({units})', fontsize=14, fontweight='bold')
-            ax.set_ylabel(f'Predicted {row_type} ({units})', fontsize=14, fontweight='bold')
-            ax.set_title(f'{row_type} Predictions vs Truth', fontsize=16, fontweight='bold')
-            ax.grid(True, alpha=0.3)
-            ax.set_aspect('equal', adjustable='box')
-                
-            # Legend
-            ax.legend(loc='outside right upper', framealpha=1, fontsize=12)
-                
-            # Save to base64
-            buf = io.BytesIO()
-            plt.tight_layout()
-            plt.savefig(buf, format='svg', bbox_inches='tight')
-            plt.close()
-            svg_text = buf.getvalue().decode('utf-8')
-            buf.close()
-            img_base64 = base64.b64encode(svg_text.encode('utf-8')).decode('utf-8')
-                
-            # Add to notebook
-            notebook["cells"].append({
-                "cell_type": "markdown",
-                "metadata": {},
-                "source": [
-                    f"### {row_type} Scatterplot\n\n",
-                        f'<div align="center"><img src="data:image/svg+xml;base64,{img_base64}" '
-                        'style="width:80%;height:auto;"></div>'
-                ]
-            
-            })
+                    all_preds = []
+                    all_truths = []
+                    
+                    for group_idx, group_name in enumerate(sorted_group_names):
+                        # Get color pair indices (0,1), (2,3), (4,5), etc.
+                        color_idx_light = (group_idx * 2 + 1) % 20
+                        color_idx_dark = (group_idx * 2) % 20
+                        
+                        # Read training data
+                        row_type_lower = row_type.lower()
+                        var_name_train = f"{row_type_lower}_{group_idx}_training"
+                        if var_name_train in available_vars:
+                            data_train = adios2_stream.read(var_name_train)
+                            if len(data_train) > 0:
+                                truths_train = data_train[:, 0]
+                                preds_train = data_train[:, 1]
+                                all_preds.extend(preds_train)
+                                all_truths.extend(truths_train)
+                                ax.scatter(truths_train, preds_train, zorder=8,
+                                         c=[tab20(color_idx_light)], alpha=.8,
+                                         s=99/np.log10(len(all_preds)),
+                                         label=f"{group_name} (train)", edgecolors='none')
+                        
+                        # Read testing data
+                        var_name_test = f"{row_type_lower}_{group_idx}_testing"
+                        if var_name_test in available_vars:
+                            data_test = adios2_stream.read(var_name_test)
+                            if len(data_test) > 0:
+                                truths_test = data_test[:, 0]
+                                preds_test = data_test[:, 1]
+                                all_preds.extend(preds_test)
+                                all_truths.extend(truths_test)
+                                ax.scatter(truths_test, preds_test, zorder=9, linewidths=0.5,
+                                         c=[tab20(color_idx_dark)], edgecolors='black', alpha=.95,
+                                         s=99/np.log10(len(all_preds))*1.618,
+                                         label=f"{group_name} (test)", marker='s'
+                                )
+                    
+                    if len(all_preds) == 0:
+                        continue  # Skip if no data for this row type
+                    
+                    # Plot perfect prediction line
+                    all_preds = np.array(all_preds)
+                    all_truths = np.array(all_truths)
+                    lims = [min(all_truths.min(), all_preds.min()),
+                            max(all_truths.max(), all_preds.max())]
+                    ax.plot(lims, lims, 'k--', alpha=0.618, lw=2, label='Perfect prediction')
+                    
+                    # Labels and styling
+                    ax.set_xlabel(f'True {row_type} ({units})', fontsize=14, fontweight='bold')
+                    ax.set_ylabel(f'Predicted {row_type} ({units})', fontsize=14, fontweight='bold')
+                    #ax.set_title(f'{row_type} Predictions vs Truth', fontsize=16, fontweight='bold')
+                    ax.grid(True, alpha=0.3)
+                    ax.set_aspect('equal', adjustable='box')
+                    
+                    # Legend
+                    leg = fig.legend(loc="upper left", bbox_to_anchor=(1.05, .95), ncol=1, borderpad=.618,
+                        title="GROUPS", title_fontsize=12, prop={"size": 12})
+                    leg.get_title().set_fontweight("bold")
+                    
+                    # Save to base64
+                    buf = io.BytesIO()
+                    plt.savefig(buf, format='svg', bbox_inches='tight')
+                    plt.close()
+                    svg_text = buf.getvalue().decode('utf-8')
+                    buf.close()
+                    img_base64 = base64.b64encode(svg_text.encode('utf-8')).decode('utf-8')
+                    
+                    # Add to notebook
+                    notebook["cells"].append({
+                        "cell_type": "markdown",
+                        "metadata": {},
+                        "source": [
+                            f"### {row_type} Scatterplot\n\n",
+                            f'<div align="center"><img src="data:image/svg+xml;base64,{img_base64}" '
+                            'style="width:90%;height:auto;"></div>'
+                        ]
+                    })
+                    
+        except Exception as e:
+            # If reading fails, skip scatterplots
+            self.pt.single_print(f"Could not create scatterplots: {e}")
+            pass
 
 
         if self.method == 'ARD':
@@ -448,7 +475,7 @@ class SlateValidation(SlateCommon):
         blist_rank = defaultdict(list)
         rank_indices = defaultdict(list)
         for i, (r, f) in enumerate(zip(basis_ranks, blist)):
-            blist_rank[r].append(re.split(r" ls \[|\] ns \[| \[0\]$", f))
+            blist_rank[r].append(re.split(r" ns \[|\] ls \[| \[0\]$", f))
             rank_indices[r].append(i)
             
         # Create and display gamma heatmaps
@@ -594,7 +621,7 @@ class SlateValidation(SlateCommon):
             "cell_type": "markdown",
             "metadata": {},
             "source": [
-                "## Summary Statistics\n",
+                "## Gamma / Lambda Histograms (by iteration)\n",
                 f'<img src="data:image/svg+xml;base64,{img_base64_summary}" '
                 'alt="Gamma Heatmap" style="width:100%;height:auto;">'
             ]
@@ -651,25 +678,20 @@ def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=
         y += v
 
     if rank >= 1:
-        # --- ls labels ---
-        y, ls = 0, Counter([f"{basis[0]}_{basis[1]}" for basis in sorted_blist])
-        
-        #for b in sorted_blist:
-        #    print(f"{b}\n")
-
-
-        ax.text((ls_x:=(xticks_extra[0]+xticks_extra[1])/2), heatmap_rows, 'ls', ha="center", va="top", fontsize=10, fontweight="bold")
-        for k, v in sorted(ls.items()):
+        # --- ns labels ---
+        y, ns = 0, Counter([f"{basis[0]}_{basis[1]}" for basis in sorted_blist])
+        ax.text((ns_x:=(xticks_extra[0]+xticks_extra[1])/2), heatmap_rows, 'ns', ha="center", va="top", fontsize=10, fontweight="bold")
+        for k, v in sorted(ns.items()):
             ax.add_patch(Rectangle((xticks_extra[0], y - 0.5), xticks_extra[1]-xticks_extra[0], v, fc='w', ec="k", zorder=9))
-            ax.text(ls_x, y + v / 2 - 0.5, k.split('_')[-1], ha="center", va="center", fontsize=8, zorder=10)
+            ax.text(ns_x, y + v / 2 - 0.5, k.split('_')[-1], ha="center", va="center", fontsize=8, zorder=10)
             for j in range(v):
                 y_positions.append(y + j)
                 texts.append(sorted_blist[y + j][-1].replace(']', ''))
             y += v
 
-        # --- ns labels ---
-        ax.text((ns_x:=(xticks_extra[1]-.5)/2), heatmap_rows, 'ns', ha="center", va="top", fontsize=10, fontweight="bold")
-        draw_labels(ax, y_positions, texts, x=ns_x)
+        # --- ls labels ---
+        ax.text((ls_x:=(xticks_extra[1]-.5)/2), heatmap_rows, 'ls', ha="center", va="top", fontsize=10, fontweight="bold")
+        draw_labels(ax, y_positions, texts, x=ls_x)
 
     tick_values = MaxNLocator(steps=[1, 5, 10],integer=True).tick_values(0, n_iterations)
     tick_positions = [t - .5 for t in tick_values]

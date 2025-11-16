@@ -233,7 +233,7 @@ class ADIOS2(Scraper):
             
             # Print summary
             sorted_group_names = sorted(self.unique_group_names)
-            pt.add_2_fitsnap("sorted_group_names", sorted_group_names)
+            self.pt.add_2_fitsnap("sorted_group_names", sorted_group_names)
 
             max_len = max(len(s) for s in sorted_group_names)
             total_train = total_test = 0
