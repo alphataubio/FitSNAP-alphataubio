@@ -14,8 +14,10 @@
 elements = Al Ni
 bzeroflag = 0
 
+# FinnisSinclair, FinnisSinclairShiftedScaled
+
 embeddings = {
-    "ALL": {"npot": "FinnisSinclair", "fs_parameters": [1,1], "ndensity": 1},
+    "ALL": {"npot": "FinnisSinclairShiftedScaled", "fs_parameters": [1,1,1,0.5], "ndensity": 2},
   }
 
 # ChebExpCos, ChebPow, ChebLinear, SBessel
@@ -82,13 +84,14 @@ detailed_errors = 0
 [SLATE]
 method = ARD
 pruning_method = lambda
-threshold_lambda = 100
-scap = 1e-4
-scai = 1e-4
+threshold_lambda = 1e4
+scap = 1e-1
+scai = 1e-1
 max_iter = 10
 
 [SCRAPER]
 scraper = ADIOS2
+#max_configs_per_rank = 3
 
 [PATH]
 dataPath = omat24_AlNi.bp
@@ -103,14 +106,14 @@ dataPath = omat24_AlNi.bp
 group_sections = name eweight fweight vweight
 group_types = str float float float float float
 smartweights = 1
-rattled-300             = 1.0  10.0  1.0
-rattled-500             = 1.0  10.0  1.0
-rattled-1000            = 1.0  10.0  1.0
-rattled-relax           = 1.0  10.0  1.0
-aimd-from-PBE-1000-npt  = 1.0  10.0  1.0
-aimd-from-PBE-1000-nvt  = 1.0  10.0  1.0
-aimd-from-PBE-3000-npt  = 1.0  10.0  1.0
-aimd-from-PBE-3000-nvt  = 1.0  10.0  1.0
+rattled-300             = 1.0  100.0  10.0
+rattled-500             = 1.0  100.0  10.0
+rattled-1000            = 1.0  100.0  10.0
+rattled-relax           = 1.0  100.0  10.0
+aimd-from-PBE-1000-npt  = 1.0  100.0  10.0
+aimd-from-PBE-1000-nvt  = 1.0  100.0  10.0
+aimd-from-PBE-3000-npt  = 1.0  100.0  10.0
+aimd-from-PBE-3000-nvt  = 1.0  100.0  10.0
 
 [OUTFILE]
 output_style = PACE

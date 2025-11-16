@@ -349,7 +349,7 @@ class SlateCommon(Solver):
                                     subset_truths = truths_flat[mask]
                                     
                                     # Stack into (n_points, 2) array: [predictions, truths]
-                                    data_array = np.column_stack([subset_truths, subset_preds])
+                                    data_array = np.column_stack([subset_truths, subset_preds]).astype(np.float32)
                                     
                                     # Variable name: energy_0_training, forces_1_testing, etc.
                                     testing_str = "testing" if testing_flag else "training"
@@ -513,10 +513,10 @@ class SlateCommon(Solver):
                     local_ss_tot_unweighted[group_key] = 0.0
                 local_ss_tot_unweighted[group_key] += (truth - unweighted_mean)**2
                 
-                # Also contribute to "*ALL" groups
+                # Also contribute to "*ALL" groups (but avoid double-counting when group_key is already '*ALL')
                 all_key = ('*ALL',) + group_key[1:]
                 
-                if all_key in global_means_weighted:
+                if all_key in global_means_weighted and group_key != all_key:
                     # Weighted SS_tot for *ALL group
                     all_weighted_mean = global_means_weighted[all_key]
                     if all_key not in local_ss_tot_weighted:
@@ -538,6 +538,19 @@ class SlateCommon(Solver):
             # Merge SS_tot from all ranks
             global_ss_tot_weighted = {}
             global_ss_tot_unweighted = {}
+            
+            # DEBUG: Print SS_tot contributions for stress
+            if self.config.debug:
+                print("\n=== DEBUG: SS_tot contributions ===")
+                for i, local_dict in enumerate(all_ss_tot_weighted):
+                    for key, value in local_dict.items():
+                        if 'Stress' in str(key):
+                            print(f"Rank {i}, {key}: SS_tot_weighted = {value}")
+                for i, local_dict in enumerate(all_ss_tot_unweighted):
+                    for key, value in local_dict.items():
+                        if 'Stress' in str(key):
+                            print(f"Rank {i}, {key}: SS_tot_unweighted = {value}")
+                print("==================================\n")
             
             for local_dict in all_ss_tot_weighted:
                 for key, value in local_dict.items():
@@ -565,6 +578,16 @@ class SlateCommon(Solver):
                     ss_tot_unweighted = global_ss_tot_unweighted.get(group_key, 0.0)
                     unweighted_rsq = 1 - (stats['sum_se_unweighted'] / ss_tot_unweighted) if ss_tot_unweighted != 0 else 0
                     #unweighted_rsq = max(0.0, unweighted_rsq)  # Clip negative R² to 0
+                    
+                    # DEBUG: Print R² calculation for Stress
+                    if self.config.debug and 'Stress' in str(group_key):
+                        print(f"\n=== R² calculation for {group_key} ===")
+                        print(f"  Weighted: SS_res={stats['sum_se']:.2e}, SS_tot={ss_tot_weighted:.2e}, R²={weighted_rsq:.6f}")
+                        print(f"  Unweighted: SS_res={stats['sum_se_unweighted']:.2e}, SS_tot={ss_tot_unweighted:.2e}, R²={unweighted_rsq:.6f}")
+                        print(f"  sum_weights={stats['sum_weights']:.2e}, n={stats['n']}")
+                        print(f"  weighted_mean={global_means_weighted.get(group_key, 0.0):.6f}")
+                        print(f"  unweighted_mean={global_means_unweighted.get(group_key, 0.0):.6f}")
+                        print("="*50)
                     
                     final_results.append({
                         'group': group_key,

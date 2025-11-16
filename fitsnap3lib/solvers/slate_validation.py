@@ -324,16 +324,10 @@ class SlateValidation(SlateCommon):
             # Read sorted_group_names attribute
             with adios2.FileReader(adios2_path) as adios2_file:
                 sorted_group_names = list(adios2_file.read_attribute("sorted_group_names"))
-            
-            # Read all variables for each row type
-            with adios2.Stream(adios2_path, "r") as adios2_stream:
-                # Iterate to last step
-                for step in adios2_stream.steps():
-                    pass
-                
+                            
                 # Get available variables to determine which row types exist
-                available_vars = adios2_stream.available_variables()
-                
+                available_vars = adios2_file.available_variables()
+                                
                 # Determine unique row types from variable names
                 unique_row_types = set()
                 for var_name in available_vars.keys():
@@ -374,7 +368,7 @@ class SlateValidation(SlateCommon):
                         row_type_lower = row_type.lower()
                         var_name_train = f"{row_type_lower}_{group_idx}_training"
                         if var_name_train in available_vars:
-                            data_train = adios2_stream.read(var_name_train)
+                            data_train = adios2_file.read(var_name_train, step_selection=[0,1])
                             if len(data_train) > 0:
                                 truths_train = data_train[:, 0]
                                 preds_train = data_train[:, 1]
@@ -388,7 +382,7 @@ class SlateValidation(SlateCommon):
                         # Read testing data
                         var_name_test = f"{row_type_lower}_{group_idx}_testing"
                         if var_name_test in available_vars:
-                            data_test = adios2_stream.read(var_name_test)
+                            data_test = adios2_file.read(var_name_test, step_selection=[0,1])
                             if len(data_test) > 0:
                                 truths_test = data_test[:, 0]
                                 preds_test = data_test[:, 1]
@@ -413,7 +407,6 @@ class SlateValidation(SlateCommon):
                     # Labels and styling
                     ax.set_xlabel(f'True {row_type} ({units})', fontsize=14, fontweight='bold')
                     ax.set_ylabel(f'Predicted {row_type} ({units})', fontsize=14, fontweight='bold')
-                    #ax.set_title(f'{row_type} Predictions vs Truth', fontsize=16, fontweight='bold')
                     ax.grid(True, alpha=0.3)
                     ax.set_aspect('equal', adjustable='box')
                     
@@ -433,9 +426,18 @@ class SlateValidation(SlateCommon):
                     # Add to notebook
                     notebook["cells"].append({
                         "cell_type": "markdown",
+                        "metadata": {
+                            "collapsed": False,
+                            "jp-MarkdownHeadingCollapsed": False,
+                            "jupyter": {"outputs_hidden": False}
+                        },
+                        "source": [f"### {row_type} Scatterplot"]
+                    })
+
+                    notebook["cells"].append({
+                        "cell_type": "markdown",
                         "metadata": {},
                         "source": [
-                            f"### {row_type} Scatterplot\n\n",
                             f'<div align="center"><img src="data:image/svg+xml;base64,{img_base64}" '
                             'style="width:90%;height:auto;"></div>'
                         ]
@@ -482,8 +484,15 @@ class SlateValidation(SlateCommon):
         
         if self.pruning_method.lower() == 'gamma':
         
-            notebook["cells"].append({"cell_type": "markdown", "metadata": {},
-                "source": ["## Gamma Heatmaps\n"]})
+            notebook["cells"].append({
+                "cell_type": "markdown",
+                "metadata": {
+                    "collapsed": False,
+                    "jp-MarkdownHeadingCollapsed": False,
+                    "jupyter": {"outputs_hidden": False}
+                },
+                "source": ["## Gamma Heatmaps\n"]
+            })
 
             threshold = self.threshold_gamma if self.pruning_method.lower() == 'gamma' else None
             
@@ -511,7 +520,13 @@ class SlateValidation(SlateCommon):
         
         if self.pruning_method.lower() == 'lambda':
 
-            notebook["cells"].append({"cell_type": "markdown", "metadata": {},
+            notebook["cells"].append({
+                "cell_type": "markdown",
+                "metadata": {
+                    "collapsed": False,
+                    "jp-MarkdownHeadingCollapsed": False,
+                    "jupyter": {"outputs_hidden": False}
+                },
                 "source": ["## Lambda Heatmaps\n"]})
         
             threshold = self.threshold_lambda if self.pruning_method.lower() == 'lambda' else None
@@ -616,12 +631,21 @@ class SlateValidation(SlateCommon):
         svg_text = buf.getvalue().decode('utf-8')
         buf.close()
         img_base64_summary = base64.b64encode(svg_text.encode('utf-8')).decode('utf-8')
-  
+
+        notebook["cells"].append({
+            "cell_type": "markdown",
+            "metadata": {
+                "collapsed": False,
+                "jp-MarkdownHeadingCollapsed": False,
+                "jupyter": {"outputs_hidden": False}
+            },
+            "source": [f"## Gamma / Lambda Histograms (by iteration)"]
+        })
+
         notebook["cells"].append({
             "cell_type": "markdown",
             "metadata": {},
             "source": [
-                "## Gamma / Lambda Histograms (by iteration)\n",
                 f'<img src="data:image/svg+xml;base64,{img_base64_summary}" '
                 'alt="Gamma Heatmap" style="width:100%;height:auto;">'
             ]

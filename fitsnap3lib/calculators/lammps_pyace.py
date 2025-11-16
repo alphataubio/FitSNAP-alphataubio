@@ -165,7 +165,7 @@ class LammpsPyace(LammpsPace):
         irow += nrows_force
 
         if self.config.sections["CALCULATOR"].stress:
-            vb_sum_temp = 160.2176565*lmp_pace[irow:irow + nrows_virial, :ncols_descriptors] / lmp_volume
+            vb_sum_temp = 160.2176565 * lmp_pace[irow:irow + nrows_virial, :ncols_descriptors] / lmp_volume
             vb_sum_temp.shape = (ndim_virial, self._ncoeff)
             if not self._bzeroflag:
                 onehot_atoms = np.zeros((np.shape(vb_sum_temp)[0], self._numtypes))
@@ -177,6 +177,7 @@ class LammpsPyace(LammpsPace):
             # Convert b vector from eV/Å³ to GPa
             tmp1 = 160.2176565 * self._data["Stress"][[0, 1, 2, 1, 0, 0], [0, 1, 2, 2, 2, 1]].ravel()
             tmp2 = ref_stress/10000
+            #self.pt.single_print(f"*** tmp1 {tmp1} tmp2 {tmp2}")
             self.pt.shared_arrays['b'].array[index:index+ndim_virial] = tmp1 - tmp2
 
             self.pt.shared_arrays['w'].array[index:index+ndim_virial] = self._data["vweight"]
