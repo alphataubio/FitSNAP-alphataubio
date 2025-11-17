@@ -415,15 +415,6 @@ class SlateValidation(SlateCommon):
                         title="GROUPS", title_fontsize=12, prop={"size": 12})
                     leg.get_title().set_fontweight("bold")
                     
-                    # Save to base64
-                    buf = io.BytesIO()
-                    plt.savefig(buf, format='svg', bbox_inches='tight')
-                    plt.close()
-                    svg_text = buf.getvalue().decode('utf-8')
-                    buf.close()
-                    img_base64 = base64.b64encode(svg_text.encode('utf-8')).decode('utf-8')
-                    
-                    # Add to notebook
                     notebook["cells"].append({
                         "cell_type": "markdown",
                         "metadata": {
@@ -433,12 +424,25 @@ class SlateValidation(SlateCommon):
                         },
                         "source": [f"### {row_type} Scatterplot"]
                     })
+                    
+                    
+                    buf = io.BytesIO()
+                    img_format = 'svg' if len(all_truths) < 10000 else 'png'
+                    plt.savefig(buf, format=img_format, bbox_inches='tight')
+                                        
+                    plt.close()
+                    buf.seek(0)
+                    img_bytes = buf.getvalue()
+                    buf.close()
+                    img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+
+                    mime = "image/svg+xml" if img_format == "svg" else "image/png"
 
                     notebook["cells"].append({
                         "cell_type": "markdown",
                         "metadata": {},
                         "source": [
-                            f'<div align="center"><img src="data:image/svg+xml;base64,{img_base64}" '
+                            f'<div align="center"><img src="data:{mime};base64,{img_base64}" '
                             'style="width:90%;height:auto;"></div>'
                         ]
                     })
