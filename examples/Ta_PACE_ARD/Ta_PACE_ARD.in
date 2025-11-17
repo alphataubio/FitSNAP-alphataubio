@@ -24,7 +24,6 @@ Ta = 0.0
 [SOLVER]
 solver = ARD
 compute_testerrs = 1
-detailed_errors = 1
 
 [ARD]
 directmethod = 0

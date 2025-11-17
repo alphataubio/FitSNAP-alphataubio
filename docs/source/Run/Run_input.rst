@@ -52,7 +52,6 @@ following input script::
     [SOLVER]
     solver = SVD
     compute_testerrs = 1
-    detailed_errors = 1
 
     [SCRAPER]
     scraper = JSON

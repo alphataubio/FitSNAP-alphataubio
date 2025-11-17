@@ -691,7 +691,6 @@ Ridge regression for tantalum:
    [SOLVER]
    solver = SLATE
    compute_testerrs = 1
-   detailed_errors = 1
    
    [SLATE]
    method = RIDGE

@@ -38,7 +38,6 @@ batch_size = 363
 [SOLVER]
 solver = JAX
 compute_testerrs = 1
-detailed_errors = 1
 
 [SCRAPER]
 scraper = JSON

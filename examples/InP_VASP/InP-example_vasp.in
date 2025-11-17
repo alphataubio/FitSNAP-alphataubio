@@ -77,7 +77,6 @@ P = 4.38159549501534
 [SOLVER]
 solver = SVD
 compute_testerrs = 1
-detailed_errors = 1
 
 [SCRAPER]
 ## See comments above for explicit instructions on using the VASP scraper.

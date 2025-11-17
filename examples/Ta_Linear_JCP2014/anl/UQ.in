@@ -25,7 +25,6 @@ Ta = 0.0
 solver = anl
 nsam = 5
 compute_testerrs = 1
-detailed_errors = 1
 
 [SCRAPER]
 scraper = JSON

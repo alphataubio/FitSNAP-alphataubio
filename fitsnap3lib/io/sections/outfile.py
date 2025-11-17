@@ -15,7 +15,6 @@ class Outfile(Section):
                             'metrics',
                             'metrics_style',
                             'potential',
-                            'detailed_errors',
                             'validation']
         self._check_section()
 

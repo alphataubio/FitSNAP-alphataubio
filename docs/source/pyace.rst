@@ -412,7 +412,6 @@ Example 1: AlNi Binary Alloy (OMAT24 Dataset)
    [SOLVER]
    solver = SLATE
    compute_testerrs = 1
-   detailed_errors = 0
    
    [SLATE]
    method = ARD

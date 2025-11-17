@@ -6,8 +6,7 @@ class Solver(Section):
     def __init__(self, name, config, pt, infile, args):
         super().__init__(name, config, pt, infile, args)
         self.allowedkeys = ['solver', 'normalweight', 'normratio', \
-                            'compute_testerrs', 'detailed_errors', \
-                            'nsam', 'cov_nugget', \
+                            'compute_testerrs', 'nsam', 'cov_nugget', \
                             'mcmc_num', 'mcmc_gamma', 'mcmc_sigma', \
                             'merr_mult', 'merr_method', 'merr_cfs']
         self._check_section()
@@ -17,7 +16,7 @@ class Solver(Section):
         self.normalweight = self.get_value("SOLVER", "normalweight", "-12", "float")
         self.normratio = self.get_value("SOLVER", "normratio", "0.5", "float")
         self.compute_testerrs = self.get_value("SOLVER", "compute_testerrs", "0", "bool")
-        self.detailed_errors = self.get_value("SOLVER", "detailed_errors", "0", "bool")
+
         if self.solver == "MCMC":
             self.nsam = self.get_value("SOLVER", "nsam", "133", "int")
         else:

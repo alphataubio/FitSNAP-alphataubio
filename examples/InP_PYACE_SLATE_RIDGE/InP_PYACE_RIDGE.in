@@ -45,7 +45,6 @@ P = 4.38159549501534
 [SOLVER]
 solver = SLATE
 compute_testerrs = 1
-detailed_errors = 1
 
 [SLATE]
 alpha=1.E-5

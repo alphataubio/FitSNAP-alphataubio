@@ -27,7 +27,6 @@ stress = 1
 solver = SVD
 normratio = 0.5
 compute_testerrs = 1
-detailed_errors = 1
 
 [SCRAPER]
 scraper = JSON

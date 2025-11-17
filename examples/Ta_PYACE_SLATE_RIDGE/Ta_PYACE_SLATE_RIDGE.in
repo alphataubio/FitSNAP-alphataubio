@@ -45,7 +45,6 @@ Ta = 0.0
 [SOLVER]
 solver = SLATE
 compute_testerrs = 1
-detailed_errors = 1
 
 [SLATE]
 alpha = 1e-4

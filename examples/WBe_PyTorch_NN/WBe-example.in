@@ -40,7 +40,6 @@ manual_seed_flag = 1
 [SOLVER]
 solver = PYTORCH
 compute_testerrs = 1
-detailed_errors = 1
 
 [SCRAPER]
 scraper = JSON

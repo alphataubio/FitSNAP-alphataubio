@@ -151,8 +151,7 @@ settings = \
 "SOLVER":
     {
     "solver": "SVD",
-    "compute_testerrs": 1,
-    "detailed_errors": 1
+    "compute_testerrs": 1
     },
 "SCRAPER":
     {

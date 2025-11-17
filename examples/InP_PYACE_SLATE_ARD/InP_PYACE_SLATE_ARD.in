@@ -44,7 +44,6 @@ P = 4.38159549501534
 [SOLVER]
 solver = SLATE
 compute_testerrs = 1
-detailed_errors = 0
 
 [SLATE]
 method = ARD

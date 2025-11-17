@@ -394,7 +394,3 @@ class Calculator:
                 del df
         if "EXTRAS" in self.config.sections:
             extras()
-
-        # if not config.sections["SOLVER"].detailed_errors:
-        #     print(
-        #         ">>>Enable [SOLVER], detailed_errors = 1 to characterize the training/testing split of your output *.npy matricies")

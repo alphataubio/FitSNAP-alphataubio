@@ -32,7 +32,6 @@ force_weight = 1.0
 [SOLVER]
 solver = NETWORK 
 compute_testerrs = 1
-detailed_errors = 1
 
 [SCRAPER]
 scraper = JSON
