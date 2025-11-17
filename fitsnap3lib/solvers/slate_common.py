@@ -569,7 +569,7 @@ class SlateCommon(Solver):
                     
                     ss_tot_weighted = global_ss_tot_weighted.get(group_key, 0.0)
                     weighted_rsq = 1 - (stats['sum_se'] / ss_tot_weighted) if ss_tot_weighted != 0 else 0
-                    #weighted_rsq = max(0.0, weighted_rsq)  # Clip negative R² to 0
+                    weighted_rsq = max(0.0, weighted_rsq)  # Clip negative R² to 0
                     
                     # Unweighted metrics
                     unweighted_mae = stats['sum_ae_unweighted'] / stats['n']
@@ -577,17 +577,7 @@ class SlateCommon(Solver):
                     
                     ss_tot_unweighted = global_ss_tot_unweighted.get(group_key, 0.0)
                     unweighted_rsq = 1 - (stats['sum_se_unweighted'] / ss_tot_unweighted) if ss_tot_unweighted != 0 else 0
-                    #unweighted_rsq = max(0.0, unweighted_rsq)  # Clip negative R² to 0
-                    
-                    # DEBUG: Print R² calculation for Stress
-                    if self.config.debug and 'Stress' in str(group_key):
-                        print(f"\n=== R² calculation for {group_key} ===")
-                        print(f"  Weighted: SS_res={stats['sum_se']:.2e}, SS_tot={ss_tot_weighted:.2e}, R²={weighted_rsq:.6f}")
-                        print(f"  Unweighted: SS_res={stats['sum_se_unweighted']:.2e}, SS_tot={ss_tot_unweighted:.2e}, R²={unweighted_rsq:.6f}")
-                        print(f"  sum_weights={stats['sum_weights']:.2e}, n={stats['n']}")
-                        print(f"  weighted_mean={global_means_weighted.get(group_key, 0.0):.6f}")
-                        print(f"  unweighted_mean={global_means_unweighted.get(group_key, 0.0):.6f}")
-                        print("="*50)
+                    unweighted_rsq = max(0.0, unweighted_rsq)  # Clip negative R² to 0
                     
                     final_results.append({
                         'group': group_key,

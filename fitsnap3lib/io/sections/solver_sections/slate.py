@@ -18,11 +18,11 @@ class Slate(Section):
         self.method = self.get_value("SLATE", "method", "RIDGE", "str")
 
         # alpha for RIDGE
-        self.alpha = self.get_value("SLATE", "alpha", "1.0E-8", "float")
+        self.alpha = self.get_value("SLATE", "alpha", "1e-6", "float")
 
         # ARD parameters - matching legacy ARD section
         # Maximum number of iterations
-        self.max_iter = self.get_value("SLATE", "max_iter", "100", "int")
+        self.max_iter = self.get_value("SLATE", "max_iter", "10", "int")
         
         # Stop the algorithm if w has converged
         self.rtol = self.get_value("SLATE", "rtol", "1e-3", "float")
@@ -50,15 +50,10 @@ class Slate(Section):
         self.directmethod = self.get_value("SLATE", "directmethod", "0", "int")
         
         # Scaling factors for adaptive hyperparameters (used if directmethod=0)
-        self.scap = self.get_value("SLATE", "scap", "1.e-3", "float")
-        self.scai = self.get_value("SLATE", "scai", "1.e-3", "float")
+        self.scap = self.get_value("SLATE", "scap", "1e-3", "float")
+        self.scai = self.get_value("SLATE", "scai", "1e-3", "float")
         
         # Log cutoff for auto-computing threshold_lambda (used if threshold_lambda not specified)
         self.logcut = self.get_value("SLATE", "logcut", "0.3", "float")
-
-        # Whether to calculate the intercept for this model. If set to false,
-        # no intercept will be used in calculations (ie. data is expected to be centered)
-        # fit_intercept
-        # FIXME: related to bzeroflag
         
         self.delete()
