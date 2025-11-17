@@ -664,9 +664,12 @@ def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=
 
     if (heatmap_rows := len(rank_indices[rank])) == 0:
         return
+
+    def sort_key(basis):
+        ns = basis[1].split(',')
+        return tuple(int(i) for i in ns)
         
-    #sorted_rank_indices = sorted(rank_indices[rank])
-    sorted_blist = sorted(blist_rank[rank], key=lambda basis: basis[1])
+    sorted_blist = sorted(blist_rank[rank], key=sort_key ) if rank>=1 else blist_rank[rank]
 
     label_spacing = .025*rank*n_iterations
     if rank == 0:
