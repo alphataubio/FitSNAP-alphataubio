@@ -7,22 +7,16 @@ import lammps
 # Import pyace components directly to avoid circular imports
 try:
     from pyace.basis import ACEBBasisSet, ACECTildeBasisSet, BBasisConfiguration
-    from pyace.asecalc import PyACECalculator
     from pyace import create_multispecies_basis_config
-    from pyace.atomicenvironment import aseatoms_to_atomicenvironment
-    from pyace.calculator import ACECalculator
     PYACE_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: Could not import pyace: {e}")
     PYACE_AVAILABLE = False
     # Define dummy classes to prevent errors
-    class PyACECalculator: pass
     class ACEBBasisSet: pass
     class ACECTildeBasisSet: pass
     class BBasisConfiguration: pass
-    class ACECalculator: pass
     def create_multispecies_basis_config(*args, **kwargs): pass
-    def aseatoms_to_atomicenvironment(*args, **kwargs): pass
 
 # ------------------------------------------------------------------------------------------------
 
