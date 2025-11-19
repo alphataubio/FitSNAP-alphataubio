@@ -568,7 +568,9 @@ class SlateValidation(SlateCommon):
         
         n_rows = len(iter_indices)
         fig, axes = plt.subplots(n_rows, 2, figsize=(14, 4*n_rows))
-        turbo = plt.get_cmap('turbo')
+        
+        cmap_gamma = plt.cm.turbo
+        cmap_lambda = plt.cm.turbo.reversed()
         
         # If only one row, axes won't be 2D
         if n_rows == 1:
@@ -590,7 +592,7 @@ class SlateValidation(SlateCommon):
                 bin_centers = 0.5 * (edges[:-1] + edges[1:])
                 norm_centers = (bin_centers - bin_centers.min()) / (bin_centers.max() - bin_centers.min())
                 for c, p in zip(norm_centers, patches):
-                    p.set_facecolor(turbo(c))
+                    p.set_facecolor(cmap_gamma(c))
                 
                 # Add statistics text
                 stats_text = f'Range: [{gamma_at_iter.min():.3f}, {gamma_at_iter.max():.3f}] '
@@ -617,7 +619,7 @@ class SlateValidation(SlateCommon):
             bin_centers = 0.5 * (edges[:-1] + edges[1:])
             norm_centers = (bin_centers - bin_centers.min()) / (bin_centers.max() - bin_centers.min())
             for c, p in zip(norm_centers, patches):
-                p.set_facecolor(turbo(c))
+                p.set_facecolor(cmap_lambda(c))
 
             # Add statistics text
             n_small_lambda = np.sum(lambda_at_iter < 1e3)
@@ -683,21 +685,23 @@ def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=
         xlim, xticks_extra = -4*label_spacing-.5, [-2*label_spacing-.5, -label_spacing-.5]
         figsize = (10, max(6, heatmap_rows*11/72))
 
-    turbo = plt.cm.turbo
     if threshold is None:
         vmin, vmax = np.min(history_array), np.max(history_array)
         cbar_extend = 'neither'
+        cmap = plt.cm.turbo
     elif threshold_position == 'min':
         vmin, vmax = max(threshold, np.min(history_array)), np.max(history_array)
         cbar_extend = 'min'
-        turbo.set_under('white')
+        cmap = plt.cm.turbo
+        cmap.set_under('white')
     else:
         vmin, vmax = np.min(history_array), min(threshold, np.max(history_array))
         cbar_extend = 'max'
-        turbo.set_over('white')
+        cmap = plt.cm.turbo.reversed()
+        cmap.set_over('white')
 
     fig, ax = plt.subplots(figsize=figsize, layout="constrained")
-    im = ax.imshow(history_array[rank_indices[rank]], aspect="auto", cmap=turbo, vmin=vmin, vmax=vmax)
+    im = ax.imshow(history_array[rank_indices[rank]], aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)
 
     # --- atom labels ---
     atoms = Counter([basis[0] for basis in sorted_blist])
