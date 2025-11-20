@@ -533,7 +533,7 @@ class SlateValidation(SlateCommon):
                 },
                 "source": ["## Lambda Heatmaps\n"]})
         
-            threshold = self.threshold_lambda if self.pruning_method.lower() == 'lambda' else None
+            threshold = np.log10(self.threshold_lambda) if self.pruning_method.lower() == 'lambda' else None
             
             for rank in range(int(basis_ranks.min()), int(basis_ranks.max())+1):
             
