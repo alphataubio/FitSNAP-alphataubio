@@ -82,11 +82,9 @@ class SlateCommon(Solver):
                 self.alphasmall = slate_config.alphasmall
                 self.lambdabig = slate_config.lambdabig
                 self.lambdasmall = slate_config.lambdasmall
-                self.threshold_lambda_config = slate_config.threshold_lambda
                 
-                # Pruning method and gamma threshold
-                self.pruning_method = slate_config.pruning_method
-                self.threshold_gamma = slate_config.threshold_gamma
+                # Pruning method threshold
+                self.threshold_lambda_config = slate_config.threshold_lambda
                 
                 # These will be set in perform_fit_ard based on data variance
                 self.alpha_1 = None

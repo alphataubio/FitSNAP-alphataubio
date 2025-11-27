@@ -8,8 +8,7 @@ class Slate(Section):
         self.allowedkeys = ['method', 'alpha',
             'max_iter', 'rtol', 'atol',
             'alphabig', 'alphasmall', 'lambdabig', 'lambdasmall',
-            'threshold_lambda', 'threshold_gamma', 'pruning_method',
-            'directmethod', 'scap', 'scai', 'logcut']
+            'directmethod', 'scap', 'scai', 'logcut', 'threshold_lambda']
                        
         self._check_section()
         self._check_if_used("SOLVER", "solver", "SLATE")
@@ -33,18 +32,10 @@ class Slate(Section):
         self.alphasmall = self.get_value("SLATE", "alphasmall", "1.0E-14", "float")
         self.lambdabig = self.get_value("SLATE", "lambdabig", "1.0E-6", "float")
         self.lambdasmall = self.get_value("SLATE", "lambdasmall", "1.0E-6", "float")
-        
-        # Pruning method: 'gamma' (default) or  'lambda'
-        self.pruning_method = self.get_value("SLATE", "pruning_method", "lambda", "str")
-        
+                
         # Lambda threshold for removing (pruning) weights with high precision from the computation.
         # If not specified, will be auto-computed as 10^(int(abs(log10(ap))) + logcut)
         self.threshold_lambda = self.get_value("SLATE", "threshold_lambda", "0", "float")
-        
-        # Gamma threshold: fraction of parameter usage (0-1 range)
-        # Features with gamma < threshold_gamma are pruned
-        # More interpretable than lambda threshold
-        self.threshold_gamma = self.get_value("SLATE", "threshold_gamma", "0.1", "float")
         
         # Adaptive hyperparameter mode (0=adaptive using scap/scai, 1=direct using alphabig/lambdasmall)
         self.directmethod = self.get_value("SLATE", "directmethod", "0", "int")

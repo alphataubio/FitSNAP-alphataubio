@@ -117,12 +117,7 @@ class SlateValidation(SlateCommon):
                 "import json\n",
                 "\n",
                 "# Configuration from FitSNAP run\n",
-                f"config = {config_json}\n",
-                "\n",
-                "# Display key settings\n",
-                "print('ARD Settings:')\n",
-                "for key in ['max_iter', 'tol', 'threshold_lambda', 'pruning_method']:\n",
-                "    if key in config.get('SLATE', {}): print(f'  {key}: {config[\"SLATE\"][key]}')"
+                f"config = {config_json}\n\n",
             ]
         })
 
@@ -484,76 +479,38 @@ class SlateValidation(SlateCommon):
             blist_rank[r].append(re.split(r" ns \[|\] ls \[| \[0\]$", f))
             rank_indices[r].append(i)
             
-        # Create and display gamma heatmaps
-        
-        if self.pruning_method.lower() == 'gamma':
-        
-            notebook["cells"].append({
-                "cell_type": "markdown",
-                "metadata": {
-                    "collapsed": False,
-                    "jp-MarkdownHeadingCollapsed": False,
-                    "jupyter": {"outputs_hidden": False}
-                },
-                "source": ["## Gamma Heatmaps\n"]
-            })
-
-            threshold = self.threshold_gamma if self.pruning_method.lower() == 'gamma' else None
-            
-            for rank in range(int(basis_ranks.min()), int(basis_ranks.max())+1):
-                
-                img_base64 = plot_rank_n(
-                    rank,
-                    blist_rank,
-                    rank_indices,
-                    'Gamma',
-                    gamma_array.T,
-                    threshold,
-                    'min'
-                )
-                
-                notebook["cells"].append({
-                    "cell_type": "markdown",
-                    "metadata": {},
-                    "source": [
-                        f'<div align="center"><img src="data:image/svg+xml;base64,{img_base64}"></div>'
-                    ]
-                })
-
         # Create and display lambda heatmaps
         
-        if self.pruning_method.lower() == 'lambda':
-
+        notebook["cells"].append({
+            "cell_type": "markdown",
+            "metadata": {
+                "collapsed": False,
+                "jp-MarkdownHeadingCollapsed": False,
+                "jupyter": {"outputs_hidden": False}
+            },
+            "source": ["## Lambda Heatmaps\n"]})
+        
+        threshold = np.log10(self.threshold_lambda)
+            
+        for rank in range(int(basis_ranks.min()), int(basis_ranks.max())+1):
+            
+            img_base64 = plot_rank_n(
+                rank,
+                blist_rank,
+                rank_indices,
+                'Log10(Lambda)',
+                lambda_array.T,
+                threshold,
+                'max'
+            )
+                
             notebook["cells"].append({
                 "cell_type": "markdown",
-                "metadata": {
-                    "collapsed": False,
-                    "jp-MarkdownHeadingCollapsed": False,
-                    "jupyter": {"outputs_hidden": False}
-                },
-                "source": ["## Lambda Heatmaps\n"]})
-        
-            threshold = np.log10(self.threshold_lambda) if self.pruning_method.lower() == 'lambda' else None
-            
-            for rank in range(int(basis_ranks.min()), int(basis_ranks.max())+1):
-            
-                img_base64 = plot_rank_n(
-                    rank,
-                    blist_rank,
-                    rank_indices,
-                    'Log10(Lambda)',
-                    lambda_array.T,
-                    threshold,
-                    'max'
-                )
-                
-                notebook["cells"].append({
-                    "cell_type": "markdown",
-                    "metadata": {},
-                    "source": [
-                        f'<div align="center"><img src="data:image/svg+xml;base64,{img_base64}"></div>'
-                    ]
-                })
+                "metadata": {},
+                "source": [
+                    f'<div align="center"><img src="data:image/svg+xml;base64,{img_base64}"></div>'
+                ]
+            })
 
         # Summary statistics with side-by-side gamma and lambda distributions
         

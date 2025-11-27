@@ -210,15 +210,10 @@ class SLATE(SlateValidation):
                         
             alpha_ = (global_m_training - gamma_active.sum() + 2.0 * self.alpha_1) / (sse_ + 2.0 * self.alpha_2)
 
-            # Prune features based on selected method
+            # Prune features
             if iteration >= 3:
-                if self.pruning_method.lower() == 'gamma':
-                    lambda_mask = gamma_ > self.threshold_gamma
-                elif self.pruning_method.lower() == 'lambda':
-                    lambda_mask = lambda_ < self.threshold_lambda
-                else:
-                    raise NotImplementedError(f"SLATE ARD: pruning_method {self.pruning_method} not implemented")
-
+                lambda_mask = lambda_ < self.threshold_lambda
+                
             coef_[~lambda_mask] = 0
 
             # Log iteration
@@ -274,8 +269,5 @@ class SLATE(SlateValidation):
             active_features = np.sum(lambda_mask)
             pt.single_print(f"\nARD final: {active_features}/{n} features active, "
                           f"alpha={alpha_:.2e}, lambda range=[{np.min(lambda_):.2e}, {np.max(lambda_):.2e}]")
-            if self.pruning_method.lower() == 'gamma':
-                gamma_active_final = gamma_[gamma_ > 0]
-                pt.single_print(f"Gamma range: [{gamma_active_final.min():.4f}, {gamma_active_final.max():.4f}], "
-                              f"mean={gamma_active_final.mean():.4f}")
+
 
