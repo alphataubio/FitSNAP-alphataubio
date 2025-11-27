@@ -28,7 +28,7 @@ class Output:
         if not logging.getLogger().hasHandlers():
             self.pt.pytest_is_true()
         if self._logfile is None:
-            logging.basicConfig(level=logging.DEBUG)
+            logging.basicConfig(level=logging.INFO)
         else:
             logging.basicConfig(level=logging.DEBUG, filename=self._logfile)
         self.logger = logging.getLogger(__name__)
