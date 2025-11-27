@@ -118,8 +118,7 @@ class PyAce(Section):
         the exact number of coefficients.
         """
         try:
-            from pyace.basis import ACEBBasisSet, ACECTildeBasisSet
-            from pyace import create_multispecies_basis_config
+            from lammps_pyace import ACEBBasisSet, ACECTildeBasisSet, create_multispecies_basis_config
             
             basis_config = create_multispecies_basis_config(self.ace_config)
             b_basis = ACEBBasisSet(basis_config)

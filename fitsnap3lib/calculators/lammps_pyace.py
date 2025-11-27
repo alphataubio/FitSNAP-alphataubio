@@ -6,8 +6,7 @@ import lammps
 
 # Import pyace components directly to avoid circular imports
 try:
-    from pyace.basis import ACEBBasisSet, ACECTildeBasisSet, BBasisConfiguration
-    from pyace import create_multispecies_basis_config
+    from lammps_pyace import BBasisConfiguration, ACEBBasisSet, ACECTildeBasisSet,  create_multispecies_basis_config
     PYACE_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: Could not import pyace: {e}")

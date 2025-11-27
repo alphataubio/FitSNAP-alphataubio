@@ -1,5 +1,5 @@
 # ignoring run example files
-#examples/*
+examples/*
 examples/library/genetic_algorithm/__pycache__
 coupling_coefficients.yace
 wig_LR*
@@ -18,6 +18,8 @@ docs/build/
 
 # ignoring .pyc files
 *.pyc
+*.egg-info
+
 
 # ignoring FitSnap3 outputs
 #*.lammps
@@ -42,3 +44,5 @@ fitsnap3lib/lib/slate_solver/slate_wrapper.cpp
 .ipynb_checkpoints
 .jupyter
 ~*
+/fitsnap3lib/lib/pyace/build
+/fitsnap3lib/lib/pyace

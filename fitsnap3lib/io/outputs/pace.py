@@ -98,7 +98,7 @@ try:
 
             # Import pyace components for PYACE sections
             try:
-                from pyace.basis import ACEBBasisSet, ACECTildeBasisSet
+                from lammps_pyace import ACEBBasisSet, ACECTildeBasisSet
             except ImportError:
                 raise ModuleNotFoundError("Missing pyace python package.")
 
