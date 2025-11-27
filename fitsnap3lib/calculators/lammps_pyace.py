@@ -106,9 +106,7 @@ class LammpsPyace(LammpsPace):
         bik_rows = 1
         icolref = ncols_descriptors
         
-        if self.config.sections["REFERENCE"].units == "metal":
-            factor = 1000.0      # ev -> meV
-        elif self.config.sections["REFERENCE"].units == "real":
+        if self.config.sections["REFERENCE"].units == "real":
             factor = 23.060549   # eV -> kcal/mol
         else:
             factor = 1.0

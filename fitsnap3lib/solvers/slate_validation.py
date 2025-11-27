@@ -630,8 +630,13 @@ def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=
 
     def sort_key(basis):
         ns = basis[1].split(',')
+        #print(f"*** basis {basis} ns {ns} tuple(int(i) for i in ns) {tuple(int(i) for i in ns)}")
         return tuple(int(i) for i in ns)
-        
+
+    def sort_kv(kv):
+        atoms, ns = kv[0].split('_')
+        return tuple([atoms]+[int(i) for i in ns.split(',')])
+
     sorted_blist = sorted(blist_rank[rank], key=sort_key ) if rank>=1 else blist_rank[rank]
 
     label_spacing = .025*rank*n_iterations
@@ -668,12 +673,12 @@ def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=
         ax.text((xlim+xticks_extra[0])/2, (atom_y := y + v / 2 - 0.5), k,
                 ha="center", va="center", fontsize=10, fontweight="bold", zorder=10)
         y += v
-
+        
     if rank >= 1:
         # --- ns labels ---
         y, ns = 0, Counter([f"{basis[0]}_{basis[1]}" for basis in sorted_blist])
         ax.text((ns_x:=(xticks_extra[0]+xticks_extra[1])/2), heatmap_rows, 'ns', ha="center", va="top", fontsize=10, fontweight="bold")
-        for k, v in sorted(ns.items()):
+        for k, v in sorted(ns.items(), key=sort_kv):
             ax.add_patch(Rectangle((xticks_extra[0], y - 0.5), xticks_extra[1]-xticks_extra[0], v, fc='w', ec="k", zorder=9))
             ax.text(ns_x, y + v / 2 - 0.5, k.split('_')[-1], ha="center", va="center", fontsize=8, zorder=10)
             for j in range(v):
