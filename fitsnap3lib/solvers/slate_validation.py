@@ -395,9 +395,12 @@ class SlateValidation(SlateCommon):
                     # Plot perfect prediction line
                     all_preds = np.array(all_preds)
                     all_truths = np.array(all_truths)
-                    lims = [min(all_truths.min(), all_preds.min()),
-                            max(all_truths.max(), all_preds.max())]
+                    lo = min(all_truths.min(), all_preds.min())
+                    hi = max(all_truths.max(), all_preds.max())
+                    pad  = 0.05 * (hi - lo)
+                    lims = (lo - pad, hi + pad)
                     ax.plot(lims, lims, 'k--', alpha=0.618, lw=2, label='Perfect prediction')
+                    ax.margins(0)
                     
                     # Labels and styling
                     ax.set_xlabel(f'True {row_type} ({units})', fontsize=14, fontweight='bold')
