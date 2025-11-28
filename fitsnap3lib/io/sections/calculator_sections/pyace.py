@@ -212,12 +212,6 @@ class PyAce(Section):
         self.rcutfac = [b["rcut"] for b in self.bonds.values()]
         # print(f"*** self.nradmax {self.nradmax} self.lmax {self.lmax}")
      
-        for b in self.bonds.values():
-          b.update({
-              'nradmax': self.nradmax,
-              'nradbasemax': self.nradmax,
-              'lmax': self.lmax,
-          })
      
     # --------------------------------------------------------------------------------------------
 
@@ -242,8 +236,6 @@ class PyAce(Section):
                 except (ValueError, SyntaxError):
                     raise RuntimeError(f"Error parsing functions: {e}")
                     
-        self.nradmax = max(max(f["nradmax_by_orders"]) for f in self.functions.values())
-        self.lmax    = max(max(f["lmax_by_orders"]) for f in self.functions.values())
                          
     # --------------------------------------------------------------------------------------------
     
