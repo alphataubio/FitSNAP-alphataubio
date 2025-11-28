@@ -160,9 +160,9 @@ class SlateValidation(SlateCommon):
                     # Create a markdown cell for this subsystem
                     reference_section = self.config.sections["REFERENCE"]
                     if row_type == 'Energy':
-                        row_units = f" ({reference_section.energy_units})"
+                        row_units = f" ({reference_section.error_energy_units})"
                     elif row_type == 'Force':
-                        row_units = f" ({reference_section.force_units})"
+                        row_units = f" ({reference_section.error_force_units})"
                     elif row_type == 'Stress':
                         row_units = f" ({reference_section.stress_units})"
                     else:

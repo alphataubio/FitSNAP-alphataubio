@@ -39,9 +39,27 @@ class Reference(Section):
             return "?"
 
     @property
+    def error_energy_units(self):
+        if self.units == "metal":
+            return "meV/atom"
+        elif self.units == "real":
+            return "kcal/mol/atom"
+        else:
+            return "?"
+
+    @property
     def force_units(self):
         if self.units == "metal":
             return "eV/A"
+        elif self.units == "real":
+            return "kcal/mol/A"
+        else:
+            return "?"
+
+    @property
+    def error_force_units(self):
+        if self.units == "metal":
+            return "meV/A"
         elif self.units == "real":
             return "kcal/mol/A"
         else:
