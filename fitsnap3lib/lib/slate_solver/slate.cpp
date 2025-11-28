@@ -37,7 +37,7 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
     
     if (mpi_rank == 0 && debug) {
         std::fprintf(stderr, "\n=== slate_ard_update ===\n");
-        std::fprintf(stderr, "  m=%lld, n_active=%lld, alpha=%.6e\n", m, n_active, alpha);
+        std::fprintf(stderr, "  m=%ld, n_active=%ld, alpha=%.6e\n", m, n_active, alpha);
     }
     
     if (n_active == 0) {
@@ -58,7 +58,7 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
         mb = nb = size;
         
         if (mpi_rank == 0 && debug)
-            std::fprintf(stderr, "*** nt %lld tile %lld x %lld (%lld bytes)\n", 
+            std::fprintf(stderr, "*** nt %ld tile %ld x %ld (%ld bytes)\n",
                         nt, nb, nb, nb*nb*8);
         
         if (size*size*sizeof(double) > 16*1024*1024) break; // pick biggest tile <= 16MB
@@ -90,7 +90,7 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
     if (mpi_rank == 0 && debug) {
         std::fprintf(stderr, "*** MPI: %d ranks, %d nodes, %d ranks/node\n",
                     mpi_size, mpi_number_of_nodes, mpi_sub_size);
-        std::fprintf(stderr, "*** Matrix %lld x %lld Tile %lld x %lld Grid %lld x %lld\n",
+        std::fprintf(stderr, "*** Matrix %ld x %ld Tile %ld x %ld Grid %ld x %ld\n",
                     m, n_active, mb, nb, mt, nt);
         std::fflush(stderr);
     }
@@ -257,7 +257,8 @@ void slate_ridge_augmented_qr(double* local_aw, double* local_bw, int64_t m, int
     int mpi_sub_size = mpi_size / mpi_number_of_nodes;
     
     // Find optimal tile size
-    int64_t mb, nb, nt;
+    int64_t nb, nt;
+    int64_t mb = 1;
     int64_t nt_start = 1;
     while ((nt_start + 1) * (nt_start + 1) <= mpi_sub_size) ++nt_start;
 
@@ -267,7 +268,7 @@ void slate_ridge_augmented_qr(double* local_aw, double* local_bw, int64_t m, int
         mb = nb = size;
         
         if (mpi_rank == 0 && debug)
-            std::fprintf(stderr, "*** nt %lld tile %lld x %lld (%lld bytes)\n", nt, nb, nb, nb*nb*8);
+            std::fprintf(stderr, "*** nt %ld tile %ld x %ld (%ld bytes)\n", nt, nb, nb, nb*nb*8);
         
         if (size*size*sizeof(double) > 16*1024*1024) break; // pick biggest tile <= 16MB
     }
