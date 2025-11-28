@@ -26,7 +26,8 @@ constexpr int64_t ceil_div64(int64_t a, int64_t b) { return (a + b - 1) / b; }
 // Combined ARD update function - computes both sigma diagonal and coefficients
 // Expects pre-filtered matrices with only active features
 // MODIFIED: Now only returns diagonal of sigma to save memory
-void slate_ard_update(double* local_aw_active, double* local_bw, double* local_sigma_diag, double* local_coef_active,
+// Returns condition number estimate from Cholesky diagonal
+double slate_ard_update(double* local_aw_active, double* local_bw, double* local_sigma_diag, double* local_coef_active,
                      int64_t m, int64_t n_active, int64_t lld,
                      double alpha, double* lambda_active, int debug) {
     
@@ -40,7 +41,7 @@ void slate_ard_update(double* local_aw_active, double* local_bw, double* local_s
     }
     
     if (n_active == 0) {
-        return;
+        return 1.0; // Perfect conditioning for empty matrix
     }
     
     int mpi_number_of_nodes = m / lld;
@@ -152,8 +153,43 @@ void slate_ard_update(double* local_aw_active, double* local_bw, double* local_s
         slate::herk(alpha, X_active_T, 1.0, C);
         MPI_Barrier(MPI_COMM_WORLD);
 
-        // Compute Cholesky factorization and inverse
+        // Compute Cholesky factorization
         slate::potrf(C);
+        MPI_Barrier(MPI_COMM_WORLD);
+        
+        // Compute condition number from Cholesky diagonal: cond(A) ≈ (max(L_ii) / min(L_ii))^2
+        // Extract diagonal of Cholesky factor L
+        std::vector<double> L_diag(n_active, 0.0);
+        for (int64_t i = 0; i < n_active; ++i) {
+            int64_t tile_i = i / nb;
+            int64_t local_i = i % nb;
+            
+            if (C.tileIsLocal(tile_i, tile_i)) {
+                L_diag[i] = C(tile_i, tile_i).at(local_i, local_i);
+            }
+        }
+        
+        // Reduce to get full diagonal on all ranks
+        MPI_Allreduce(MPI_IN_PLACE, L_diag.data(), n_active, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        
+        // Find max and min of diagonal (absolute values)
+        double max_diag = 0.0;
+        double min_diag = std::numeric_limits<double>::infinity();
+        for (int64_t i = 0; i < n_active; ++i) {
+            double abs_val = std::fabs(L_diag[i]);
+            if (abs_val > max_diag) max_diag = abs_val;
+            if (abs_val < min_diag) min_diag = abs_val;
+        }
+        
+        // Condition number estimate: cond(A) ≈ (max/min)^2
+        double cond_number = (min_diag > 0.0) ? (max_diag / min_diag) * (max_diag / min_diag) : std::numeric_limits<double>::infinity();
+        
+        if (mpi_rank == 0 && debug) {
+            std::fprintf(stderr, "*** Cholesky diagonal: max=%.6e, min=%.6e\n", max_diag, min_diag);
+            std::fprintf(stderr, "*** Condition number estimate: %.6e\n", cond_number);
+            std::fflush(stderr);
+        }
+        
         MPI_Barrier(MPI_COMM_WORLD);
         slate::potri(C);
         MPI_Barrier(MPI_COMM_WORLD);
@@ -203,9 +239,12 @@ void slate_ard_update(double* local_aw_active, double* local_bw, double* local_s
             std::fflush(stderr);
         }
         
+        return cond_number;
+        
     } catch (const std::exception& e) {
         std::cerr << "[Rank " << mpi_rank << "] SLATE ARD error: " << e.what() << std::endl;
         MPI_Abort(MPI_COMM_WORLD, 1);
+        return std::numeric_limits<double>::infinity(); // Return inf on error
     }
 }
 

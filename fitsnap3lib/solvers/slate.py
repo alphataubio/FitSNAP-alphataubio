@@ -172,7 +172,7 @@ class SLATE(SlateValidation):
                         
             # Update sigma diagonal and coef using SLATE C++ functions
             # NOTE: Returns diagonal of sigma directly (not full matrix) to save memory
-            sigma_diag, coef_active_ = slate_ard_update_cython(
+            sigma_diag, coef_active_, cond_number = slate_ard_update_cython(
                 aw, bw, lambda_active, alpha_, m, n_active, lld, self.config.debug
             )
                         
@@ -229,7 +229,7 @@ class SLATE(SlateValidation):
             coef_change_str = " " if coef_old_ is None else f" coef_rel_change {coef_rel_change:.2g} coef_abs_change {coef_abs_change:.2g}"
             coef_old_ = np.copy(coef_)
 
-            pt.single_print(f"SLATE ARD #{iteration} ({elapsed_iteration/60:.1f}m): alpha {alpha_:.3g} sse {sse_:.3g} gamma_sum {gamma_active.sum():.1f} n_active {n_active}{coef_change_str}{slurm_time_left_str}")
+            pt.single_print(f"SLATE ARD #{iteration} ({elapsed_iteration/60:.1f}m): alpha {alpha_:.3g} sse {sse_:.3g} cond_number {cond_number:.1g} gamma_sum {gamma_active.sum():.1f} n_active {n_active}{coef_change_str}{slurm_time_left_str}")
             
             iteration += 1
             
