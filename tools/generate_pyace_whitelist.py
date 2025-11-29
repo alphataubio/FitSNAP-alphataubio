@@ -1,332 +1,278 @@
 #!/usr/bin/env python3
 """
-Generate PyACE whitelist pickle using original C++ coupling code.
+Generate PyACE whitelist using proper unification functions.
 
-First replicates the current pickle to verify the method works,
-then expands rank 5 to lmax=6.
-
-Uses: pyace.coupling module (C++ bindings from ace_coupling_binding.cpp)
+Keys are unified (mu, n) patterns from unify_mus_ns_comb.
+Values are valid (ls, LS) combinations.
 """
 
 import sys
 import os
 import pickle
 import itertools
-from collections import defaultdict
+from multiprocessing import Pool, cpu_count
 
-# Add python-ace to path
 pyace_path = os.path.expanduser("~/github/python-ace-alphataubio/src")
-if os.path.exists(pyace_path):
-    sys.path.insert(0, pyace_path)
+sys.path.insert(0, pyace_path)
 
-try:
-    from pyace import coupling
-    print("✓ Successfully imported pyace.coupling")
-except ImportError as e:
-    print(f"✗ Failed to import pyace.coupling: {e}")
-    print("\nInstall python-ace first:")
-    print("  cd ~/github/python-ace-alphataubio")
-    print("  pip install -e .")
-    sys.exit(1)
+from pyace import coupling
 
 
-def generate_LS_combinations(rank, ls, lmax):
+def unify_to_minimized_indices(seq, shift=0):
+    """Unify to minimized ordered sequence of indices."""
+    seq_map = {e: i + shift for i, e in enumerate(sorted(set(seq)))}
+    return tuple([seq_map[e] for e in seq])
+
+
+def unify_by_ordering(mus_comb, ns_comb):
+    """Unify mus_comb and ns_comb to minimized-indices sequence, combine pairwise and sort."""
+    return tuple(sorted(zip(unify_to_minimized_indices(mus_comb), unify_to_minimized_indices(ns_comb))))
+
+
+def unify_mus_ns_comb(mus_comb, ns_comb):
     """
-    Generate valid LS combinations for a given rank and ls.
+    Unify mus_comb, ns_comb by unifying to min-inds, combining, sorting and
+    unifying the pair one more time to minimized-indices sequence.
+    """
+    unif_comb = unify_by_ordering(mus_comb, ns_comb)
+    return unify_to_minimized_indices(unif_comb)
+
+
+def generate_restricted_growth_strings(n, max_value=None):
+    """
+    Generate all restricted growth strings of length n.
     
-    LS expansion rules from ace_coupling_binding.cpp:
-    - rank 1 (2-body): LS is empty
-    - rank 2 (3-body): LS has 1 element, equals ls[-1]
-    - rank 3 (4-body): LS has 2 elements, LS[-1] = LS[-2]
-    - rank 4 (5-body): LS has 3 elements, LS[-1] = ls[-1]
-    - rank 5 (6-body): LS has 4 elements, LS[-1] = LS[-2]
+    A restricted growth string is a sequence where:
+    - First element is 0
+    - Each element is at most 1 + max of all previous elements
+    
+    For single-element ACE with nmax, max_value = nmax
     
     Args:
-        rank: ACE rank (1 for 2-body, 2 for 3-body, etc.)
-        ls: list of l values
-        lmax: maximum L value to try
+        n: Length of string (body order)
+        max_value: Maximum value that can appear (nmax)
     
     Returns:
-        list of valid LS combinations
+        Set of tuples representing unique patterns
     """
-    if rank == 1:
-        # 2-body: no coupling
-        return [[]]
+    if n == 0:
+        return {()}
+    if n == 1:
+        return {(0,)}
     
-    elif rank == 2:
-        # 3-body: LS has 1 element
-        # LS[0] = ls[-1]
-        return [[ls[-1]]]
+    patterns = set()
     
-    elif rank == 3:
-        # 4-body: LS has 2 elements
-        # LS[-1] = LS[-2], so only 1 independent value
-        LS_list = []
-        for L in range(lmax + 1):
-            LS_list.append([L, L])
-        return LS_list
+    def generate(current, position, max_so_far):
+        if position == n:
+            patterns.add(tuple(current))
+            return
+        
+        # Can use any value from 0 to min(max_so_far + 1, max_value)
+        upper_limit = max_so_far + 1
+        if max_value is not None:
+            upper_limit = min(upper_limit, max_value)
+        
+        for val in range(upper_limit + 1):
+            current.append(val)
+            generate(current, position + 1, max(max_so_far, val))
+            current.pop()
     
-    elif rank == 4:
-        # 5-body: LS has 3 elements  
-        # LS[-1] = ls[-1], so 2 independent values
-        LS_list = []
-        for L1 in range(lmax + 1):
-            for L2 in range(lmax + 1):
-                LS_list.append([L1, L2, ls[-1]])
-        return LS_list
-    
-    elif rank == 5:
-        # 6-body: LS has 4 elements
-        # LS[-1] = LS[-2], so 3 independent values
-        LS_list = []
-        for L1 in range(lmax + 1):
-            for L2 in range(lmax + 1):
-                for L3 in range(lmax + 1):
-                    LS_list.append([L1, L2, L3, L3])
-        return LS_list
-    
-    else:
-        raise ValueError(f"Rank {rank} not implemented")
+    generate([0], 1, 0)
+    return patterns
 
 
-def generate_whitelist_for_rank(rank, nmax, lmax, lmin=0):
+def process_unified_key(args):
     """
-    Generate whitelist for a specific rank using PyACE coupling code.
+    Worker function to process one unified key in parallel.
     
     Args:
-        rank: ACE rank (1=2-body, 2=3-body, etc.)
-        nmax: maximum radial quantum number
-        lmax: maximum angular momentum
-        lmin: minimum angular momentum
+        args: tuple of (unified_key, lmax, lmin)
     
     Returns:
-        dict: whitelist for this rank
+        tuple: (unified_key, list of valid (ls, LS) pairs)
     """
+    unified_key, lmax, lmin = args
+    valid_ls_LS = []
+    
+    # ls length should match unified_key length
+    ls_length = len(unified_key)
+    
+    # Try all l-combinations of the correct length
+    for ls_combo in itertools.combinations_with_replacement(range(lmin, lmax + 1), ls_length):
+        ls = list(ls_combo)
+        
+        # Determine LS candidates based on ls_length (body order)
+        if ls_length == 1:
+            LS_candidates = [[]]
+        elif ls_length == 2:
+            LS_candidates = [[]]
+        elif ls_length == 3:
+            LS_candidates = [[L] for L in range(lmax + 1)]
+        elif ls_length == 4:
+            LS_candidates = [[L, L] for L in range(lmax + 1)]
+        elif ls_length == 5:
+            LS_candidates = []
+            for L1 in range(lmax + 1):
+                for L2 in range(lmax + 1):
+                    LS_candidates.append([L1, L2, ls[-1]])
+        elif ls_length >= 6:
+            LS_candidates = []
+            for L1 in range(lmax + 1):
+                for L2 in range(lmax + 1):
+                    for L3 in range(lmax + 1):
+                        LS_candidates.append([L1, L2, L3, L3])
+        
+        # Test each LS with coupling module
+        for LS in LS_candidates:
+            try:
+                ms_cg_list = coupling.generate_ms_cg_list(
+                    ls=ls, LS=LS,
+                    L=0, M=0,
+                    half_basis=True,
+                    check_is_even=True
+                )
+                if len(ms_cg_list) > 0:
+                    entry = (ls, LS)
+                    if entry not in valid_ls_LS:
+                        valid_ls_LS.append(entry)
+            except:
+                pass
+    
+    return (unified_key, valid_ls_LS)
+
+
+def generate_whitelist_for_rank(rank, nmax, lmax, lmin=0, num_cores=None):
+    """
+    Generate whitelist entries for one rank using multiprocessing.
+    
+    Returns dict: {unified_key: [(ls, LS), ...]}
+    """
+    if num_cores is None:
+        num_cores = cpu_count()
+    
     body_order = rank + 1
     whitelist = {}
     
-    print(f"\nRank {rank} ({body_order}-body): lmin={lmin}, lmax={lmax}, nmax={nmax}")
+    print(f"\nRank {rank} ({body_order}-body): nmax={nmax}, lmax={lmax}, lmin={lmin}")
     
-    # Generate all l-combinations (sorted)
-    l_combinations = list(itertools.combinations_with_replacement(
-        range(lmin, lmax + 1),
-        body_order
-    ))
+    # For single element, generate unified keys directly using restricted growth strings
+    print(f"  Generating unique unified keys directly...")
+    # Max value in unified key is determined by lmax, not nmax!
+    unified_keys = generate_restricted_growth_strings(body_order, max_value=lmax)
     
-    print(f"  Testing {len(l_combinations)} l-combinations...")
+    print(f"  Found {len(unified_keys)} unique unified keys")
+    print(f"  Generating valid (ls, LS) combinations using {num_cores} cores...")
     
-    valid_count = 0
-    entry_count = 0
+    # Prepare arguments for parallel processing
+    args_list = [(key, lmax, lmin) for key in unified_keys]
     
-    for l_tuple in l_combinations:
-        ls = list(l_tuple)
-        
-        # Generate possible LS combinations for this ls
-        LS_candidates = generate_LS_combinations(rank, ls, lmax)
-        
-        valid_LS = []
-        for LS in LS_candidates:
-            try:
-                # Validate this (ls, LS) combination
-                if coupling.is_valid_ls_LS(ls, LS):
-                    # Generate ms combinations with CG coefficients
-                    ms_cg_list = coupling.generate_ms_cg_list(
-                        ls=ls,
-                        LS=LS,
-                        L=0,  # Final L (scalar invariant)
-                        M=0,  # Final M
-                        half_basis=True,
-                        check_is_even=True
-                    )
-                    
-                    # If this generated valid ms combinations, it's a valid LS
-                    if len(ms_cg_list) > 0:
-                        valid_LS.append(LS)
-            except Exception:
-                # Invalid combination, skip
-                continue
-        
-        # If we found valid LS combinations, generate entries
-        if len(valid_LS) > 0:
-            valid_count += 1
-            l_key = tuple(sorted(ls))
-            
-            if l_key not in whitelist:
-                whitelist[l_key] = []
-            
-            # Generate n-combinations
-            n_combinations = list(itertools.combinations_with_replacement(
-                range(nmax + 1),
-                body_order
-            ))
-            
-            # Combine n with valid LS
-            for n_tuple in n_combinations:
-                n_list = list(n_tuple)
-                
-                for LS in valid_LS:
-                    entry = [n_list, LS]
-                    if entry not in whitelist[l_key]:
-                        whitelist[l_key].append(entry)
-                        entry_count += 1
+    # Process in parallel
+    with Pool(num_cores) as pool:
+        results = pool.map(process_unified_key, args_list)
     
-    print(f"  Valid l-tuples: {valid_count}/{len(l_combinations)}")
-    print(f"  Total entries: {entry_count}")
+    # Collect results
+    for unified_key, valid_ls_LS in results:
+        if len(valid_ls_LS) > 0:
+            whitelist[unified_key] = valid_ls_LS
     
+    print(f"  Generated {len(whitelist)} whitelist entries")
     return whitelist
-
-
-def generate_full_whitelist(rank_configs):
-    """
-    Generate complete whitelist for multiple ranks.
-    
-    Args:
-        rank_configs: list of (rank, nmax, lmax, lmin) tuples
-    
-    Returns:
-        dict: complete whitelist
-    """
-    full_whitelist = {}
-    
-    print("="*80)
-    print("PYACE WHITELIST GENERATION (using C++ coupling module)")
-    print("="*80)
-    
-    for rank, nmax, lmax, lmin in rank_configs:
-        rank_whitelist = generate_whitelist_for_rank(rank, nmax, lmax, lmin)
-        
-        # Merge into full whitelist
-        for l_tuple, entries in rank_whitelist.items():
-            if l_tuple in full_whitelist:
-                print(f"Warning: l-tuple {l_tuple} already exists")
-                # Merge avoiding duplicates
-                for entry in entries:
-                    if entry not in full_whitelist[l_tuple]:
-                        full_whitelist[l_tuple].append(entry)
-            else:
-                full_whitelist[l_tuple] = entries
-    
-    return full_whitelist
-
-
-def print_whitelist_stats(whitelist, name="whitelist"):
-    """Print statistics about the whitelist."""
-    by_rank = defaultdict(list)
-    for l_tuple in whitelist.keys():
-        rank = len(l_tuple) - 1
-        by_rank[rank].append(l_tuple)
-    
-    print(f"\n{'='*80}")
-    print(f"STATISTICS: {name}")
-    print(f"{'='*80}")
-    print(f"Total l-tuples: {len(whitelist)}")
-    
-    print("\nBreakdown by rank:")
-    for rank in sorted(by_rank.keys()):
-        l_tuples = by_rank[rank]
-        total_entries = sum(len(whitelist[lt]) for lt in l_tuples)
-        max_l = max(max(lt) for lt in l_tuples)
-        print(f"  Rank {rank} ({rank+1}-body): {len(l_tuples)} l-tuples, "
-              f"{total_entries} entries, max_l={max_l}")
-
-
-def compare_whitelists(wl1, wl2, name1="WL1", name2="WL2"):
-    """Compare two whitelists."""
-    print(f"\n{'='*80}")
-    print(f"COMPARISON: {name1} vs {name2}")
-    print(f"{'='*80}")
-    
-    keys1 = set(wl1.keys())
-    keys2 = set(wl2.keys())
-    
-    print(f"\n{name1}: {len(keys1)} l-tuples")
-    print(f"{name2}: {len(keys2)} l-tuples")
-    print(f"Common: {len(keys1 & keys2)}")
-    print(f"Only in {name1}: {len(keys1 - keys2)}")
-    print(f"Only in {name2}: {len(keys2 - keys1)}")
-    
-    # Compare by rank
-    by_rank1 = defaultdict(set)
-    by_rank2 = defaultdict(set)
-    
-    for key in keys1:
-        by_rank1[len(key)-1].add(key)
-    for key in keys2:
-        by_rank2[len(key)-1].add(key)
-    
-    all_ranks = sorted(set(by_rank1.keys()) | set(by_rank2.keys()))
-    
-    print("\nPer rank:")
-    for rank in all_ranks:
-        r1 = by_rank1[rank]
-        r2 = by_rank2[rank]
-        print(f"  Rank {rank}: {name1}={len(r1)}, {name2}={len(r2)}, "
-              f"common={len(r1 & r2)}")
 
 
 def main():
     import argparse
     
-    parser = argparse.ArgumentParser(
-        description='Generate PyACE whitelist using C++ coupling module'
-    )
-    parser.add_argument('--mode', choices=['replicate', 'expand'], default='replicate',
-                       help='replicate: match current file, expand: add rank 5 lmax=6')
-    parser.add_argument('--output', type=str, default='mus_ns_uni_to_rawlsLS_np_rank_NEW.pckl',
-                       help='Output pickle file')
-    parser.add_argument('--compare', type=str, default=None,
-                       help='Path to original pickle for comparison')
-    
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mode', choices=['replicate', 'expand'], default='replicate')
+    parser.add_argument('--output', default='mus_ns_uni_to_rawlsLS_np_rank_NEW.pckl')
+    parser.add_argument('--cores', type=int, default=None, 
+                        help='Number of CPU cores to use (default: all available)')
     args = parser.parse_args()
     
+    print("="*80)
+    print("GENERATE PYACE WHITELIST")
+    print("="*80)
+    
+    num_cores = args.cores if args.cores else cpu_count()
+    print(f"Using {num_cores} CPU cores")
+    
     if args.mode == 'replicate':
-        # Replicate current pickle to verify method
-        # Current file has: ranks 1-5 with lmax=[1,2,3,4,1] and lmin=0
-        print("\nMODE: Replicate current pickle")
-        rank_configs = [
-            # (rank, nmax, lmax, lmin)
-            (1, 10, 1, 0),  # 2-body, lmax=1
-            (2, 10, 2, 0),  # 3-body, lmax=2
-            (3, 10, 3, 0),  # 4-body, lmax=3
-            (4, 10, 4, 0),  # 5-body, lmax=4
-            (5, 10, 1, 0),  # 6-body, lmax=1 (current limitation)
+        print("\nMode: REPLICATE")
+        # Original was generated with lmax incrementing up to rank 4, then lmax=1
+        configs = [
+            (0, 10, 0, 0),   # rank 0: 1-body, lmax=0 (radial only)
+            (1, 10, 1, 0),   # rank 1: 2-body, lmax=1
+            (2, 10, 2, 0),   # rank 2: 3-body, lmax=2
+            (3, 10, 3, 0),   # rank 3: 4-body, lmax=3
+            (4, 10, 4, 0),   # rank 4: 5-body, lmax=4
+            (5, 10, 1, 0),   # rank 5: 6-body, lmax=1
+            (6, 10, 1, 0),   # rank 6: 7-body, lmax=1
+            (7, 10, 1, 0),   # rank 7: 8-body, lmax=1
+            (8, 10, 1, 0),   # rank 8: 9-body, lmax=1
+            (9, 10, 1, 0),   # rank 9: 10-body, lmax=1
+            (10, 10, 1, 0),  # rank 10: 11-body, lmax=1
+            (11, 10, 1, 0),  # rank 11: 12-body, lmax=1
         ]
     else:
-        # Expand rank 5 to lmax=6
-        print("\nMODE: Expand rank 5 to lmax=6")
-        rank_configs = [
+        print("\nMode: EXPAND rank 5 to lmax=6")
+        configs = [
+            (0, 10, 0, 0),
             (1, 10, 1, 0),
             (2, 10, 2, 0),
             (3, 10, 3, 0),
             (4, 10, 4, 0),
-            (5, 10, 6, 1),  # 6-body with lmax=6, lmin=1 (expanded!)
+            (5, 10, 6, 1),   # EXPANDED: lmax=6, lmin=1 instead of lmax=1
+            (6, 10, 1, 0),
+            (7, 10, 1, 0),
+            (8, 10, 1, 0),
+            (9, 10, 1, 0),
+            (10, 10, 1, 0),
+            (11, 10, 1, 0),
         ]
     
-    # Generate whitelist
-    whitelist = generate_full_whitelist(rank_configs)
+    whitelist = {}
+    for config in configs:
+        rank_wl = generate_whitelist_for_rank(*config, num_cores=num_cores)
+        whitelist.update(rank_wl)
     
-    # Print statistics
-    print_whitelist_stats(whitelist, "GENERATED")
+    print(f"\n{'='*80}")
+    print(f"Total whitelist entries: {len(whitelist)}")
     
-    # Compare with original if provided
-    if args.compare:
-        if os.path.exists(args.compare):
-            with open(args.compare, 'rb') as f:
-                original = pickle.load(f)
-            print_whitelist_stats(original, "ORIGINAL")
-            compare_whitelists(original, whitelist, "ORIGINAL", "GENERATED")
-        else:
-            print(f"\nWarning: comparison file not found: {args.compare}")
+    # Compare with original
+    orig_path = os.path.expanduser("~/github/python-ace-alphataubio/src/pyace/data/mus_ns_uni_to_rawlsLS_np_rank.pckl")
+    if os.path.exists(orig_path):
+        with open(orig_path, 'rb') as f:
+            orig = pickle.load(f)
+        
+        print(f"Original entries: {len(orig)}")
+        
+        gen_keys = set(whitelist.keys())
+        orig_keys = set(orig.keys())
+        
+        print(f"Common keys: {len(gen_keys & orig_keys)}")
+        print(f"Only in generated: {len(gen_keys - orig_keys)}")
+        print(f"Only in original: {len(orig_keys - gen_keys)}")
+        
+        # Check first few keys
+        print("\nSpot check:")
+        for key in sorted(list(orig.keys())[:5]):
+            gen_val = whitelist.get(key, [])
+            orig_val = orig[key]
+            match = "✓" if gen_val == orig_val else "✗"
+            print(f"  {key}: gen={len(gen_val)}, orig={len(orig_val)} {match}")
+            
+            if gen_val != orig_val and len(gen_val) > 0 and len(orig_val) > 0:
+                print(f"    Gen first:  {gen_val[0]}")
+                print(f"    Orig first: {orig_val[0]}")
     
     # Save
     with open(args.output, 'wb') as f:
-        pickle.dump(whitelist, f, protocol=pickle.HIGHEST_PROTOCOL)
+        pickle.dump(whitelist, f)
     
-    print(f"\n{'='*80}")
-    print(f"Saved to: {args.output}")
-    print(f"{'='*80}")
-    
-    print("\nTo use this whitelist:")
+    print(f"\nSaved to: {args.output}")
+    print("\nTo expand rank 5:")
+    print(f"  python {__file__} --mode expand --cores {num_cores}")
+    print("\nTo replace original:")
     print(f"  cp {args.output} ~/github/python-ace-alphataubio/src/pyace/data/mus_ns_uni_to_rawlsLS_np_rank.pckl")
 
 
