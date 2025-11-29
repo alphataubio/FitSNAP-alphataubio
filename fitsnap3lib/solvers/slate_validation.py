@@ -479,7 +479,7 @@ class SlateValidation(SlateCommon):
         blist_rank = defaultdict(list)
         rank_indices = defaultdict(list)
         for i, (r, f) in enumerate(zip(basis_ranks, blist)):
-            blist_rank[r].append(re.split(r" ns \[|\] ls \[| \[0\]$", f))
+            blist_rank[r].append(re.split(r" ns \[|\] ls \[|\]| \[0\]$", f))
             rank_indices[r].append(i)
             
         # Create and display lambda heatmaps
@@ -633,14 +633,17 @@ def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=
 
     def sort_key(basis):
         ns = basis[1].split(',')
-        #print(f"*** basis {basis} ns {ns} tuple(int(i) for i in ns) {tuple(int(i) for i in ns)}")
-        return tuple(int(i) for i in ns)
+        ls = basis[2].split(',')
+        print(f"*** basis {basis} tuple {tuple(int(i) for i in ns)}")
+        return tuple(int(i) for i in ns) + tuple(int(j) for j in ls)
 
     def sort_kv(kv):
         atoms, ns = kv[0].split('_')
         return tuple([atoms]+[int(i) for i in ns.split(',')])
 
-    sorted_blist = sorted(blist_rank[rank], key=sort_key ) if rank>=1 else blist_rank[rank]
+    # sorted_blist = sorted(blist_rank[rank], key=sort_key ) if rank>=1 else blist_rank[rank]
+    
+    sorted_blist = blist_rank[rank]
 
     label_spacing = .025*rank*n_iterations
     if rank == 0:
@@ -681,12 +684,13 @@ def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=
         # --- ns labels ---
         y, ns = 0, Counter([f"{basis[0]}_{basis[1]}" for basis in sorted_blist])
         ax.text((ns_x:=(xticks_extra[0]+xticks_extra[1])/2), heatmap_rows, 'ns', ha="center", va="top", fontsize=10, fontweight="bold")
-        for k, v in sorted(ns.items(), key=sort_kv):
+        #for k, v in sorted(ns.items(), key=sort_kv):
+        for k, v in ns.items():
             ax.add_patch(Rectangle((xticks_extra[0], y - 0.5), xticks_extra[1]-xticks_extra[0], v, fc='w', ec="k", zorder=9))
-            ax.text(ns_x, y + v / 2 - 0.5, k.split('_')[-1], ha="center", va="center", fontsize=8, zorder=10)
+            ax.text(ns_x, y + v / 2 - 0.5, k.split('_')[1], ha="center", va="center", fontsize=8, zorder=10)
             for j in range(v):
                 y_positions.append(y + j)
-                texts.append(sorted_blist[y + j][-1].replace(']', ''))
+                texts.append(sorted_blist[y + j][2].replace(']', ''))
             y += v
 
         # --- ls labels ---

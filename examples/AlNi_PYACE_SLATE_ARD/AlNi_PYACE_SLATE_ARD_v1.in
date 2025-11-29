@@ -22,9 +22,9 @@ functions = {
 
     #'Al Ni Ni': { 'nmax': 4, 'lmax': 3 },
 
-    'Al Ni Ni Ni Ni Ni': { 'nmax': 4, 'lmax': 4 },
-    'Ni Al Al Al Al Al': { 'nmax': 4, 'lmax': 4 },
-    'Ni Ni Ni Ni Ni Ni': { 'nmax': 4, 'lmax': 4 },
+    'Al Ni Ni Ni Ni Ni': { 'nmax': 2, 'lmax': 4 },
+    'Ni Al Al Al Al Al': { 'nmax': 2, 'lmax': 4 },
+    'Ni Ni Ni Ni Ni Ni': { 'nmax': 2, 'lmax': 4 },
 
   }
   
@@ -51,8 +51,8 @@ compute_testerrs = 1
 [SLATE]
 method = ARD
 threshold_lambda = 1e6
-scap = 1e-2
-scai = 1e-2
+scap = 1e-3
+scai = 1e-3
 max_iter = 100
 
 # -----------------------------------------------------------------------------
