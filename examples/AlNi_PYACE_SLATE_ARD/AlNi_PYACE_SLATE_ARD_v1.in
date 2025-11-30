@@ -6,7 +6,7 @@ elements = Al Ni
 bzeroflag = 0
 
 embeddings = {
-    "ALL": {"npot": "FinnisSinclair", "fs_parameters": [1,1], "ndensity": 1},
+    "ALL": {"npot": "FinnisSinclairShiftedScaled", "fs_parameters": [1,1,1,.5], "ndensity": 2},
   }
 
 bonds = {
@@ -17,14 +17,16 @@ bonds = {
 
 functions = {
 
-    'ALL':  { 'nmax_by_rank': [20,10,1], 'lmax_by_rank': [0,4,4] },
-    #'ALL': { 'nmax_by_rank': [2,1],       'lmax_by_rank': [0,0]     },
+    #'ALL':  { 'nmax_by_rank': [20,8,4], 'lmax_by_rank': [0,10,6] },
+    
+    
+    'ALL':  { 'nmax_by_rank': [16,4,3,2,1,1,1,1], 'lmax_by_rank': [0,10,6,4,3,2,2,1] },
 
     #'Al Ni Ni': { 'nmax': 4, 'lmax': 3 },
 
-    'Al Ni Ni Ni Ni Ni': { 'nmax': 2, 'lmax': 4 },
-    'Ni Al Al Al Al Al': { 'nmax': 2, 'lmax': 4 },
-    'Ni Ni Ni Ni Ni Ni': { 'nmax': 2, 'lmax': 4 },
+    #'Al Ni Ni Ni Ni Ni': { 'nmax': 1, 'lmax': 4 },
+    #'Ni Al Al Al Al Al': { 'nmax': 2, 'lmax': 4 },
+    #'Ni Ni Ni Ni Ni Ni': { 'nmax': 2, 'lmax': 4 },
 
   }
   
@@ -51,14 +53,14 @@ compute_testerrs = 1
 [SLATE]
 method = ARD
 threshold_lambda = 1e6
-scap = 1e-6
-scai = 1e-6
+scap = 1e-4
+scai = 1e-4
 max_iter = 100
 
 # -----------------------------------------------------------------------------
 [SCRAPER]
 scraper = ADIOS2
-#max_configs_per_rank = 10
+#max_configs_per_rank = 1
 
 # -----------------------------------------------------------------------------
 [PATH]
