@@ -46,7 +46,7 @@ def unify_mus_ns_comb(mus_comb, ns_comb):
     return unify_to_minimized_indices(unif_comb)
 
 
-def generate_unified_keys_for_rank(rank, nmax, num_mu_types=3):
+def generate_unified_keys_for_rank(rank, nmax, num_mu_types=1):
     """
     Generate all unique unified keys for a given rank by enumerating 
     all (mu, n) combinations and applying unify_mus_ns_comb.
@@ -159,7 +159,7 @@ def generate_valid_ls_LS_for_key(key, lmax):
     rank = len(key)
     lmin = 0
     valid_pairs = []
-    
+        
     # Handle rank 1 specially: only l=0 is valid
     if rank == 1:
         return [([0], [])]
@@ -258,7 +258,7 @@ def generate_valid_ls_LS_for_key(key, lmax):
     return valid_pairs
 
 
-def generate_whitelist_for_rank(rank, nmax, lmax, lmin=0, num_cores=None):
+def generate_whitelist_for_rank(rank, nmax, lmax):
     """
     Generate whitelist entries for one rank.
     
@@ -266,15 +266,13 @@ def generate_whitelist_for_rank(rank, nmax, lmax, lmin=0, num_cores=None):
         rank: Rank (body_order - 1)
         nmax: Maximum n value for key generation
         lmax: Maximum l value for (ls, LS) generation
-        lmin: Minimum l value
         num_cores: Number of CPU cores (not used in this version)
     
     Returns dict: {unified_key: [(ls, LS), ...]}
     """
-    body_order = rank + 1
     whitelist = {}
     
-    print(f"\nRank {rank} ({body_order}-body): nmax={nmax}, lmax={lmax}, lmin={lmin}")
+    print(f"\nRank {rank} nmax {nmax} lmax {lmax}")
     
     # Generate unique unified keys
     print(f"  Generating unified keys...")
@@ -291,54 +289,27 @@ def generate_whitelist_for_rank(rank, nmax, lmax, lmin=0, num_cores=None):
 
 
 def main():
+
     import argparse
-    
     parser = argparse.ArgumentParser(description='Generate PyACE whitelist')
-    parser.add_argument('--mode', choices=['replicate', 'expand'], default='replicate')
     parser.add_argument('--output', default='mus_ns_uni_to_rawlsLS_np_rank_NEW.pckl')
-    parser.add_argument('--cores', type=int, default=None, 
-                        help='Number of CPU cores to use (default: all available)')
-    parser.add_argument('--max-rank', type=int, default=3,
-                        help='Maximum rank to generate (default: 3)')
-    parser.add_argument('--nmax', type=int, default=10,
-                        help='Maximum n value for key generation (default: 10)')
-    parser.add_argument('--lmax', type=int, default=10,
-                        help='Maximum l value for ls generation (default: 4)')
     args = parser.parse_args()
-    
+
     print("="*80)
     print("GENERATE PYACE WHITELIST")
     print("="*80)
-    
-    num_cores = args.cores if args.cores else cpu_count()
-    print(f"Using {num_cores} CPU cores")
-    print(f"Max rank: {args.max_rank}")
-    print(f"nmax: {args.nmax}")
-    print(f"lmax: {args.lmax}")
-    
+        
+    nmax = 10
+    lmax_by_rank = [0,10,6,4,3,2]
     whitelist = {}
     
-    # Generate for each rank
-    # rank 0 = 1-body, rank 1 = 2-body, etc.
-    for rank in range(args.max_rank + 1):
-        if rank == 0:
-            # 1-body: only l=0
-            rank_lmax = 0
-        else:
-            rank_lmax = args.lmax
-        
-        rank_wl = generate_whitelist_for_rank(
-            rank=rank,
-            nmax=args.nmax,
-            lmax=rank_lmax,
-            lmin=0
-        )
+    for rank in range(1, len(lmax_by_rank)+1):
+        rank_wl = generate_whitelist_for_rank(rank, nmax, lmax_by_rank[rank-1])
         whitelist.update(rank_wl)
     
     print(f"\n{'='*80}")
     print(f"Total whitelist entries: {len(whitelist)}")
         
-    # Save
     with open(args.output, 'wb') as f:
         pickle.dump(whitelist, f)
     
