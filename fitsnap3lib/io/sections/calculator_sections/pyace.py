@@ -122,7 +122,6 @@ class PyAce(Section):
             
             basis_config = create_multispecies_basis_config(self.ace_config)
             b_basis = ACEBBasisSet(basis_config)
-            b_basis.basis_coeffs = np.ones(len(b_basis.basis_coeffs))
             ctilde_basis = b_basis.to_ACECTildeBasisSet()
             self.ctilde_basis = ctilde_basis
                 
