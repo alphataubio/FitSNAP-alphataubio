@@ -22,9 +22,7 @@ functions = {
         'lmax_by_rank': [ 0,1,2,0,0,0,0,0,1,1,1]
       },
 
-    #'Al Ni Ni Ni Ni Ni': { 'nmax': 1, 'lmax': 4 },
-    #'Ni Al Al Al Al Al': { 'nmax': 2, 'lmax': 4 },
-    #'Ni Ni Ni Ni Ni Ni': { 'nmax': 2, 'lmax': 4 },
+    'Al Ni Ni Ni Ni Ni': { 'nmax': 3, 'lmax': 3 },
 
   }
   
