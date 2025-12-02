@@ -648,7 +648,7 @@ def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=
     
     sorted_blist = blist_rank[rank]
 
-    label_spacing = .05*rank*n_iterations
+    label_spacing = .01*(8*rank-5)*n_iterations
     if rank == 0:
         xlim, xticks_extra = -1.5, [-.5, -.5]
         figsize = (8, heatmap_rows)
