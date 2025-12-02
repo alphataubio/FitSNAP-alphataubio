@@ -49,11 +49,11 @@ def pa_labels_raw(rank,nmax,lmax,mumax,lmin=1,L_R=0,M_R=0):
         all_max_n = 12
         all_max_mu = 8
         try:
-            with open('%s/all_labels_mu%d_n%d_l%d_r%d.json' % (lib_path,all_max_mu,all_max_n,all_max_l,rank),'r') as readjson:
+            with open(f'{lib_path}/all_labels_mu{all_max_mu}_n{all_max_n}_l{all_max_l}_r{rank}.json','r') as readjson:
                 data = json.load(readjson)
         except FileNotFoundError:
-            build_tabulated(rank,all_max_mu,all_max_n,all_max_l,L_R,M_R)
-            with open('%s/lib_path/all_labels_mu%d_n%d_l%d_r%d.json' % (all_max_mu,all_max_n,all_max_l,rank),'r') as readjson:
+            build_tabulated(rank,mumax,nmax,lmax,L_R,M_R)
+            with open(f'{lib_path}/all_labels_mu{mumax}_n{nmax}_l{lmax}_r{rank}.json','r') as readjson:
                 data = json.load(readjson)
             
         lmax_strs = generate_l_LR(range(lmin,lmax+1),rank,L_R=L_R,M_R=M_R)
