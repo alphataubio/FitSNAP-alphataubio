@@ -457,6 +457,12 @@ def apply_ladder_relationships(lin, nin, combined_labs, parity_span, parity_span
 
         elif degen_fam == ((0,0,0,1,1),(1,1,1,1,1)):
             funcs = combined_labs[:len(full_span)]
+            
+        else:
+            # return funcs undefined if none of the elif clauses match degen_fam
+            # --> 461 return funcs
+            # UnboundLocalError: cannot access local variable 'funcs' where it is not associated with a value
+            raise RuntimeError(f"degen_fam {degen_fam} missing from elif block")
 
     return funcs
 
