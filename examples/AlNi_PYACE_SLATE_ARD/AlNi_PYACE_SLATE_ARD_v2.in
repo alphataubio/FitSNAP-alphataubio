@@ -1,0 +1,100 @@
+
+# -----------------------------------------------------------------------------
+[PYACE]
+
+elements = Al Ni
+bzeroflag = 0
+
+embeddings = {
+    "ALL": {"npot": "FinnisSinclairShiftedScaled", "fs_parameters": [1,1,1,.5], "ndensity": 2},
+  }
+
+bonds = {
+    'Al Al': {"radbase": "ChebExpCos", "radparameters": [0.342], "rcut": 6.832, "dcut": 0.01, "core-repulsion": [0, 0.342], "rcut_in": 0.625, "dcut_in": 0.01},
+    'Al Ni': {"radbase": "ChebExpCos", "radparameters": [0.318], "rcut": 6.356, "dcut": 0.01, "core-repulsion": [0, 0.318], "rcut_in": 0.650, "dcut_in": 0.01},
+    'Ni Ni': {"radbase": "ChebExpCos", "radparameters": [0.281], "rcut": 5.610, "dcut": 0.01, "core-repulsion": [0, 0.281], "rcut_in": 0.540, "dcut_in": 0.01}
+  }
+
+functions = {
+    
+    'ALL':  {
+        'nmax_by_rank': [16,8,4,0,0,0,0,0,1,1,1],
+        'lmax_by_rank': [ 0,1,2,0,0,0,0,0,1,1,1]
+      },
+
+    #'Al Ni Ni Ni Ni Ni': { 'nmax': 1, 'lmax': 4 },
+    #'Ni Al Al Al Al Al': { 'nmax': 2, 'lmax': 4 },
+    #'Ni Ni Ni Ni Ni Ni': { 'nmax': 2, 'lmax': 4 },
+
+  }
+  
+# -----------------------------------------------------------------------------
+[CALCULATOR]
+calculator = LAMMPSPYACE
+energy = 1    # goal < 1.64 meV/atom
+force  = 1    # goal < 28 meV/A
+stress = 0    # goal < 0.09 GPa
+
+# -----------------------------------------------------------------------------
+[REFERENCE]
+units = metal
+atom_style = atomic
+pair_style = zero 6.842222
+pair_coeff = * *
+
+# -----------------------------------------------------------------------------
+[SOLVER]
+solver = SLATE
+compute_testerrs = 1
+
+# -----------------------------------------------------------------------------
+[SLATE]
+method = ARD
+threshold_lambda = 1e6
+scap = 1e-4
+scai = 1e-4
+max_iter = 100
+
+# -----------------------------------------------------------------------------
+[SCRAPER]
+scraper = ADIOS2
+#max_configs_per_rank = 1
+
+# -----------------------------------------------------------------------------
+[PATH]
+dataPath = omat24_AlNi.bp
+
+# -----------------------------------------------------------------------------
+[GROUPS]
+
+# NOTE: training_size and testing_size are not specified since omat24 dataset
+# already provides training/validation split in separate train/val archives.
+# [https://huggingface.co/datasets/facebook/OMAT24]
+
+group_sections = name eweight fweight vweight
+group_types = str float float float float float
+smartweights = 1
+rattled-relax           =  1.0   100.0  10.0
+rattled-300             =  3.0   300.0  10.0
+rattled-500             =  5.0   500.0  10.0
+rattled-1000            = 10.0  1000.0  10.0
+aimd-from-PBE-1000-npt  =  1.0   100.0  10.0
+aimd-from-PBE-1000-nvt  =  1.0   100.0  10.0
+aimd-from-PBE-3000-npt  =  3.0   300.0  10.0
+aimd-from-PBE-3000-nvt  =  3.0   300.0  10.0
+
+# -----------------------------------------------------------------------------
+[OUTFILE]
+output_style = PACE
+metrics = AlNi_PYACE_SLATE_ARD_v2.md
+potential = AlNi_PYACE_SLATE_ARD_v2
+validation = 1
+
+# -----------------------------------------------------------------------------
+[EXTRAS]
+dump_descriptors = 0
+dump_truth = 0
+dump_weights = 0
+debug = 0
+
+# -----------------------------------------------------------------------------

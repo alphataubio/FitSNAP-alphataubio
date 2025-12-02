@@ -247,9 +247,9 @@ class SLATE(SlateValidation):
                 pt.single_print(f"SLATE ARD: stopping... coef_abs_change {coef_abs_change} < {self.atol}")
                 break
 
-            #if cond_number > 1e16:
-            #    pt.single_print(f"SLATE ARD: stopping... cond_number {cond_number} > 1e16")
-            #    break
+            if cond_number > 1e16:
+                pt.single_print(f"SLATE ARD: stopping... cond_number {cond_number} > 1e16")
+                break
 
             if SIGUSR1_signal_received:
                 pt.single_print(f"SLATE ARD: stopping... received SIGUSR1 signal")
