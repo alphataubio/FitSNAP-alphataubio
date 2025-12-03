@@ -18,8 +18,8 @@ bonds = {
 functions = {
     
     'ALL':  {
-        'nmax_by_rank': [16,8,4,0,0,0,0,0,1,1,1],
-        'lmax_by_rank': [ 0,1,2,0,0,0,0,0,1,1,1]
+        'nmax_by_rank': [16,4,2,0,0,1],
+        'lmax_by_rank': [ 0,1,2,0,0,2]
       },
 
     #'Al Ni Ni Ni Ni Ni': { 'nmax': 3, 'lmax': 3 },
