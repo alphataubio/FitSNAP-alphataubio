@@ -1,5 +1,10 @@
+
 from fitsnap3lib.lib.sym_ACE.inter_set import *
 from fitsnap3lib.lib.sym_ACE.symmetric_grp_manip import *
+
+
+
+
 
 def get_highest_coupling_representation(lp,lref):
     rank = len(lp)
@@ -235,8 +240,9 @@ seq_degen_map = {
 ((1,1,1,1,1),(2,3)):(2,1,1,1),
 }
 
+
 #apply ladder relationships
-def apply_ladder_relationships(lin, nin, combined_labs, parity_span, parity_span_labs, full_span, L_R=0):
+def apply_ladder_relationships_v1(lin, nin, combined_labs, parity_span, parity_span_labs, full_span, L_R=0):
     N = len(lin)
     uniques = list(set(lin))
     tmp = list(lin).copy()
@@ -465,6 +471,22 @@ def apply_ladder_relationships(lin, nin, combined_labs, parity_span, parity_span
             raise RuntimeError(f"degen_fam {degen_fam} missing from elif block")
 
     return funcs
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 """
 rank =5

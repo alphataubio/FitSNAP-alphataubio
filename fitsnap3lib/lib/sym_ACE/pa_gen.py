@@ -1,8 +1,12 @@
 from fitsnap3lib.lib.sym_ACE.pa_lib import *
+from fitsnap3lib.lib.sym_ACE.pa_lib_v2 import *
 from fitsnap3lib.lib.sym_ACE.sym_ACE_settings import *
 import json,os
 
 def build_tabulated(rank,all_max_mu,all_max_n,all_max_l,L_R=0,M_R=0):
+
+    print(f"*** build_tabulated(\n  rank={rank},\n  all_max_mu={all_max_mu},\n  all_max_n={all_max_n},\n  all_max_l={all_max_l},\n  L_R={L_R},\n  M_R={M_R}\n)")
+
     lmax_strs = generate_l_LR(range(0,all_max_l+1),rank,L_R=L_R,M_R=M_R,use_permutations=False)
     lvecs = [tuple([int(k) for k in lmax_str.split(',')]) for lmax_str in lmax_strs]
     nvecs = [i for i in itertools.combinations_with_replacement(range(0,all_max_n),rank)]
@@ -48,12 +52,14 @@ def pa_labels_raw(rank,nmax,lmax,mumax,lmin=1,L_R=0,M_R=0):
         all_max_l = 12
         all_max_n = 12
         all_max_mu = 8
+        #path = f'{lib_path}/all_labels_mu{all_max_mu}_n{all_max_n}_l{all_max_l}_r{rank}.json'
+        path = f'{lib_path}/all_labels_mu{mumax}_n{nmax}_l{lmax}_r{rank}.json'
         try:
-            with open(f'{lib_path}/all_labels_mu{all_max_mu}_n{all_max_n}_l{all_max_l}_r{rank}.json','r') as readjson:
+            with open(path,'r') as readjson:
                 data = json.load(readjson)
         except FileNotFoundError:
             build_tabulated(rank,mumax,nmax,lmax,L_R,M_R)
-            with open(f'{lib_path}/all_labels_mu{mumax}_n{nmax}_l{lmax}_r{rank}.json','r') as readjson:
+            with open(path,'r') as readjson:
                 data = json.load(readjson)
             
         lmax_strs = generate_l_LR(range(lmin,lmax+1),rank,L_R=L_R,M_R=M_R)
@@ -137,7 +143,10 @@ def pa_labels_raw(rank,nmax,lmax,mumax,lmin=1,L_R=0,M_R=0):
                 lvec = tuple(lvec)
                 #nus = from_tabulated((0,0,0,0),(1,1,1,1),(4,4,4,4),allowed_mus = possible_mus, tabulated_all = data)
                 nus = from_tabulated(muvec,nvec,lvec,allowed_mus = possible_mus, tabulated_all = data)
-                lammps_ready,not_compatible = lammps_remap(nus,rank=rank,allowed_mus=possible_mus)
+                
+                #lammps_ready,not_compatible = lammps_remap(nus,rank=rank,allowed_mus=possible_mus)
+                lammps_ready,not_compatible = nus, []
+
                 all_lammps_labs.extend(lammps_ready)
                 all_not_compat.extend(not_compatible)
 
