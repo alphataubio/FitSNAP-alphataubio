@@ -42,6 +42,12 @@ import sys, random, array
 import numpy as np
 from tqdm import tqdm
 
+
+# Global Progress Bar Implementation
+# https://github.com/FitSNAP/FitSNAP/pull/278#issuecomment-3339668759
+# [alphataubio, 2025/09]
+
+
 class GlobalProgressTracker:
     """
     Tracks progress across MPI ranks and updates a tqdm progress bar on rank 0
