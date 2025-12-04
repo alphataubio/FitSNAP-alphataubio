@@ -1,5 +1,4 @@
 from fitsnap3lib.lib.sym_ACE.pa_lib import *
-from fitsnap3lib.lib.sym_ACE.pa_lib_v2 import *
 from fitsnap3lib.lib.sym_ACE.sym_ACE_settings import *
 import json,os
 
@@ -144,7 +143,13 @@ def pa_labels_raw(rank,nmax,lmax,mumax,lmin=1,L_R=0,M_R=0):
                 #nus = from_tabulated((0,0,0,0),(1,1,1,1),(4,4,4,4),allowed_mus = possible_mus, tabulated_all = data)
                 nus = from_tabulated(muvec,nvec,lvec,allowed_mus = possible_mus, tabulated_all = data)
                 
+                # lammps_remap() no longer needed with GEMINI PRO 3's
+                # "PA-RPI Basis with Group Theory & Wigner Algebra"
+                # https://github.com/FitSNAP/FitSNAP/pull/278#issuecomment-3608914838
+                # [alphataubio, 2025/12]
+
                 #lammps_ready,not_compatible = lammps_remap(nus,rank=rank,allowed_mus=possible_mus)
+
                 lammps_ready,not_compatible = nus, []
 
                 all_lammps_labs.extend(lammps_ready)

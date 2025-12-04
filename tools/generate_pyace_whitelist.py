@@ -24,8 +24,8 @@ def unify_mus_ns_comb(mus_comb, ns_comb):
 def whitelist_for_rank(rank):
 
     #                1  2 3 4 5 6 7 8 9
-    #lmax_by_rank = [0,10,6,4,2,2,1,1,1]
-    lmax_by_rank = [0,1,2,3,4]
+    #lmax_by_rank = [0,10,6,4,2,2,1,1,1] ORIGINAL PYACE WHITELIST
+    lmax_by_rank =  [0, 1,2,3,4,5]
     lmax = lmax_by_rank[rank-1]
     
     PA_lammps, not_compat = pa_labels_raw(rank=rank,nmax=rank,lmax=lmax,mumax=2,lmin=0)
@@ -52,7 +52,7 @@ def main():
 
     import argparse
     parser = argparse.ArgumentParser(description='Generate PyACE whitelist')
-    parser.add_argument('--output', default='/Users/mitch/github/lammps-pyace/python/lammps_pyace/pyace_whitelist_pa.pckl')
+    parser.add_argument('--output', default='../../lammps-pyace/python/lammps_pyace/pyace_whitelist_pa_rpi.pckl')
     args = parser.parse_args()
 
     whitelist = {}
@@ -61,7 +61,7 @@ def main():
     print("GENERATE PYACE WHITELIST")
     print("="*80)
     
-    for rank in range(1, 6):
+    for rank in range(1, 7):
         rank_wl = whitelist_for_rank(rank)
         whitelist.update(rank_wl)
     

@@ -1,10 +1,542 @@
 
+from fitsnap3lib.lib.sym_ACE.sym_ACE_settings import *
+
+import numpy as np
+import multiprocessing
+from sympy.physics.wigner import wigner_3j
+from itertools import product, permutations
+import warnings
+import os
+import pickle
+from collections import Counter, defaultdict
+from functools import partial
+import scipy.linalg
+
+
+# GEMINI PRO 3's "PA-RPI Basis with Group Theory & Wigner Algebra"
+# https://github.com/FitSNAP/FitSNAP/pull/278#issuecomment-3608889321
+# https://github.com/FitSNAP/FitSNAP/pull/278#issuecomment-3608897109
+# [alphataubio, 2025/12]
+
+
+# =========================================================
+# SECTION 1: BASIS GENERATION 
+# =========================================================
+
+class BasisGenerator:
+    """
+    Generates the Over-Complete set of ACE basis labels for arbitrary rank/orders.
+    """
+    
+    @staticmethod
+    def get_valid_intermediates(l1, l2):
+        """Returns all L satisfying triangle inequality for l1, l2."""
+        low = abs(l1 - l2)
+        high = l1 + l2
+        return range(low, high + 1)
+
+    @staticmethod
+    def generate_valid_intermediates_recursive(l_current_layer, L_R):
+        """
+        Recursively generates all valid intermediate tuples.
+        Includes the Root node in the output.
+        """
+        if len(l_current_layer) == 1:
+            if l_current_layer[0] == L_R:
+                yield []
+            return
+
+        # Pairwise coupling of current layer
+        pairs_to_couple = []
+        pass_through = []
+        
+        i = 0
+        while i < len(l_current_layer):
+            if i + 1 < len(l_current_layer):
+                pairs_to_couple.append((l_current_layer[i], l_current_layer[i+1]))
+                i += 2
+            else:
+                pass_through.append(l_current_layer[i])
+                i += 1
+
+        ranges = [BasisGenerator.get_valid_intermediates(p[0], p[1]) for p in pairs_to_couple]
+        
+        for intermediates in product(*ranges):
+            l_next_layer = list(intermediates) + pass_through
+            for sub_inters in BasisGenerator.generate_valid_intermediates_recursive(l_next_layer, L_R):
+                yield list(intermediates) + sub_inters
+
+    @staticmethod
+    def get_canonical_labels(nin, lin, muin=None, L_R=0):
+        """
+        Generates the raw "Over-Complete" list of labels for a specific block.
+        """
+        rank = len(lin)
+        if muin is None: muin = tuple([0] * rank)
+
+        atoms = sorted(list(zip(muin, nin, lin)))
+        unique_perms = sorted(list(set(permutations(atoms))))
+        
+        labels = []
+        for p in unique_perms:
+            p_mu, p_n, p_l = zip(*p)
+            
+            # Generate intermediates for this leaf ordering
+            valid_L_tuples = list(BasisGenerator.generate_valid_intermediates_recursive(p_l, L_R))
+            
+            for L_tuple in valid_L_tuples:
+                # FIX: Slice to rank-2 to remove Root node and match Fitsnap convention
+                # Rank 5 -> 3 intermediates. Tuple has 4. Slice [:3].
+                L_clean = L_tuple[:rank-2]
+                
+                L_str = "-".join(map(str, L_clean))
+                
+                # Combine integers: mu, n, l
+                integers = list(p_mu) + list(p_n) + list(p_l)
+                int_str = ",".join(map(str, integers))
+                
+                # Format: "0_mu,n,l_L" (Assuming mu0=0 for single species basis)
+                label = f"0_{int_str}_{L_str}"
+                labels.append(label)
+                
+        return sorted(list(set(labels)))
+
+# =========================================================
+# SECTION 2: LEGACY HELPERS (Required by pa_gen.py)
+# =========================================================
+
+def get_mu_nu_rank(nu_in):
+    if len(nu_in.split('_')) > 1:
+        nu = nu_in.split('_')[1]
+        nu_splt = nu.split(',')
+        return int(len(nu_splt)/3)
+    else:
+        nu = nu_in
+        nu_splt = nu.split(',')
+        return int(len(nu_splt)/2)
+
+def get_mu_n_l(nu_in, return_L = False, **kwargs):
+    """
+    Legacy parser for label strings. Restored for compatibility.
+    """
+    rank = get_mu_nu_rank(nu_in)
+    if len(nu_in.split('_')) > 1:
+        if len(nu_in.split('_')) == 2:
+            nu = nu_in.split('_')[-1]
+            Lstr = ''
+        else:
+            nu = nu_in.split('_')[1]
+            Lstr = nu_in.split('_')[-1]
+        mu0 = int(nu_in.split('_')[0])
+        nusplt = [int(k) for k in nu.split(',')]
+        mu = nusplt[:rank]
+        n = nusplt[rank:2*rank]
+        l = nusplt[2*rank:]
+        
+        if len(Lstr) >= 1:
+            # Handle empty L strings gracefully
+            try:
+                L = tuple([int(k) for k in Lstr.split('-')])
+            except ValueError:
+                L = tuple()
+        else:
+            L = tuple()
+            
+        if return_L:
+            return mu0 , mu , n , l , L
+        else:
+            return mu0 , mu , n , l
+    else:
+        # Fallback for deprecated formats
+        nu = nu_in
+        mu0 = 0
+        mu = [0]*rank
+        nusplt = [int(k) for k in nu.split(',')]
+        n = nusplt[:rank]
+        l = nusplt[rank:2*rank]
+        if return_L:
+            return mu0, mu, n, l, tuple()
+        return mu0,mu,n,l
+
+# =========================================================
+# SECTION 3: CORE ALGORITHM (Theory & Wigner)
+# =========================================================
+
+CACHE_FILE = f'{lib_path}/wigner_cache.pckl'
+
+class WignerCacheManager:
+    def __init__(self):
+        self.cache = {}
+        self.new_entries = {}
+    def load(self):
+        if os.path.exists(CACHE_FILE):
+            try:
+                with open(CACHE_FILE, "rb") as f: self.cache = pickle.load(f)
+            except Exception: self.cache = {}
+    def save(self):
+        if not self.new_entries: return
+        self.cache.update(self.new_entries)
+        try:
+            with open(CACHE_FILE, "wb") as f: pickle.dump(self.cache, f)
+        except Exception: pass
+
+def get_exact_w3j(j1, j2, j3, m1, m2, m3, cache=None):
+    key = (j1, j2, j3, m1, m2, m3)
+    if cache is not None and key in cache: return cache[key]
+    try:
+        val = np.float64(wigner_3j(j1, j2, j3, m1, m2, m3))
+    except Exception:
+        val = np.float64(0.0)
+    if cache is not None: cache[key] = val
+    return val
+
+def calculate_generalized_wigner_exact(l_leaves, l_inters, m_config, local_cache):
+    val = np.float64(1.0)
+    current_L = list(l_leaves)
+    current_m = list(m_config)
+    inters_queue = list(l_inters)
+    
+    if abs(sum(current_m)) > 1e-9: return np.float64(0.0)
+
+    while len(current_L) > 1:
+        new_L = []
+        new_m = []
+        i = 0
+        while i < len(current_L):
+            if i + 1 < len(current_L):
+                l1, l2 = current_L[i], current_L[i+1]
+                m1, m2 = current_m[i], current_m[i+1]
+                
+                if len(current_L) == 2: 
+                    L_res = 0 
+                else:
+                     if not inters_queue: return np.float64(0.0)
+                     L_res = inters_queue.pop(0)
+                
+                M_res = m1 + m2
+                if not (abs(l1 - l2) <= L_res <= l1 + l2): return np.float64(0.0)
+                if abs(m1) > l1 or abs(m2) > l2 or abs(M_res) > L_res: return np.float64(0.0)
+
+                w3j = get_exact_w3j(l1, l2, L_res, m1, m2, -M_res, local_cache)
+                if abs(w3j) < 1e-15: return np.float64(0.0)
+                val *= w3j
+                
+                new_L.append(L_res)
+                new_m.append(M_res)
+                i += 2
+            else:
+                new_L.append(current_L[i])
+                new_m.append(current_m[i])
+                i += 1
+        current_L = new_L
+        current_m = new_m
+    return val
+
+def _trellis_worker_iterative(prefix, l_leaves):
+    rank = len(l_leaves)
+    prefix_len = len(prefix)
+    prefix_sum = sum(prefix)
+    if prefix_len == rank - 1:
+        m_last = -prefix_sum
+        if abs(m_last) <= l_leaves[-1]: return [prefix + (m_last,)]
+        return []
+
+    results = []
+    stack = [(prefix_len, prefix_sum, ())]
+    remaining_cap = [0] * rank
+    s = 0
+    for i in range(rank - 1, -1, -1):
+        remaining_cap[i] = s
+        s += l_leaves[i]
+
+    RELAX = 0 
+    while stack:
+        idx, curr_sum, path = stack.pop()
+        if idx == rank - 1:
+            m_last = -curr_sum
+            if abs(m_last) <= l_leaves[idx]:
+                results.append(prefix + path + (m_last,))
+            continue
+            
+        cap = remaining_cap[idx]
+        limit = l_leaves[idx]
+        min_m = max(-limit, -cap - curr_sum - RELAX)
+        max_m = min(limit, cap - curr_sum + RELAX)
+        
+        for m in range(min_m, max_m + 1):
+            stack.append((idx + 1, curr_sum + m, path + (m,)))
+    return results
+
+def generate_valid_m_states_parallel(l_leaves, n_cores):
+    rank = len(l_leaves)
+    if rank == 0: return [()]
+    
+    target_tasks = max(200, n_cores * 4) 
+    prefixes = [()]
+    remaining_cap = [0] * rank
+    s = 0
+    for i in range(rank - 1, -1, -1):
+        remaining_cap[i] = s
+        s += l_leaves[i]
+
+    depth = 0
+    while len(prefixes) < target_tasks and depth < rank - 1:
+        new_prefixes = []
+        for p in prefixes:
+            curr_sum = sum(p)
+            idx = len(p)
+            cap = remaining_cap[idx]
+            limit = l_leaves[idx]
+            min_m = max(-limit, -cap - curr_sum)
+            max_m = min(limit, cap - curr_sum)
+            for m in range(min_m, max_m + 1):
+                new_prefixes.append(p + (m,))
+        prefixes = new_prefixes
+        depth += 1
+        
+    pool = multiprocessing.Pool(processes=n_cores)
+    try:
+        worker_func = partial(_trellis_worker_iterative, l_leaves=l_leaves)
+        results_lists = pool.map(worker_func, prefixes)
+        full_paths = []
+        for lst in results_lists:
+            full_paths.extend(lst)
+    finally:
+        pool.close()
+        pool.join()
+        
+    return full_paths
+
+def get_constrained_permutations(ref_full, curr_full):
+    if len(ref_full) != len(curr_full): return []
+    ref_indices = defaultdict(list)
+    for i, prop in enumerate(ref_full): ref_indices[prop].append(i)
+    curr_indices = defaultdict(list)
+    for i, prop in enumerate(curr_full): curr_indices[prop].append(i)
+    if ref_indices.keys() != curr_indices.keys(): return []
+
+    per_bucket_perms = []
+    for prop, c_idxs in curr_indices.items():
+        r_idxs = ref_indices[prop]
+        bucket_maps = []
+        for p in permutations(r_idxs):
+            mapping = {c: r for c, r in zip(c_idxs, p)}
+            bucket_maps.append(mapping)
+        per_bucket_perms.append(bucket_maps)
+        
+    all_maps = []
+    for combined in product(*per_bucket_perms):
+        full_map = {}
+        for m in combined: full_map.update(m)
+        indices = [full_map[k] for k in range(len(curr_full))]
+        all_maps.append(indices)
+    return all_maps
+
+def parse_label_full(label, rank):
+    parts = label.split('_')
+    integers_block = parts[1].split(',')
+    total_ints = len(integers_block)
+    
+    # Heuristic for label format
+    if total_ints == 3 * rank:
+        mu_leaves = [int(x) for x in integers_block[:rank]]
+        n_leaves = [int(x) for x in integers_block[rank:2*rank]]
+        l_leaves = [int(x) for x in integers_block[2*rank:]]
+    elif total_ints == 2 * rank:
+        mu_leaves = [0] * rank
+        n_leaves = [int(x) for x in integers_block[:rank]]
+        l_leaves = [int(x) for x in integers_block[rank:]]
+    else:
+        l_leaves = [int(x) for x in integers_block[-rank:]]
+        n_leaves = [0] * rank
+        mu_leaves = [0] * rank
+
+    l_inters = []
+    if len(parts) > 2:
+        try: l_inters = [int(x) for x in parts[-1].split('-')]
+        except ValueError: l_inters = []
+    
+    # Ensure intermediate list matches what BasisGenerator produces 
+    # and what calculate_generalized_wigner expects.
+    # Wigner calculator consumes intermediates for N-2 steps.
+    # Rank 5 -> 3 steps.
+    # Fitsnap label usually has Rank-2 intermediates (e.g. 3).
+    # If list has more, slice it.
+    if len(l_inters) > rank - 2: l_inters = l_inters[:rank-2]
+    return mu_leaves, n_leaves, l_leaves, l_inters
+
+def parse_label_to_tree(label, rank):
+    _, _, l, inters = parse_label_full(label, rank)
+    return l, inters
+
+class CharacterIntegration:
+    @staticmethod
+    def chi_l(l, theta):
+        if abs(theta) < 1e-9: return 2 * l + 1
+        return np.sin((l + 0.5) * theta) / np.sin(0.5 * theta)
+    @staticmethod
+    def cycle_index_term(l, k, theta):
+        h = [0.0] * (k + 1); h[0] = 1.0 
+        for m in range(1, k + 1):
+            sum_val = 0.0
+            for i in range(1, m + 1):
+                p_i = CharacterIntegration.chi_l(l, i * theta)
+                sum_val += p_i * h[m - i]
+            h[m] = sum_val / m
+        return h[k]
+    @staticmethod
+    def get_total_character(lin, nin, theta):
+        pairs = list(zip(nin, lin))
+        counts = Counter(pairs)
+        total_chi = 1.0
+        for (n, l), k in counts.items():
+            if k == 1: total_chi *= CharacterIntegration.chi_l(l, theta)
+            else: total_chi *= CharacterIntegration.cycle_index_term(l, k, theta)
+        return total_chi
+    @staticmethod
+    def count_invariants(lin, nin, integration_points=200):
+        thetas, dt = np.linspace(0, np.pi, integration_points, retstep=True)
+        haar_measure = 1 - np.cos(thetas)
+        chis = np.array([CharacterIntegration.get_total_character(lin, nin, t) for t in thetas])
+        integral = np.trapz(chis * haar_measure, dx=dt)
+        return int(round(integral / np.pi))
+
+def worker_process_exact(chunk_labels, rank, m_configs, ref_full_sorted, initial_cache):
+    local_cache = initial_cache.copy()
+    initial_keys = set(local_cache.keys())
+    results = []
+    for label in chunk_labels:
+        mu_leaves, n_leaves, l_leaves, l_inters = parse_label_full(label, rank)
+        curr_full = list(zip(n_leaves, l_leaves)) # Permutation based on (n,l) identity only
+        
+        perm_maps = get_constrained_permutations(ref_full_sorted, curr_full)
+        if not perm_maps: continue
+
+        w_vec = []
+        is_zero_vec = True
+        for m_ref in m_configs:
+            val = np.float64(0.0)
+            for indices in perm_maps:
+                m_curr = [m_ref[i] for i in indices]
+                w = calculate_generalized_wigner_exact(l_leaves, l_inters, m_curr, local_cache)
+                val += w
+            w_vec.append(val)
+            if abs(val) > 1e-15: is_zero_vec = False
+            
+        if not is_zero_vec:
+            vec = np.array(w_vec, dtype=np.float64)
+            norm = np.linalg.norm(vec)
+            if norm > 1e-15:
+                results.append((label, vec / norm))
+    new_entries = {k: v for k, v in local_cache.items() if k not in initial_keys}
+    return results, new_entries
+
+# =========================================================
+# SECTION 4: MAIN ENTRY POINT
+# =========================================================
+
+def apply_ladder_relationships(lin, nin, combined_labs_legacy=None, parity_span=None, parity_span_labs=None, full_span=None, L_R=0):
+    
+    n_expected = CharacterIntegration.count_invariants(lin, nin)
+    if n_expected == 0: return []
+
+    pairs = list(zip(nin, lin))
+    # Optimization: Distinct pairs (assuming full basis generation)
+    # But since we are regenerating labels, we must run generation.
+    # We can skip SVD if distinct.
+    distinct_mode = (len(set(pairs)) == len(pairs))
+
+    rank = len(lin)
+    
+    # 1. GENERATE COMPLETE CANDIDATE SET (Over-Complete)
+    combined_labs = BasisGenerator.get_canonical_labels(nin, lin, L_R=L_R)
+    
+    if len(combined_labs) == 0: return []
+    
+    if distinct_mode:
+        # If all atoms distinct, no ladder relationships exist. Return all valid trees.
+        return combined_labs
+
+    # 2. SETUP VECTOR SPACE
+    ref_mu, ref_n, ref_l, _ = parse_label_full(combined_labs[0], rank)
+    combined = sorted(list(zip(ref_mu, ref_n, ref_l)))
+    ref_n_sorted = [x[1] for x in combined]
+    ref_l_sorted = [x[2] for x in combined]
+    ref_full_sorted = list(zip(ref_n_sorted, ref_l_sorted))
+    
+    n_cores = multiprocessing.cpu_count()
+    m_configs = generate_valid_m_states_parallel(ref_l_sorted, n_cores)
+    if not m_configs: return []
+
+    cache_manager = WignerCacheManager()
+    cache_manager.load()
+
+    chunk_size = max(1, len(combined_labs) // (n_cores * 4))
+    chunks = [combined_labs[i:i + chunk_size] for i in range(0, len(combined_labs), chunk_size)]
+    
+    valid_candidates = []
+    with multiprocessing.Pool(processes=n_cores) as pool:
+        results = pool.starmap(worker_process_exact, 
+                               [(chunk, rank, m_configs, ref_full_sorted, cache_manager.cache) 
+                                for chunk in chunks])
+        for sub_res, sub_cache in results:
+            valid_candidates.extend(sub_res)
+            cache_manager.new_entries.update(sub_cache)
+    cache_manager.save()
+
+    if not valid_candidates:
+        if n_expected > 0: warnings.warn(f"All vectors zero for block n={nin}, l={lin}")
+        return []
+
+    # 3. ROBUST SVD SELECTION
+    labels = [x[0] for x in valid_candidates]
+    A = np.column_stack([x[1] for x in valid_candidates])
+    
+    try:
+        U, S, Vt = scipy.linalg.svd(A, full_matrices=False, lapack_driver='gesvd')
+    except Exception:
+        U, S, Vt = scipy.linalg.svd(A, full_matrices=False)
+
+    max_sv = S[0]
+    tolerance = max(1e-14, max_sv * 1e-12)
+    rank_eff = np.sum(S > tolerance)
+    
+    independent_labs_final = []
+    basis_matrix = []
+    
+    # Order-Preserving Gram-Schmidt
+    for i, label in enumerate(labels):
+        if len(independent_labs_final) == rank_eff: break
+        vec = A[:, i]
+        if len(basis_matrix) == 0:
+            basis_matrix.append(vec)
+            independent_labs_final.append(label)
+        else:
+            vec_ortho = vec.copy()
+            B = np.array(basis_matrix)
+            for _ in range(2):
+                projections = np.dot(B, vec_ortho)
+                vec_ortho -= np.dot(projections, B)
+            if np.linalg.norm(vec_ortho) > tolerance:
+                basis_matrix.append(vec_ortho / np.linalg.norm(vec_ortho))
+                independent_labs_final.append(label)
+
+    if len(independent_labs_final) < n_expected:
+        warnings.warn(f"Under-complete Basis for n={nin}, l={lin}. Theory: {n_expected}, Found: {len(independent_labs_final)}. RankEff: {rank_eff}")
+
+    return independent_labs_final
+    
+    
+    
+    
+    
+    
+    
+    
+# -------------------------------- LEGACY CODE --------------------------------
+
 from fitsnap3lib.lib.sym_ACE.inter_set import *
 from fitsnap3lib.lib.sym_ACE.symmetric_grp_manip import *
-
-
-
-
 
 def get_highest_coupling_representation(lp,lref):
     rank = len(lp)
@@ -568,3 +1100,4 @@ print ('raw PA-RPI',nus)
 print ('lammps ready PA-RPI',lammps_ready)
 print ('not compatible with lammps (PA-RPI with a nu vector that cannot be reused)',not_compatible)
 """
+
