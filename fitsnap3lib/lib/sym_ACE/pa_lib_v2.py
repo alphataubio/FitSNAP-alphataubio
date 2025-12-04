@@ -1,95 +1,63 @@
 import numpy as np
 import multiprocessing
 from sympy.physics.wigner import wigner_3j
-from itertools import product
+from itertools import product, permutations
 import warnings
 import os
 import pickle
-from collections import Counter
+from collections import Counter, defaultdict
+from functools import partial
 
 # ---------------------------------------------------------
 # PERSISTENT CACHE MANAGER
 # ---------------------------------------------------------
 
-CACHE_FILE = "wigner_cache.pkl"
+CACHE_FILE = "wigner_cache.pckl"
 
 class WignerCacheManager:
-    """
-    Manages a persistent dictionary of Wigner-3j symbols to avoid 
-    recomputing expensive exact symbolic values across runs.
-    """
     def __init__(self):
         self.cache = {}
         self.new_entries = {}
-        self.loaded = False
 
     def load(self):
         if os.path.exists(CACHE_FILE):
             try:
                 with open(CACHE_FILE, "rb") as f:
                     self.cache = pickle.load(f)
-                # print(f"Loaded {len(self.cache)} Wigner-3j symbols from {CACHE_FILE}")
             except (EOFError, pickle.UnpicklingError):
-                print("Cache corrupted or empty, starting fresh.")
                 self.cache = {}
-        self.loaded = True
 
     def save(self):
-        if not self.new_entries:
-            return
-        
-        # Merge new entries into main cache
+        if not self.new_entries: return
         self.cache.update(self.new_entries)
-        
         try:
             with open(CACHE_FILE, "wb") as f:
                 pickle.dump(self.cache, f)
-            print(f"Saved {len(self.cache)} Wigner-3j symbols to {CACHE_FILE}")
-        except Exception as e:
-            print(f"Warning: Could not save Wigner cache: {e}")
+        except Exception: pass
 
 # ---------------------------------------------------------
-# EXACT WIGNER CALCULATION (DOUBLE PRECISION)
+# EXACT WIGNER CALCULATION
 # ---------------------------------------------------------
 
 def get_exact_w3j(j1, j2, j3, m1, m2, m3, cache=None):
-    """
-    Computes exact Wigner-3j symbol using SymPy and casts to np.float64.
-    """
     key = (j1, j2, j3, m1, m2, m3)
+    if cache is not None and key in cache: return cache[key]
     
-    # Check Cache
-    if cache is not None:
-        if key in cache:
-            return cache[key]
-    
-    # Compute Exact
     try:
-        # SymPy calculation is exact (rational/sqrt)
-        val_sym = wigner_3j(j1, j2, j3, m1, m2, m3)
-        # Convert to 64-bit Double Precision
-        val = np.float64(val_sym)
+        val = np.float64(wigner_3j(j1, j2, j3, m1, m2, m3))
     except Exception:
         val = np.float64(0.0)
 
-    # Store in cache
-    if cache is not None:
-        cache[key] = val
-        
+    if cache is not None: cache[key] = val
     return val
 
 def calculate_generalized_wigner_exact(l_leaves, l_inters, m_config, local_cache):
-    """
-    Calculates Generalized Wigner Symbol using Exact 3j kernels.
-    Returns np.float64.
-    """
     val = np.float64(1.0)
     current_L = list(l_leaves)
     current_m = list(m_config)
     inters_queue = list(l_inters)
     
-    # Global selection rule check
-    if sum(current_m) != 0: return np.float64(0.0)
+    if abs(sum(current_m)) > 1e-9: return np.float64(0.0)
 
     while len(current_L) > 1:
         new_L = []
@@ -107,15 +75,10 @@ def calculate_generalized_wigner_exact(l_leaves, l_inters, m_config, local_cache
                      L_res = inters_queue.pop(0)
                 
                 M_res = m1 + m2
-                
-                # Strict Triangle Inequality
                 if not (abs(l1 - l2) <= L_res <= l1 + l2): return np.float64(0.0)
                 if abs(m1) > l1 or abs(m2) > l2 or abs(M_res) > L_res: return np.float64(0.0)
 
-                # EXACT CALL with Caching
                 w3j = get_exact_w3j(l1, l2, L_res, m1, m2, -M_res, local_cache)
-                
-                # Use double precision tolerance
                 if abs(w3j) < 1e-15: return np.float64(0.0)
                 val *= w3j
                 
@@ -131,56 +94,215 @@ def calculate_generalized_wigner_exact(l_leaves, l_inters, m_config, local_cache
     return val
 
 # ---------------------------------------------------------
-# DETERMINISTIC WALKER & UTILS
+# ITERATIVE TRELLIS & PERMUTATIONS
 # ---------------------------------------------------------
 
-def generate_valid_m_states(l_leaves):
+def _trellis_worker_iterative(prefix, l_leaves):
     rank = len(l_leaves)
-    if rank == 0: yield []; return
-    bounds = [list(range(-li, li + 1)) for li in l_leaves]
+    prefix_len = len(prefix)
+    prefix_sum = sum(prefix)
     
-    def backtrack(index, current_sum):
-        if index == rank - 1:
-            m_last = -current_sum
-            if abs(m_last) <= l_leaves[index]: yield (m_last,)
-            return
+    if prefix_len == rank - 1:
+        m_last = -prefix_sum
+        if abs(m_last) <= l_leaves[-1]:
+            return [prefix + (m_last,)]
+        return []
+
+    results = []
+    stack = [(prefix_len, prefix_sum, ())]
+    
+    remaining_cap = [0] * rank
+    s = 0
+    for i in range(rank - 1, -1, -1):
+        remaining_cap[i] = s
+        s += l_leaves[i]
+
+    while stack:
+        idx, curr_sum, path = stack.pop()
         
-        remaining_capacity = sum(l_leaves[index+1:])
-        for m in bounds[index]:
-            if abs(current_sum + m) <= remaining_capacity:
-                for res in backtrack(index + 1, current_sum + m):
-                    yield (m,) + res
+        if idx == rank - 1:
+            m_last = -curr_sum
+            if abs(m_last) <= l_leaves[idx]:
+                results.append(prefix + path + (m_last,))
+            continue
+            
+        cap = remaining_cap[idx]
+        limit = l_leaves[idx]
+        min_m = max(-limit, -cap - curr_sum)
+        max_m = min(limit, cap - curr_sum)
+        
+        for m in range(min_m, max_m + 1):
+            stack.append((idx + 1, curr_sum + m, path + (m,)))
+            
+    return results
 
-    for res in backtrack(0, 0):
-        yield res
+def generate_valid_m_states_parallel(l_leaves, n_cores):
+    rank = len(l_leaves)
+    if rank == 0: return [()]
+    
+    target_tasks = n_cores * 16 # Increased for better saturation
+    prefixes = [()]
+    
+    remaining_cap = [0] * rank
+    s = 0
+    for i in range(rank - 1, -1, -1):
+        remaining_cap[i] = s
+        s += l_leaves[i]
 
-def parse_label_to_tree(label, rank):
+    depth = 0
+    while len(prefixes) < target_tasks and depth < rank - 1:
+        new_prefixes = []
+        for p in prefixes:
+            curr_sum = sum(p)
+            idx = len(p)
+            cap = remaining_cap[idx]
+            limit = l_leaves[idx]
+            min_m = max(-limit, -cap - curr_sum)
+            max_m = min(limit, cap - curr_sum)
+            for m in range(min_m, max_m + 1):
+                new_prefixes.append(p + (m,))
+        prefixes = new_prefixes
+        depth += 1
+        
+    pool = multiprocessing.Pool(processes=n_cores)
+    try:
+        worker_func = partial(_trellis_worker_iterative, l_leaves=l_leaves)
+        results_lists = pool.map(worker_func, prefixes)
+        full_paths = []
+        for lst in results_lists:
+            full_paths.extend(lst)
+    finally:
+        pool.close()
+        pool.join()
+        
+    return full_paths
+
+def get_constrained_permutations(ref_full, curr_full):
+    """
+    Returns valid permutation indices mapping ref -> curr.
+    Items are only swappable if (mu, n, l) ALL match.
+    
+    ref_full: list of (n, l) tuples [canonical]
+    curr_full: list of (n, l) tuples [current label]
+    """
+    if len(ref_full) != len(curr_full): return []
+
+    # Bucket indices by full property tuple (n, l)
+    ref_indices = defaultdict(list)
+    for i, prop in enumerate(ref_full):
+        ref_indices[prop].append(i)
+        
+    curr_indices = defaultdict(list)
+    for i, prop in enumerate(curr_full):
+        curr_indices[prop].append(i)
+        
+    if ref_indices.keys() != curr_indices.keys():
+        return []
+
+    # Generate per-bucket permutations
+    per_bucket_perms = []
+    for prop, c_idxs in curr_indices.items():
+        r_idxs = ref_indices[prop]
+        bucket_maps = []
+        for p in permutations(r_idxs):
+            # mapping[curr_idx] = ref_idx
+            mapping = {c: r for c, r in zip(c_idxs, p)}
+            bucket_maps.append(mapping)
+        per_bucket_perms.append(bucket_maps)
+        
+    all_maps = []
+    for combined in product(*per_bucket_perms):
+        full_map = {}
+        for m in combined: full_map.update(m)
+        indices = [full_map[k] for k in range(len(curr_full))]
+        all_maps.append(indices)
+        
+    return all_maps
+
+# ---------------------------------------------------------
+# WORKER PROCESS
+# ---------------------------------------------------------
+
+def worker_process_exact(chunk_labels, rank, m_configs, ref_full_sorted, initial_cache):
+    local_cache = initial_cache.copy()
+    initial_keys = set(local_cache.keys())
+    results = []
+    
+    for label in chunk_labels:
+        n_leaves, l_leaves, l_inters = parse_label_full(label, rank)
+        curr_full = list(zip(n_leaves, l_leaves))
+        
+        # Only swap indistinguishable atoms (same n, l)
+        perm_maps = get_constrained_permutations(ref_full_sorted, curr_full)
+        if not perm_maps: continue
+
+        w_vec = []
+        is_zero_vec = True
+        
+        for m_ref in m_configs:
+            val = np.float64(0.0)
+            
+            # Sum Wigner coefficients over valid permutations
+            # (Projecting onto Symmetrized Basis)
+            for indices in perm_maps:
+                m_curr = [m_ref[i] for i in indices]
+                w = calculate_generalized_wigner_exact(l_leaves, l_inters, m_curr, local_cache)
+                val += w
+            
+            w_vec.append(val)
+            if abs(val) > 1e-15: is_zero_vec = False
+            
+        if not is_zero_vec:
+            vec = np.array(w_vec, dtype=np.float64)
+            norm = np.linalg.norm(vec)
+            if norm > 1e-15:
+                results.append((label, vec / norm))
+    
+    new_entries = {k: v for k, v in local_cache.items() if k not in initial_keys}
+    return results, new_entries
+
+# ---------------------------------------------------------
+# UTILS & THEORY
+# ---------------------------------------------------------
+
+def parse_label_full(label, rank):
+    """
+    Parses full (mu, n, l, L) structure.
+    Label format: mu0_mu1...muk,n1...nk,l1...lk_L1...Lk
+    """
     parts = label.split('_')
     integers_block = parts[1].split(',')
-    l_leaves = [int(x) for x in integers_block[-rank:]]
+    
+    # Assuming integers_block has 3*rank elements: mu, n, l
+    # If 2*rank: n, l
+    
+    total_ints = len(integers_block)
+    
+    if total_ints == 2 * rank:
+        n_leaves = [int(x) for x in integers_block[:rank]]
+        l_leaves = [int(x) for x in integers_block[rank:]]
+    elif total_ints == 3 * rank:
+        # mu = integers_block[:rank]
+        n_leaves = [int(x) for x in integers_block[rank:2*rank]]
+        l_leaves = [int(x) for x in integers_block[2*rank:]]
+    else:
+        # Fallback/Unknown format, assume l is last
+        l_leaves = [int(x) for x in integers_block[-rank:]]
+        n_leaves = [0] * rank # Dummy
+
     l_inters = []
     if len(parts) > 2:
-        inters_str = parts[-1].split('-')
-        try: l_inters = [int(x) for x in inters_str]
+        try: l_inters = [int(x) for x in parts[-1].split('-')]
         except ValueError: l_inters = []
     if len(l_inters) > rank - 2: l_inters = l_inters[:rank-2]
-    return l_leaves, l_inters
+    
+    return n_leaves, l_leaves, l_inters
 
-def get_permutation_map(l_ref, l_curr):
-    if tuple(l_ref) == tuple(l_curr): return list(range(len(l_ref)))
-    indices = [None] * len(l_ref)
-    used = [False] * len(l_ref)
-    for k, val in enumerate(l_curr):
-        found = False
-        for i, ref_val in enumerate(l_ref):
-            if ref_val == val and not used[i]:
-                indices[k] = i; used[i] = True; found = True; break
-        if not found: return list(range(len(l_ref))) 
-    return indices
+def parse_label_to_tree(label, rank):
+    # Wrapper for legacy calls (only needing l)
+    _, l, inters = parse_label_full(label, rank)
+    return l, inters
 
-# ---------------------------------------------------------
-# THEORY ORACLE
-# ---------------------------------------------------------
 class CharacterIntegration:
     @staticmethod
     def chi_l(l, theta):
@@ -214,53 +336,11 @@ class CharacterIntegration:
         return int(round(integral / np.pi))
 
 # ---------------------------------------------------------
-# WORKER
-# ---------------------------------------------------------
-
-def worker_process_exact(chunk_labels, rank, m_configs, ref_l_sorted, initial_cache):
-    """
-    Computes exact Wigner vectors using double precision.
-    Returns: (list_of_results, new_cache_entries)
-    """
-    local_cache = initial_cache.copy()
-    initial_keys = set(local_cache.keys())
-    
-    results = []
-    
-    for label in chunk_labels:
-        l_leaves, l_inters = parse_label_to_tree(label, rank)
-        
-        try:
-            perm_indices = get_permutation_map(ref_l_sorted, l_leaves)
-        except ValueError:
-            continue
-
-        w_vec = []
-        is_zero_vec = True
-        
-        for m_ref in m_configs:
-            m_curr = [m_ref[i] for i in perm_indices]
-            val = calculate_generalized_wigner_exact(l_leaves, l_inters, m_curr, local_cache)
-            w_vec.append(val)
-            if abs(val) > 1e-15: is_zero_vec = False
-            
-        if not is_zero_vec:
-            vec = np.array(w_vec, dtype=np.float64) # Force Double
-            norm = np.linalg.norm(vec)
-            if norm > 1e-15:
-                results.append((label, vec / norm))
-    
-    new_entries = {k: v for k, v in local_cache.items() if k not in initial_keys}
-    
-    return results, new_entries
-
-# ---------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------
 
 def apply_ladder_relationships(lin, nin, combined_labs, parity_span, parity_span_labs, full_span, L_R=0):
     
-    # 1. Theoretical Count
     n_expected = CharacterIntegration.count_invariants(lin, nin)
     if n_expected == 0 or not combined_labs: return []
 
@@ -270,25 +350,37 @@ def apply_ladder_relationships(lin, nin, combined_labs, parity_span, parity_span
     rank = len(lin)
     
     # 2. Setup Vector Space
-    ref_l, _ = parse_label_to_tree(combined_labs[0], rank)
-    ref_l_sorted = sorted(ref_l)
-    m_configs = list(generate_valid_m_states(ref_l_sorted))
+    # Use first label to define canonical space.
+    # Note: Ref must capture n and l to define distinguishable particles
+    ref_n, ref_l, _ = parse_label_full(combined_labs[0], rank)
+    
+    # Sort the reference so we have a canonical "Identity" state
+    # Sort key: (n, l)
+    combined = sorted(list(zip(ref_n, ref_l)))
+    ref_n_sorted = [x[0] for x in combined]
+    ref_l_sorted = [x[1] for x in combined]
+    ref_full_sorted = list(zip(ref_n_sorted, ref_l_sorted))
+    
+    # Generate m-basis for the sorted l-vector
+    n_cores = multiprocessing.cpu_count()
+    m_configs = generate_valid_m_states_parallel(ref_l_sorted, n_cores)
+    
     if not m_configs: return []
 
-    # 3. Cache Management
+    # 3. Cache
     cache_manager = WignerCacheManager()
     cache_manager.load()
 
-    # 4. Parallel Execution
-    n_cores = multiprocessing.cpu_count()
-    chunk_size = max(1, len(combined_labs) // n_cores)
+    # 4. Parallel Wigner Calculation
+    chunk_size = max(1, len(combined_labs) // (n_cores * 4))
     chunks = [combined_labs[i:i + chunk_size] for i in range(0, len(combined_labs), chunk_size)]
     
     valid_candidates = []
     
     with multiprocessing.Pool(processes=n_cores) as pool:
+        # Pass ref_full_sorted so workers know which atoms are distinguishable
         results = pool.starmap(worker_process_exact, 
-                               [(chunk, rank, m_configs, ref_l_sorted, cache_manager.cache) 
+                               [(chunk, rank, m_configs, ref_full_sorted, cache_manager.cache) 
                                 for chunk in chunks])
         
         for sub_res, sub_cache in results:
@@ -297,7 +389,7 @@ def apply_ladder_relationships(lin, nin, combined_labs, parity_span, parity_span
 
     cache_manager.save()
 
-    # 5. Orthogonalization (QR with Double Precision)
+    # 5. Orthogonalization
     independent_labs = []
     basis_matrix = [] 
     
@@ -309,16 +401,16 @@ def apply_ladder_relationships(lin, nin, combined_labs, parity_span, parity_span
             independent_labs.append(label)
         else:
             vec_ortho = w_vec.copy()
-            B = np.array(basis_matrix, dtype=np.float64) # Force Double
-            
-            # Vectorized projection
+            B = np.array(basis_matrix, dtype=np.float64)
             projections = np.dot(B, vec_ortho)
             vec_ortho -= np.dot(projections, B)
             
+            projections_2 = np.dot(B, vec_ortho)
+            vec_ortho -= np.dot(projections_2, B)
+            
             ortho_norm = np.linalg.norm(vec_ortho)
             
-            # Tighter tolerance for Exact Inputs
-            if ortho_norm > 1e-14:
+            if ortho_norm > 1e-13:
                 basis_matrix.append(vec_ortho / ortho_norm)
                 independent_labs.append(label)
 
