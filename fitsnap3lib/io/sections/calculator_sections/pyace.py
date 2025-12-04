@@ -3,7 +3,7 @@ import json
 import itertools
 from fitsnap3lib.io.sections.sections import Section
 import numpy as np
-
+from collections import defaultdict
 
 # ------------------------------------------------------------------------------------------------
 
@@ -129,21 +129,29 @@ class PyAce(Section):
             self.ncoeff = sum([len(f) for f in ctilde_basis.basis_rank1]) \
                         + sum([len(f) for f in ctilde_basis.basis])
                         
-            self.pt.single_print(f"PyACE basis: numtypes {self.numtypes} ncoeff {self.ncoeff}")
+            self.pt.single_print(f"--------\nPyACE basis: numtypes {self.numtypes} ncoeff {self.ncoeff}")
             
             self.blist = [] if self.bzeroflag else [f"{t} [0]" for t in self.types]
+            functions_by_rank = defaultdict(int)
             
             for element_basis_rank1_functions in ctilde_basis.basis_rank1:
                 for function in element_basis_rank1_functions:
                     element = self.elements[function.mu0]
                     elements = " ". join([self.elements[mu] for mu in function.mus])
                     self.blist.append(f"{element} {elements} ns {function.ns} ls {function.ls}")
+                    functions_by_rank[function.rank] += 1
 
             for element_basis_functions in ctilde_basis.basis:
                 for function in element_basis_functions:
                     element = self.elements[function.mu0]
                     elements = " ". join([self.elements[mu] for mu in function.mus])
                     self.blist.append(f"{element} {elements} ns {function.ns} ls {function.ls}")
+                    functions_by_rank[function.rank] += 1
+
+            for k,v in sorted(functions_by_rank.items()):
+                self.pt.single_print(f"    Rank {k}: {v} basis functions")
+                
+            self.pt.single_print("--------\n")
 
             if 'EXTRAS' in self.sections and self.sections['EXTRAS'].debug:
                 for element_basis_rank1_functions in b_basis.basis_rank1:
