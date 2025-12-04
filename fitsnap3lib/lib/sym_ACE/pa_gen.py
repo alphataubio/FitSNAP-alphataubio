@@ -1,179 +1,115 @@
-from fitsnap3lib.lib.sym_ACE.pa_lib import *
-from fitsnap3lib.lib.sym_ACE.sym_ACE_settings import *
-import json,os
-
-def build_tabulated(rank,all_max_mu,all_max_n,all_max_l,L_R=0,M_R=0):
-
-    print(f"*** build_tabulated(\n  rank={rank},\n  all_max_mu={all_max_mu},\n  all_max_n={all_max_n},\n  all_max_l={all_max_l},\n  L_R={L_R},\n  M_R={M_R}\n)")
-
-    lmax_strs = generate_l_LR(range(0,all_max_l+1),rank,L_R=L_R,M_R=M_R,use_permutations=False)
-    lvecs = [tuple([int(k) for k in lmax_str.split(',')]) for lmax_str in lmax_strs]
-    nvecs = [i for i in itertools.combinations_with_replacement(range(0,all_max_n),rank)]
-    muvecs = [i for i in itertools.combinations_with_replacement(range(all_max_mu),rank)]
-    reduced_nvecs=get_mapped_subset(nvecs)
-    fs_labs = []
-    all_nl = []
-
-    all_PA_tabulated = []
-    PA_per_nlblock = {}
-    for nin in reduced_nvecs:
-        for lin in lvecs:
-            max_labs,all_labs,labels_per_block,original_spans = tree_labels(nin,lin)
-            combined_labs = combine_blocks(labels_per_block,lin,original_spans)
-            nl = (nin,lin)
-            lspan_perm = list(original_spans.keys())[0]
-            parity_span = [p for p in original_spans[lspan_perm] if np.sum(lspan_perm[:2] + p[2][:1]) %2 == 0 and np.sum(lspan_perm[2:4] + p[2][1:2]) %2 == 0]
-            PA_labels = apply_ladder_relationships(lin, nin, combined_labs, parity_span, parity_span_labs = max_labs, full_span=original_spans[lspan_perm])
-            mustrlst = ['%d']*rank
-            nstrlst = ['%d']*rank
-            lstrlst = ['%d']*rank
-            Lstrlst = ['%d']*(rank-2)
-            nl_simple_labs = []
-            nlstr = ','.join(nstrlst) % tuple(nin) + '_' + ','.join(lstrlst) % tuple(lin)
-            for lab in PA_labels:
-                mu0,mu,n,l,L = get_mu_n_l(lab,return_L=True)
-                if L != None:
-                    nlL = (tuple(n),tuple(l),L)
-                else:
-                    nlL = (tuple(n),tuple(l),tuple([]))
-                simple_str = ','.join(nstrlst) % tuple(n) + '_' + ','.join(lstrlst) % tuple(l) + '_' + ','.join(Lstrlst) % L
-                all_PA_tabulated.append(simple_str)
-                nl_simple_labs.append(simple_str)
-            PA_per_nlblock[nlstr] = nl_simple_labs
-
-    dct = {'labels':PA_per_nlblock}
-    with open('%s/all_labels_mu%d_n%d_l%d_r%d.json' % (lib_path,all_max_mu,all_max_n,all_max_l,rank),'w') as writejson:
-        json.dump(dct,writejson, sort_keys=False, indent=2)
 
 
-def pa_labels_raw(rank,nmax,lmax,mumax,lmin=1,L_R=0,M_R=0):
-    if rank >= 4: 
-        all_max_l = 12
-        all_max_n = 12
-        all_max_mu = 8
-        #path = f'{lib_path}/all_labels_mu{all_max_mu}_n{all_max_n}_l{all_max_l}_r{rank}.json'
-        path = f'{lib_path}/all_labels_mu{mumax}_n{nmax}_l{lmax}_r{rank}.json'
-        try:
-            with open(path,'r') as readjson:
-                data = json.load(readjson)
-        except FileNotFoundError:
-            build_tabulated(rank,mumax,nmax,lmax,L_R,M_R)
-            with open(path,'r') as readjson:
-                data = json.load(readjson)
+# GEMINI PRO 3's Simplified Direct Generation Wrapper (pa_gen.py)
+# Removed the complex serialization (build_tabulated)
+# and remapping (lammps_remap) pipelines.
+# https://github.com/FitSNAP/FitSNAP/pull/278#issuecomment-3614308257
+# [alphataubio, 2025/12]
+
+
+
+import os
+import json
+import itertools
+from fitsnap3lib.lib.sym_ACE.pa_lib import apply_ladder_relationships
+from fitsnap3lib.lib.sym_ACE.sym_ACE_settings import lib_path
+
+# Ensure the library path exists for caching
+if not os.path.exists(lib_path):
+    # Fallback to current directory if lib_path is not configured
+    lib_path = os.path.dirname(os.path.abspath(__file__))
+
+def get_cache_filename(rank, nmax, lmax, mumax):
+    """Generates a unique filename for the basis set parameters."""
+    return os.path.join(lib_path, f"basis_cache_r{rank}_n{nmax}_l{lmax}_mu{mumax}.json")
+
+def build_and_cache_basis(rank, nmax, lmax, mumax, lmin=1, L_R=0):
+    """
+    The modern 'buildtabulated'.
+    Generates the full independent basis set using the pa_lib v2 engine
+    and saves it to disk to prevent re-calculation.
+    """
+    print(f"*** Generating Basis Cache for Rank={rank}, Nmax={nmax}, Lmax={lmax}, Mumax={mumax}...")
+    
+    all_lammps_labs = []
+    
+    # Define ranges
+    # mu: 0 .. mumax-1
+    mus = range(mumax)
+    # n: 1 .. nmax
+    ns = range(1, nmax + 1)
+    # l: lmin .. lmax
+    ls = range(lmin, lmax + 1)
+    
+    # 1. Iterate over unique sorted L-vectors (Canonical Blocks)
+    # combinations_with_replacement handles the sorting and uniqueness
+    l_combs = itertools.combinations_with_replacement(ls, rank)
+    
+    for lin in l_combs:
+        # Global Parity Check: sum(l) must be even for scalar invariant
+        if sum(lin) % 2 != 0: continue
+        
+        # 2. Iterate over unique sorted n-vectors
+        n_combs = itertools.combinations_with_replacement(ns, rank)
+        
+        for nin in n_combs:
+            # 3. Iterate over unique sorted mu-vectors
+            mu_combs = itertools.combinations_with_replacement(mus, rank)
             
-        lmax_strs = generate_l_LR(range(lmin,lmax+1),rank,L_R=L_R,M_R=M_R)
-        lvecs = [tuple([int(k) for k in lmax_str.split(',')]) for lmax_str in lmax_strs]
-        #nvecs = [i for i in itertools.combinations_with_replacement(range(0,nmax),rank)]
-        muvecs = [i for i in itertools.combinations_with_replacement(range(mumax),rank)]
-        #reduced_nvecs=get_mapped_subset(nvecs)
-        """
-        try: 
-            allowed_range_l = range(lmax,all_max_l+1)
-            allowed_range_n = range(nmax,all_max_n+1)
-            allowed_range_mu = range(mumax,all_max_mu+1)
-            allowed_combs = [p for p in itertools.product(allowed_range_mu,allowed_range_n,allowed_range_l)]
-            allowed_files = ['all_labels_mu%d_n%d_l%d_r%d.json' %  (p[0],p[1],p[2],rank) for p in allowed_combs]
-            have_file = [os.path.isfile(f) for f in allowed_files]
-            for ifile,f in enumerate(allowed_files):
-                if have_file[ifile]:
-                    #with open('all_labels_n%d_l%d_r%d.json' % (nmax,lmax,rank),'r') as readjson:
-                    with open(f,'r') as readjson:
-                        data = json.load(readjson)
-                    break
-            if not any(have_file):
-                with open(allowed_files[0],'r') as readjson:
-                    data = json.load(readjson)
-        except FileNotFoundError:
-            print ('building own tabulated')
-            fs_labs = []
-            all_nl = []
-
-            all_PA_tabulated = []
-            PA_per_nlblock = {}
-            for nin in reduced_nvecs:
-                for lin in lvecs:
-                    max_labs,all_labs,labels_per_block,original_spans = tree_labels(nin,lin)
-                    combined_labs = combine_blocks(labels_per_block,lin,original_spans)
-                    nl = (nin,lin)
-                    lspan_perm = list(original_spans.keys())[0]
-                    parity_span = [p for p in original_spans[lspan_perm] if np.sum(lspan_perm[:2] + p[2][:1]) %2 == 0 and np.sum(lspan_perm[2:4] + p[2][1:2]) %2 == 0]
-                    PA_labels = apply_ladder_relationships(lin, nin, combined_labs, parity_span, parity_span_labs = max_labs, full_span=original_spans[lspan_perm])
-                    mustrlst = ['%d']*rank
-                    nstrlst = ['%d']*rank
-                    lstrlst = ['%d']*rank
-                    Lstrlst = ['%d']*(rank-2)
-                    nl_simple_labs = []
-                    nlstr = ','.join(nstrlst) % tuple(nin) + '_' + ','.join(lstrlst) % tuple(lin)
-                    for lab in PA_labels:
-                        mu0,mu,n,l,L = get_mu_n_l(lab,return_L=True)
-                        if L != None:
-                            nlL = (tuple(n),tuple(l),L)
-                        else:
-                            nlL = (tuple(n),tuple(l),tuple([]))
-                        simple_str = ','.join(nstrlst) % tuple(n) + '_' + ','.join(lstrlst) % tuple(l) + '_' + ','.join(Lstrlst) % L
-                        all_PA_tabulated.append(simple_str)
-                        nl_simple_labs.append(simple_str)
-                    PA_per_nlblock[nlstr] = nl_simple_labs
-
-            dct = {'labels':PA_per_nlblock}
-            with open('all_labels_mu%d_n%d_l%d_r%d.json' % (mumax,nmax,lmax,rank),'w') as writejson:
-                json.dump(dct,writejson, sort_keys=False, indent=2)
-            with open('all_labels_mu%d_n%d_l%d_r%d.json' % (mumax,nmax,lmax,rank),'r') as readjson:
-                data = json.load(readjson)
-        """
-        all_lammps_labs = []
-        all_not_compat = []
-        possible_mus = list(range(mumax))
-
-        lmax_strs = generate_l_LR(range(lmin,lmax+1),rank,L_R=L_R,M_R=M_R,use_permutations=False)
-        lvecs = [tuple([int(k) for k in lmax_str.split(',')]) for lmax_str in lmax_strs]
-        nvecs = [i for i in itertools.combinations_with_replacement(range(1,nmax+1),rank)]
-        nlprd = [p for p in itertools.product(nvecs,lvecs)]
-
-        for muvec in muvecs:
-            muvec = tuple(muvec)
-            #for nlblockstr in list(data['labels'].keys()):
-            #    nstr,lstr = tuple(nlblockstr.split('_'))
-            #    nvec = tuple([int(k) + 1 for k in nstr.split(',')])
-            #    lvec = tuple([int(k) for k in lstr.split(',')])
-            for nlv in nlprd:
-                nvec,lvec = nlv
-                nvec = tuple(nvec)
-                lvec = tuple(lvec)
-                #nus = from_tabulated((0,0,0,0),(1,1,1,1),(4,4,4,4),allowed_mus = possible_mus, tabulated_all = data)
-                nus = from_tabulated(muvec,nvec,lvec,allowed_mus = possible_mus, tabulated_all = data)
+            for muin in mu_combs:
                 
-                # lammps_remap() no longer needed with GEMINI PRO 3's
-                # "PA-RPI Basis with Group Theory & Wigner Algebra"
-                # https://github.com/FitSNAP/FitSNAP/pull/278#issuecomment-3608914838
-                # [alphataubio, 2025/12]
+                # Combine n and mu into a composite index for Theory Counting.
+                # Group Theory needs to know which atoms are distinguishable.
+                # Atoms are identical only if BOTH mu and n match.
+                # We encode this as composite_n = mu * 1000 + n
+                comp_n = [m * 1000 + n for m, n in zip(muin, nin)]
+                
+                # Call the SVD Engine (pa_lib_v2)
+                # It generates the candidates and selects the independent ones
+                independent_labs = apply_ladder_relationships(
+                    lin, tuple(comp_n), L_R=L_R
+                )
+                
+                all_lammps_labs.extend(independent_labs)
 
-                #lammps_ready,not_compatible = lammps_remap(nus,rank=rank,allowed_mus=possible_mus)
+    # Save to JSON Cache
+    cache_file = get_cache_filename(rank, nmax, lmax, mumax)
+    cache_data = {
+        "params": {"rank": rank, "nmax": nmax, "lmax": lmax, "mumax": mumax},
+        "labels": all_lammps_labs
+    }
+    
+    try:
+        with open(cache_file, 'w') as f:
+            json.dump(cache_data, f, indent=2)
+        print(f"*** Cached {len(all_lammps_labs)} labels to {cache_file}")
+    except IOError as e:
+        print(f"*** Warning: Could not write cache file: {e}")
 
-                lammps_ready,not_compatible = nus, []
+    return all_lammps_labs
 
-                all_lammps_labs.extend(lammps_ready)
-                all_not_compat.extend(not_compatible)
+def pa_labels_raw(rank, nmax, lmax, mumax, lmin=1, L_R=0, M_R=0):
+    """
+    Main entry point. Checks cache first, then generates if missing.
+    Returns: (list_of_labels, list_of_incompatible_labels)
+    """
+    if rank < 1: return [], []
 
-                #print ('raw PA-RPI',nus)
-                #print ('lammps ready PA-RPI',lammps_ready)
-                #print ('not compatible with lammps (PA-RPI with a nu vector that cannot be reused)',not_compatible)
-    elif rank < 4:
-        # no symmetry reduction required for rank <= 3
-        # use typical lexicographical ordering for such cases
-        labels = generate_nl(rank,nmax,lmax,mumax=mumax,lmin=lmin,L_R=L_R,M_R=M_R,all_perms=False)
-        all_lammps_labs = labels
-        all_not_compat = []
+    cache_file = get_cache_filename(rank, nmax, lmax, mumax)
+    
+    # 1. Try Loading from Cache
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, 'r') as f:
+                data = json.load(f)
+                # Optional: Verify params match
+                # if data['params']['lmax'] == lmax ...
+                print(f"*** Loaded basis from cache: {cache_file}")
+                return data['labels'], []
+        except (json.JSONDecodeError, KeyError):
+            print("*** Cache corrupted, regenerating...")
 
-    return all_lammps_labs,all_not_compat
-"""
-print ('all_final')
-
-PA_lammps, not_compat = pa_labels_raw(rank=4,nmax=2,lmax=2,mumax=1,lmin=1)
-for lab in PA_lammps:
-    print (lab)
-
-print('not compat',not_compat)
-
-print (len(PA_lammps),len(not_compat))
-"""
+    # 2. Cache Miss: Generate and Save
+    labels = build_and_cache_basis(rank, nmax, lmax, mumax, lmin, L_R)
+    
+    return labels, []

@@ -46,7 +46,7 @@ class BasisGenerator:
                 yield []
             return
 
-        # Pairwise coupling of current layer
+        # Pairwise coupling of current layer (Standard ACE Topology)
         pairs_to_couple = []
         pass_through = []
         
@@ -74,6 +74,7 @@ class BasisGenerator:
         rank = len(lin)
         if muin is None: muin = tuple([0] * rank)
 
+        # Generate unique permutations of the (mu, n, l) atoms
         atoms = sorted(list(zip(muin, nin, lin)))
         unique_perms = sorted(list(set(permutations(atoms))))
         
@@ -85,10 +86,13 @@ class BasisGenerator:
             valid_L_tuples = list(BasisGenerator.generate_valid_intermediates_recursive(p_l, L_R))
             
             for L_tuple in valid_L_tuples:
-                # FIX: Slice to rank-2 to remove Root node and match Fitsnap convention
-                # Rank 5 -> 3 intermediates. Tuple has 4. Slice [:3].
-                L_clean = L_tuple[:rank-2]
-                
+                # Slice to rank-2 to remove Root node and match Fitsnap string convention
+                # e.g. Rank 5 has 3 intermediates (L1, L2, L3) + Root. We want L1-L2-L3.
+                if len(L_tuple) > rank - 2:
+                    L_clean = L_tuple[:rank-2]
+                else:
+                    L_clean = L_tuple
+
                 L_str = "-".join(map(str, L_clean))
                 
                 # Combine integers: mu, n, l
@@ -102,64 +106,62 @@ class BasisGenerator:
         return sorted(list(set(labels)))
 
 # =========================================================
-# SECTION 2: LEGACY HELPERS (Required by pa_gen.py)
+# SECTION 2: PARSING HELPERS
 # =========================================================
 
-def get_mu_nu_rank(nu_in):
-    if len(nu_in.split('_')) > 1:
-        nu = nu_in.split('_')[1]
-        nu_splt = nu.split(',')
-        return int(len(nu_splt)/3)
+def parse_label_full(label, rank):
+    """Parses label string into vectors."""
+    parts = label.split('_')
+    integers_block = parts[1].split(',')
+    total_ints = len(integers_block)
+    
+    if total_ints == 3 * rank:
+        mu_leaves = [int(x) for x in integers_block[:rank]]
+        n_leaves = [int(x) for x in integers_block[rank:2*rank]]
+        l_leaves = [int(x) for x in integers_block[2*rank:]]
+    elif total_ints == 2 * rank:
+        mu_leaves = [0] * rank
+        n_leaves = [int(x) for x in integers_block[:rank]]
+        l_leaves = [int(x) for x in integers_block[rank:]]
     else:
-        nu = nu_in
-        nu_splt = nu.split(',')
-        return int(len(nu_splt)/2)
+        # Fallback
+        l_leaves = [int(x) for x in integers_block[-rank:]]
+        n_leaves = [0] * rank
+        mu_leaves = [0] * rank
 
-def get_mu_n_l(nu_in, return_L = False, **kwargs):
-    """
-    Legacy parser for label strings. Restored for compatibility.
-    """
-    rank = get_mu_nu_rank(nu_in)
-    if len(nu_in.split('_')) > 1:
-        if len(nu_in.split('_')) == 2:
-            nu = nu_in.split('_')[-1]
-            Lstr = ''
+    l_inters = []
+    if len(parts) > 2 and parts[-1]:
+        try: l_inters = [int(x) for x in parts[-1].split('-')]
+        except ValueError: l_inters = []
+    
+    return mu_leaves, n_leaves, l_leaves, l_inters
+
+def parse_label_to_tree(label, rank):
+    _, _, l, inters = parse_label_full(label, rank)
+    return l, inters
+
+def get_mu_n_l(nu_in, return_L=False, **kwargs):
+    """Legacy Helper for backward compatibility."""
+    try:
+        if len(nu_in.split('_')) > 1:
+            integers = nu_in.split('_')[1].split(',')
+            if len(integers) % 3 == 0: rank = len(integers)//3
+            elif len(integers) % 2 == 0: rank = len(integers)//2
+            else: rank = len(integers) 
         else:
-            nu = nu_in.split('_')[1]
-            Lstr = nu_in.split('_')[-1]
-        mu0 = int(nu_in.split('_')[0])
-        nusplt = [int(k) for k in nu.split(',')]
-        mu = nusplt[:rank]
-        n = nusplt[rank:2*rank]
-        l = nusplt[2*rank:]
+            rank = len(nu_in.split(',')) // 2
         
-        if len(Lstr) >= 1:
-            # Handle empty L strings gracefully
-            try:
-                L = tuple([int(k) for k in Lstr.split('-')])
-            except ValueError:
-                L = tuple()
-        else:
-            L = tuple()
-            
+        mu, n, l, L = parse_label_full(nu_in, rank)
+        mu0 = int(nu_in.split('_')[0])
+        
         if return_L:
-            return mu0 , mu , n , l , L
-        else:
-            return mu0 , mu , n , l
-    else:
-        # Fallback for deprecated formats
-        nu = nu_in
-        mu0 = 0
-        mu = [0]*rank
-        nusplt = [int(k) for k in nu.split(',')]
-        n = nusplt[:rank]
-        l = nusplt[rank:2*rank]
-        if return_L:
-            return mu0, mu, n, l, tuple()
-        return mu0,mu,n,l
+            return mu0, tuple(mu), tuple(n), tuple(l), tuple(L)
+        return mu0, tuple(mu), tuple(n), tuple(l)
+    except Exception:
+        return 0, (), (), ()
 
 # =========================================================
-# SECTION 3: CORE ALGORITHM (Theory & Wigner)
+# SECTION 3: WIGNER & THEORY CORE
 # =========================================================
 
 CACHE_FILE = f'{lib_path}/wigner_cache.pckl'
@@ -332,43 +334,6 @@ def get_constrained_permutations(ref_full, curr_full):
         all_maps.append(indices)
     return all_maps
 
-def parse_label_full(label, rank):
-    parts = label.split('_')
-    integers_block = parts[1].split(',')
-    total_ints = len(integers_block)
-    
-    # Heuristic for label format
-    if total_ints == 3 * rank:
-        mu_leaves = [int(x) for x in integers_block[:rank]]
-        n_leaves = [int(x) for x in integers_block[rank:2*rank]]
-        l_leaves = [int(x) for x in integers_block[2*rank:]]
-    elif total_ints == 2 * rank:
-        mu_leaves = [0] * rank
-        n_leaves = [int(x) for x in integers_block[:rank]]
-        l_leaves = [int(x) for x in integers_block[rank:]]
-    else:
-        l_leaves = [int(x) for x in integers_block[-rank:]]
-        n_leaves = [0] * rank
-        mu_leaves = [0] * rank
-
-    l_inters = []
-    if len(parts) > 2:
-        try: l_inters = [int(x) for x in parts[-1].split('-')]
-        except ValueError: l_inters = []
-    
-    # Ensure intermediate list matches what BasisGenerator produces 
-    # and what calculate_generalized_wigner expects.
-    # Wigner calculator consumes intermediates for N-2 steps.
-    # Rank 5 -> 3 steps.
-    # Fitsnap label usually has Rank-2 intermediates (e.g. 3).
-    # If list has more, slice it.
-    if len(l_inters) > rank - 2: l_inters = l_inters[:rank-2]
-    return mu_leaves, n_leaves, l_leaves, l_inters
-
-def parse_label_to_tree(label, rank):
-    _, _, l, inters = parse_label_full(label, rank)
-    return l, inters
-
 class CharacterIntegration:
     @staticmethod
     def chi_l(l, theta):
@@ -407,7 +372,7 @@ def worker_process_exact(chunk_labels, rank, m_configs, ref_full_sorted, initial
     results = []
     for label in chunk_labels:
         mu_leaves, n_leaves, l_leaves, l_inters = parse_label_full(label, rank)
-        curr_full = list(zip(n_leaves, l_leaves)) # Permutation based on (n,l) identity only
+        curr_full = list(zip(mu_leaves, n_leaves, l_leaves))
         
         perm_maps = get_constrained_permutations(ref_full_sorted, curr_full)
         if not perm_maps: continue
@@ -416,6 +381,7 @@ def worker_process_exact(chunk_labels, rank, m_configs, ref_full_sorted, initial
         is_zero_vec = True
         for m_ref in m_configs:
             val = np.float64(0.0)
+            # Symmetrize over indistinguishable permutations
             for indices in perm_maps:
                 m_curr = [m_ref[i] for i in indices]
                 w = calculate_generalized_wigner_exact(l_leaves, l_inters, m_curr, local_cache)
@@ -436,33 +402,46 @@ def worker_process_exact(chunk_labels, rank, m_configs, ref_full_sorted, initial
 # =========================================================
 
 def apply_ladder_relationships(lin, nin, combined_labs_legacy=None, parity_span=None, parity_span_labs=None, full_span=None, L_R=0):
+    """
+    Main entry point. Generates canonical labels locally to ensure completeness.
+    Accepts composite 'nin' (mu*1000+n) or simple 'nin' (if mu=0).
+    """
     
+    # 1. Recover mu/n from potentially composite input
+    real_n = []
+    real_mu = []
+    for x in nin:
+        if x >= 1000:
+            real_mu.append(x // 1000)
+            real_n.append(x % 1000)
+        else:
+            real_mu.append(0)
+            real_n.append(x)
+            
+    # 2. Theory Count (using composite logic)
     n_expected = CharacterIntegration.count_invariants(lin, nin)
     if n_expected == 0: return []
 
+    # Optimization: Distinct pairs
     pairs = list(zip(nin, lin))
-    # Optimization: Distinct pairs (assuming full basis generation)
-    # But since we are regenerating labels, we must run generation.
-    # We can skip SVD if distinct.
     distinct_mode = (len(set(pairs)) == len(pairs))
 
     rank = len(lin)
     
-    # 1. GENERATE COMPLETE CANDIDATE SET (Over-Complete)
-    combined_labs = BasisGenerator.get_canonical_labels(nin, lin, L_R=L_R)
+    # 3. GENERATE COMPLETE CANDIDATE SET (Over-Complete)
+    # We ignore legacy inputs and generate from scratch
+    combined_labs = BasisGenerator.get_canonical_labels(tuple(real_n), lin, tuple(real_mu), L_R=L_R)
     
     if len(combined_labs) == 0: return []
     
     if distinct_mode:
-        # If all atoms distinct, no ladder relationships exist. Return all valid trees.
         return combined_labs
 
-    # 2. SETUP VECTOR SPACE
+    # 4. SETUP VECTOR SPACE
     ref_mu, ref_n, ref_l, _ = parse_label_full(combined_labs[0], rank)
     combined = sorted(list(zip(ref_mu, ref_n, ref_l)))
-    ref_n_sorted = [x[1] for x in combined]
+    ref_full_sorted = list(zip([x[0] for x in combined], [x[1] for x in combined], [x[2] for x in combined]))
     ref_l_sorted = [x[2] for x in combined]
-    ref_full_sorted = list(zip(ref_n_sorted, ref_l_sorted))
     
     n_cores = multiprocessing.cpu_count()
     m_configs = generate_valid_m_states_parallel(ref_l_sorted, n_cores)
@@ -488,23 +467,25 @@ def apply_ladder_relationships(lin, nin, combined_labs_legacy=None, parity_span=
         if n_expected > 0: warnings.warn(f"All vectors zero for block n={nin}, l={lin}")
         return []
 
-    # 3. ROBUST SVD SELECTION
+    # 5. ROBUST SVD/QR SELECTION
     labels = [x[0] for x in valid_candidates]
     A = np.column_stack([x[1] for x in valid_candidates])
     
+    # Adaptive Tolerance based on Max Singular Value
     try:
-        U, S, Vt = scipy.linalg.svd(A, full_matrices=False, lapack_driver='gesvd')
-    except Exception:
         U, S, Vt = scipy.linalg.svd(A, full_matrices=False)
+        max_sv = S[0]
+        tolerance = max(1e-14, max_sv * 1e-12)
+        rank_eff = np.sum(S > tolerance)
+    except Exception:
+        # Fallback if SVD fails (rare)
+        rank_eff = min(A.shape)
+        tolerance = 1e-13
 
-    max_sv = S[0]
-    tolerance = max(1e-14, max_sv * 1e-12)
-    rank_eff = np.sum(S > tolerance)
-    
+    # Order-Preserving Gram-Schmidt (Double Pass)
     independent_labs_final = []
     basis_matrix = []
     
-    # Order-Preserving Gram-Schmidt
     for i, label in enumerate(labels):
         if len(independent_labs_final) == rank_eff: break
         vec = A[:, i]
@@ -517,6 +498,7 @@ def apply_ladder_relationships(lin, nin, combined_labs_legacy=None, parity_span=
             for _ in range(2):
                 projections = np.dot(B, vec_ortho)
                 vec_ortho -= np.dot(projections, B)
+            
             if np.linalg.norm(vec_ortho) > tolerance:
                 basis_matrix.append(vec_ortho / np.linalg.norm(vec_ortho))
                 independent_labs_final.append(label)
@@ -525,14 +507,14 @@ def apply_ladder_relationships(lin, nin, combined_labs_legacy=None, parity_span=
         warnings.warn(f"Under-complete Basis for n={nin}, l={lin}. Theory: {n_expected}, Found: {len(independent_labs_final)}. RankEff: {rank_eff}")
 
     return independent_labs_final
-    
-    
-    
-    
-    
-    
-    
-    
+
+
+
+
+
+
+
+
 # -------------------------------- LEGACY CODE --------------------------------
 
 from fitsnap3lib.lib.sym_ACE.inter_set import *

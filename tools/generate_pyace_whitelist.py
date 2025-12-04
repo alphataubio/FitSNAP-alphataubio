@@ -28,10 +28,13 @@ def whitelist_for_rank(rank):
     lmax_by_rank =  [0, 1,2,3,4,5]
     lmax = lmax_by_rank[rank-1]
     
+    print("*** ok 1a")
     PA_lammps, not_compat = pa_labels_raw(rank=rank,nmax=rank,lmax=lmax,mumax=2,lmin=0)
+    print("*** ok 1b")
+
     valid_ls_LS = defaultdict(list)
     print(not_compat)
-    for label in sorted(PA_lammps):
+    for label in PA_lammps:
         mu0 = int(label.split('_')[0])
         if mu0 == 0:
             tmp = [int(v) for v in re.split(r'[_ ,-]', label) if v.isdigit()]
@@ -41,9 +44,14 @@ def whitelist_for_rank(rank):
             else:
                 ls_LS = (tmp[2*rank+1:], [])
             if ls_LS not in valid_ls_LS[key]: valid_ls_LS[key].append(ls_LS)
+            
+    print("*** ok 1c")
+
 
     for k,v in sorted(valid_ls_LS.items()): print(f"*** {k}\t|{len(v)}|\tmax {max(v)}")
     
+    print("*** ok 1d")
+
     return sorted(valid_ls_LS.items())
     
 
@@ -61,9 +69,11 @@ def main():
     print("GENERATE PYACE WHITELIST")
     print("="*80)
     
-    for rank in range(1, 7):
+    for rank in range(1, 5):
         rank_wl = whitelist_for_rank(rank)
         whitelist.update(rank_wl)
+        print("*** ok 2")
+
     
     print(f"\n{'='*80}")
     print(f"Total whitelist entries: {len(whitelist)}")
