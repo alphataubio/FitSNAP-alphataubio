@@ -26,7 +26,7 @@ class Outfile(Section):
     def _outfile(self):
         self.metric_file = self.check_path(self.get_value("OUTFILE", "metrics", "fitsnap_metrics"))
         self.potential_name = self.check_path(self.get_value("OUTFILE", "potential", "fitsnap_potential"))
-        self.validation = self.get_value("OUTFILE", "validation", None)
+        self.validation = self.get_value("OUTFILE", "validation", 1)
         
         if self.validation and self.pt._rank == 0:
             from adios2 import Stream
