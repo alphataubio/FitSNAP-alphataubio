@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 
+from fitsnap3lib.lib.sym_ACE.pa_gen import *
+
 import sys, os, pickle, itertools, re
 from collections import defaultdict
-
-from fitsnap3lib.lib.sym_ACE.pa_gen import *
+from tqdm import tqdm
 
 
 def unify_to_minimized_indices(seq, shift=0):
@@ -24,10 +25,12 @@ def whitelist_for_rank(rank):
 
     #                1  2 3 4 5 6 7 8 9
     #lmax_by_rank = [0,10,6,4,2,2,1,1,1] ORIGINAL PYACE WHITELIST
-    lmax_by_rank =  [0, 1,2,3,4,5]
+    nmax_by_rank =  [1, 2,3,4,3,2,1]
+    lmax_by_rank =  [0, 1,2,3,4,5,6]
+    nmax = nmax_by_rank[rank-1]
     lmax = lmax_by_rank[rank-1]
     
-    PA_lammps, not_compat = pa_labels_raw(rank=rank,nmax=rank,lmax=lmax,mumax=2,lmin=0)
+    PA_lammps, not_compat = pa_labels_raw(rank=rank,nmax=nmax,lmax=lmax,mumax=2,lmin=0)
 
     valid_ls_LS = defaultdict(list)
     for label in PA_lammps:
@@ -58,7 +61,7 @@ def main():
     print("GENERATE PYACE WHITELIST")
     print("="*80)
     
-    for rank in range(1, 7):
+    for rank in range(1, 8):
         rank_wl = whitelist_for_rank(rank)
         whitelist.update(rank_wl)
     
