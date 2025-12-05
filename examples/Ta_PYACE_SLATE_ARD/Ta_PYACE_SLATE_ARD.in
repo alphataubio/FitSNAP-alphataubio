@@ -1,3 +1,5 @@
+
+# -----------------------------------------------------------------------------
 [PYACE]
 elements = Ta
 
@@ -15,8 +17,8 @@ bonds = {
       "dcut": 0.01,
       "rcut": 4.25,
       "core-repulsion": [0,1.275],
-      "r_in": 1.2, # rcinner
-      "delta_in": 0.01 # drcinner
+      "rcut_in": 1.2, # rcinner
+      "dcut_in": 0.01 # drcinner
     }
   }
 
@@ -25,57 +27,59 @@ bonds = {
 #lmax =  0 5 2 1
 #nmax =  22 5 3 1
 
-    # "ALL": {"lmin_by_orders": [0,0,1,1], "lmax_by_orders": [0,5,2,1], "nradmax_by_orders": [22,5,3,1]},
-
 functions = {
-    "ALL": {"lmin_by_orders": [0,0,1,1], "lmax_by_orders": [0,5,2,1], "nradmax_by_orders": [22,5,3,1]},
+    "ALL": { "nmax_by_rank": [22,5,3,1], "lmin_by_rank": [0,0,1,1], "lmax_by_rank": [0,5,2,1] }
   }
 
 bzeroflag = 0
 
+# -----------------------------------------------------------------------------
 [CALCULATOR]
 calculator = LAMMPSPYACE
 energy = 1
 force = 1
 stress = 0
 
+# -----------------------------------------------------------------------------
 [ESHIFT]
 Ta = 0.0
 
+# -----------------------------------------------------------------------------
 [SOLVER]
 solver = SLATE
 compute_testerrs = 1
 
+# -----------------------------------------------------------------------------
 [SLATE]
 method = ARD
-max_iter = 100
-directmethod = 0
+max_iter = 10
 scap = 1.e-4
 scai = 1.e-4
 logcut = 0.3
 
-# Optional: override auto-computed threshold (leave as 0 to auto-compute)
-threshold_lambda = 0
-
-
+# -----------------------------------------------------------------------------
 [SCRAPER]
 scraper = JSON
 
+# -----------------------------------------------------------------------------
 [PATH]
 dataPath = ../Ta_Linear_JCP2014/JSON
 
+# -----------------------------------------------------------------------------
 [OUTFILE]
 output_style = PACE
 metrics = Ta_PYACE_SLATE_ARD.md
 potential = Ta_PYACE_SLATE_ARD
-validation = 0
+validation = 1
 
+# -----------------------------------------------------------------------------
 [REFERENCE]
 units = metal
 atom_style = atomic
 pair_style = hybrid/overlay zero 4.25 
 pair_coeff1 = * * zero
 
+# -----------------------------------------------------------------------------
 [GROUPS]
 group_sections = name training_size testing_size eweight fweight vweight
 group_types = str float float float float float
@@ -94,6 +98,7 @@ Volume_A15    =  1.0    0.0           1.5 15. 1.E-8
 Volume_BCC    =  1.0    0.0           1.5 15. 1.E-8
 Volume_FCC    =  1.0    0.0           1.5 15. 1.E-8
 
+# -----------------------------------------------------------------------------
 [EXTRAS]
 dump_descriptors = 0
 dump_truth = 0
@@ -102,6 +107,3 @@ dump_dataframe = 0
 debug = 0
 multinode_testing = 1
 
-
-[MEMORY]
-override = 0
