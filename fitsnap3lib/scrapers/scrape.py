@@ -61,6 +61,8 @@ class Scraper:
         """
         # Reset as empty dict in case running scrape twice.
         self.files = {}
+        nconfigs = 0
+        group_names = []
 
         group_dict = {k: self.config.sections["GROUPS"].group_types[i]
                       for i, k in enumerate(self.config.sections["GROUPS"].group_sections)}
@@ -89,6 +91,7 @@ class Scraper:
         for key in self.group_table:
             bc_bool = False
             training_size = None
+            group_names.append(key)
             # TODO save user's input (fractions) to these variables, and create new variable to track "count" (makes i/o less confusing)
             # see todo and note below for more info
             if 'size' in self.group_table[key]:
@@ -164,6 +167,15 @@ class Scraper:
             self.group_table[key]['training_size'] = training_size
             self.group_table[key]['testing_size'] = testing_size
             # self.files[folder] = natsorted(self.files[folder])
+            
+            nconfigs += training_size
+            nconfigs += testing_size
+            
+        
+        self.pt.add_2_fitsnap("nconfigs", nconfigs)
+        self.pt.add_2_fitsnap("sorted_group_names", sorted(group_names))
+        
+
 
     # TODO : Fix divvy up to distribute groups evenly and based on memory
     def divvy_up_configs(self):
