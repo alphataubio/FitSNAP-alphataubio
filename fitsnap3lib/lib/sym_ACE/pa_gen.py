@@ -496,7 +496,7 @@ def pa_labels_raw(rank, nmax, lmax, mumax, lmin=1, L_R=0, M_R=0):
         try:
             with open(cache_file, 'r') as f:
                 data = json.load(f)
-                print(f"*** Loaded basis from cache: {cache_file}")
+                #print(f"*** Loaded basis from cache: {cache_file}")
                 return data['labels'], []
         except Exception:
             print("*** Cache corrupted, regenerating...")
