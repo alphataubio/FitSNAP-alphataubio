@@ -92,18 +92,23 @@ class AcePot():
             for rank in self.ranks:
                 PA_lammps, not_compat = pa_labels_raw(rank,nradmax_dict[rank],lmax_dict[rank],mumax_dict[rank],lmin_dict[rank])
                 nulst_1.append(PA_lammps)
+                # mu0 = 1,2,... duplicate same functions as mu0 from nus
+                for mu0 in range(1, len(self.elements)):
+                    nulst_1.append([nu.replace('0',str(mu0),1) for nu in PA_lammps])
         nus_unsort = [item for sublist in nulst_1 for item in sublist]
         nus = nus_unsort.copy()
         mu0s = []
         mus =[]
         ns = []
         ls = []
-        for nu in nus_unsort:
-            mu0ii,muii,nii,lii = get_mu_n_l(nu)
-            mu0s.append(mu0ii)
-            mus.append(tuple(muii))
-            ns.append(tuple(nii))
-            ls.append(tuple(lii))
+        
+        for mu0ii in range(0, len(self.elements)):
+            for nu in nus_unsort:
+                _,muii,nii,lii = get_mu_n_l(nu)
+                mu0s.append(mu0ii)
+                mus.append(tuple(muii))
+                ns.append(tuple(nii))
+                ls.append(tuple(lii))
         nus.sort(key = lambda x : mus[nus_unsort.index(x)],reverse = False)
         nus.sort(key = lambda x : ns[nus_unsort.index(x)],reverse = False)
         nus.sort(key = lambda x : ls[nus_unsort.index(x)],reverse = False)
