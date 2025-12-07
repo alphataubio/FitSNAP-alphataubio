@@ -13,17 +13,17 @@ embeddings = {
 # ChebExpCos, ChebPow, ChebLinear, SBessel
 bonds = {
     "AlAl": {"radbase": "ChebExpCos", "radparameters": [0.342],
-             "rcut": 6.832, "dcut": 0.01, "core-repulsion": [0, 0.342], "r_in": 0.625, "delta_in": 0.01},
+             "rcut": 6.832, "dcut": 0.01, "core-repulsion": [0, 0.342], "rcut_in": 0.625, "dcut_in": 0.01},
     "AlNi": {"radbase": "ChebExpCos", "radparameters": [0.318],
-             "rcut": 6.356, "dcut": 0.01, "core-repulsion": [0, 0.318], "r_in": 0.650, "delta_in": 0.01},
+             "rcut": 6.356, "dcut": 0.01, "core-repulsion": [0, 0.318], "rcut_in": 0.650, "dcut_in": 0.01},
     "NiAl": {"radbase": "ChebExpCos", "radparameters": [0.318],
-             "rcut": 6.356, "dcut": 0.01, "core-repulsion": [0, 0.318], "r_in": 0.650, "delta_in": 0.01},
+             "rcut": 6.356, "dcut": 0.01, "core-repulsion": [0, 0.318], "rcut_in": 0.650, "dcut_in": 0.01},
     "NiNi": {"radbase": "ChebExpCos", "radparameters": [0.281],
-             "rcut": 5.610, "dcut": 0.01, "core-repulsion": [0, 0.281], "r_in": 0.540, "delta_in": 0.01}
+             "rcut": 5.610, "dcut": 0.01, "core-repulsion": [0, 0.281], "rcut_in": 0.540, "dcut_in": 0.01}
   }
 
 functions = {
-    'All': { 'lmax_by_orders': [0,3,2,1], 'nradmax_by_orders': [8,3,2,1] }
+    'All': { 'nmax_by_rank': [8,3,2,1], 'lmax_by_rank': [0,3,2,1]  }
   }
   
 # -----------------------------------------------------------------------------
