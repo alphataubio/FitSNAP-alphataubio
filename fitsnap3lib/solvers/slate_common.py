@@ -228,13 +228,21 @@ class SlateCommon(Solver):
             
         
         if pt._sub_rank == 0:  # This rank is head of its node
+        
+            # Select the correct communicator (Single Node vs Multi-Node)
+            if pt._number_of_nodes > 1:
+                comm = pt._head_group_comm
+            else:
+                comm = pt.MPI.COMM_SELF
 
-            slate_ridge_augmented_qr_cython(aw, bw, m, lld, debug_flag)
+            slate_ridge_augmented_qr_cython(aw, bw, m, lld, comm, debug_flag)
 
             # Broadcast solution from Node 0 to all nodes via head ranks
             pt._head_group_comm.Bcast(bw[:n], root=0)
         
-
+        # sub ranks 1,...,N on each node wait in non-blocking "polite" barrier
+        # while sub rank 0 on each node solves in SLATE using openmp intra-node
+        # and mpi across nodes.
         pt.polite_barrier(pt._comm)
         self.fit = bw[:n]
                 

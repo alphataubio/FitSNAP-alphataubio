@@ -1,122 +1,109 @@
+import sys
+import os
+import subprocess
+import numpy as np
 from setuptools import setup, Extension
 from Cython.Build import cythonize
-import numpy as np
-import os
-import sys
-import subprocess
-import shutil
-import glob
 
-# --- MPI detection ---
-try:
-    mpicc_path = shutil.which("mpicc")
-    if mpicc_path is None:
-        raise RuntimeError
-    mpi_compile_flags = subprocess.check_output(
-        ["mpicc", "--showme:compile"]
-    ).decode().strip().split()
-    mpi_link_flags = subprocess.check_output(
-        ["mpicc", "--showme:link"]
-    ).decode().strip().split()
-    print(f"Found MPI compiler: {mpicc_path}")
-except Exception:
-    print("Warning: mpicc not found, using defaults")
-    mpi_compile_flags = []
-    mpi_link_flags = ["-lmpi"]
+# -----------------------------------------------------------------------------
+# HELPER: Find OpenMP on macOS
+# -----------------------------------------------------------------------------
+def find_libomp():
+    """
+    On macOS, OpenMP (libomp) is keg-only and not in default paths.
+    We must find it to get the 'include' directory for omp.h.
+    """
+    if sys.platform != "darwin":
+        return [], [], []
 
-mpi_include_dirs = [f[2:] for f in mpi_compile_flags if f.startswith("-I")]
-
-# --- SLATE detection (add default locations) ---
-def find_slate_dir():
-    # Candidate prefixes to probe
+    # Try standard Homebrew location first (fastest)
     candidates = [
-        os.environ.get("SLATE_DIR", ""),
-        os.path.expanduser("~/.local"),
-        "/usr/local",
-        "/usr",
-        "/opt/slate",
-        "/opt/local",                 # MacPorts
-        "/usr/local/opt/slate",       # Homebrew (Intel macOS)
-        "/opt/homebrew/opt/slate",    # Homebrew (Apple Silicon)
+        "/opt/homebrew/opt/libomp",
+        "/usr/local/opt/libomp"
     ]
+    
+    # If not found, ask brew (slower but robust)
+    for c in candidates:
+        if os.path.exists(c):
+            return [f"{c}/include"], [f"{c}/lib"], ["-lomp"]
 
-    # Best-effort Spack search if SPACK_ROOT is set
-    spack_root = os.environ.get("SPACK_ROOT")
-    if spack_root:
-        pattern = os.path.join(spack_root, "opt", "spack", "**", "include", "slate")
-        for d in glob.glob(pattern, recursive=True):
-            prefix = d[:-len("/include/slate")]
-            candidates.insert(1, prefix)  # put near front
-
-    for path in candidates:
-        if not path:
-            continue
-        if os.path.exists(os.path.join(path, "include", "slate")):
-            print(f"Found SLATE in: {path}")
-            return path
-
-    print("Warning: SLATE not found in standard locations. Set SLATE_DIR if needed.")
-    return os.path.expanduser("~/.local")
-
-slate_dir = find_slate_dir()
-
-# --- Include and library dirs ---
-include_dirs = [
-    np.get_include(),
-    os.path.join(slate_dir, "include"),
-    "/usr/include/eigen3",
-] + mpi_include_dirs
-
-library_dirs = [
-    os.path.join(slate_dir, "lib"),
-    os.path.join(slate_dir, "lib64"),
-]
-
-libraries = ["slate", "mpi"]
-
-# --- OpenMP (conditional) ---
-extra_compile_args = ["-std=c++17", "-O3"] + [
-    f for f in mpi_compile_flags if not f.startswith("-I")
-]
-extra_link_args = [f for f in mpi_link_flags if not f.startswith("-l")]
-
-is_macos = (sys.platform == "darwin")
-libomp_prefix = None
-if is_macos:
     try:
-        libomp_prefix = subprocess.check_output(["brew", "--prefix", "libomp"]).decode().strip()
-    except Exception:
-        libomp_prefix = None
+        prefix = subprocess.check_output(["brew", "--prefix", "libomp"]).decode().strip()
+        return [f"{prefix}/include"], [f"{prefix}/lib"], ["-lomp"]
+    except (OSError, subprocess.CalledProcessError):
+        # Fallback: Hope it's in a standard path or user supplied it
+        print("WARNING: Could not find libomp via Homebrew. Build might fail if omp.h is missing.")
+        return [], [], ["-lomp"]
 
-if is_macos and libomp_prefix:
-    include_dirs.append(os.path.join(libomp_prefix, "include"))
-    library_dirs.append(os.path.join(libomp_prefix, "lib"))
-    extra_compile_args += ["-Xpreprocessor", "-fopenmp"]
-    extra_link_args += ["-L" + os.path.join(libomp_prefix, "lib"), "-lomp"]
-elif is_macos and not libomp_prefix:
-    print("Note: libomp not found via Homebrew; building without OpenMP on macOS.")
+# Get OpenMP paths
+omp_includes, omp_libdirs, omp_libs = find_libomp()
+
+# Safe import for mpi4py
+try:
+    import mpi4py
+    mpi_include = mpi4py.get_include()
+except ImportError:
+    mpi_include = []
+
+# -----------------------------------------------------------------------------
+# BUILD CONFIGURATION
+# -----------------------------------------------------------------------------
+
+# Detect OS for compiler flags
+is_macos = (sys.platform == "darwin")
+
+# Compiler flags
+cxx_flags = ["-std=c++17", "-O3", "-fPIC", "-DNDEBUG"]
+link_flags = []
+
+if is_macos:
+    # Apple Clang specific OpenMP flags
+    cxx_flags += ["-Xpreprocessor", "-fopenmp"]
+    link_flags += omp_libs # adds -lomp
 else:
-    # Non-macOS: GCC/Clang with libgomp/llvm-omp
-    extra_compile_args += ["-fopenmp"]
-    extra_link_args += ["-fopenmp"]
+    # Linux (GCC)
+    cxx_flags += ["-fopenmp"]
+    link_flags += ["-fopenmp"]
 
-print(f"Libraries to link: {libraries}")
-print(f"Library directories: {library_dirs}")
-print(f"Extra compile args: {extra_compile_args}")
-print(f"Extra link args: {extra_link_args}")
-
-ext = Extension(
-    "slate_wrapper",
-    sources=["slate_wrapper.pyx", "slate.cpp"],
-    include_dirs=include_dirs,
-    library_dirs=library_dirs,
-    libraries=libraries,
-    language="c++",
-    extra_compile_args=extra_compile_args,
-    extra_link_args=extra_link_args,
-)
+extensions = [
+    Extension(
+        "slate_wrapper",
+        sources=[
+            "slate_wrapper.pyx",
+            "slate.cpp"
+        ],
+        language="c++",
+        include_dirs=[
+            ".",  # Local directory
+            np.get_include(),
+            mpi_include,
+            # Add dynamically found OpenMP include path
+            *omp_includes, 
+            # Fallbacks
+            os.path.join(os.environ.get("HOME", ""), ".local/include"),
+            "/usr/local/include",
+            "/opt/homebrew/include"
+        ],
+        library_dirs=[
+            # Add dynamically found OpenMP lib path
+            *omp_libdirs,
+            os.path.join(os.environ.get("HOME", ""), ".local/lib"),
+            os.path.join(os.environ.get("HOME", ""), ".local/lib64"),
+            "/usr/local/lib",
+            "/opt/homebrew/lib"
+        ],
+        # 'omp' usually implied by -fopenmp on Linux, but needed explicit on Mac
+        libraries=["slate", "lapack", "blas", "mpi"], 
+        extra_compile_args=cxx_flags,
+        extra_link_args=link_flags,
+    ),
+]
 
 setup(
-    ext_modules=cythonize([ext], language_level="3"),
-    zip_safe=False,
+    name="slate_solver",
+    version="0.1.0",
+    ext_modules=cythonize(
+        extensions, 
+        compiler_directives={'language_level': "3"}
+    ),
 )
