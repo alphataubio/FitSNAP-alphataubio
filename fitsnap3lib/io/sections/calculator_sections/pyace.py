@@ -192,6 +192,11 @@ class PyAce(Section):
                     self.embeddings = ast.literal_eval(embeddings)
                 except (ValueError, SyntaxError):
                     raise RuntimeError(f"Error parsing embeddings: {e}")
+                    
+        for key in self.embeddings.keys():
+            if key.lower() == 'all' and key != 'ALL':
+                self.embeddings['ALL'] = self.embeddings.pop(key)
+                break
         
     # --------------------------------------------------------------------------------------------
             
@@ -218,7 +223,11 @@ class PyAce(Section):
                     
         self.rcutfac = [b["rcut"] for b in self.bonds.values()]
         # print(f"*** self.nradmax {self.nradmax} self.lmax {self.lmax}")
-     
+        
+        for key in self.bonds.keys():
+            if key.lower() == 'all' and key != 'ALL':
+                self.bonds['ALL'] = self.bonds.pop(key)
+                break
      
     # --------------------------------------------------------------------------------------------
 
@@ -243,6 +252,10 @@ class PyAce(Section):
                 except (ValueError, SyntaxError):
                     raise RuntimeError(f"Error parsing functions: {e}")
                     
+        for key in self.functions.keys():
+            if key.lower() == 'all' and key != 'ALL':
+                self.functions['ALL'] = self.functions.pop(key)
+                break
                          
     # --------------------------------------------------------------------------------------------
     
