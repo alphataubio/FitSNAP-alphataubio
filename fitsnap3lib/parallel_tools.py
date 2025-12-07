@@ -510,6 +510,29 @@ class ParallelTools():
         if self.stubs == 0:
             self._sub_comm.Barrier()
 
+    def polite_barrier(self, comm, sleep_sec=0.01):
+        """
+        A low-CPU usage "polite barrier" for SLATE
+        https://github.com/FitSNAP/FitSNAP/pull/278#issuecomment-3620984756
+        [alphataubio, 2025/12]
+    
+        Instead of busy-waiting (burning 100% CPU polling for messages),
+        this uses a non-blocking barrier (Ibarrier) and yields the CPU 
+        with time.sleep() while waiting for completion.
+    
+        Args:
+            comm: The MPI communicator (e.g., self.pt._comm or MPI.COMM_WORLD)
+            sleep_sec: Seconds to sleep between checks (default 10ms)
+        """
+    
+        # 1. Initiate non-blocking barrier
+        req = comm.Ibarrier()
+    
+        # 2. Loop until the barrier is complete
+        while not req.Test():
+            # 3. Yield CPU to OS so other processes (like Rank 0's threads) can run
+            sleep(sleep_sec)
+
     def split_by_node(self, obj):
         if isinstance(obj, list):
             return obj[self._node_index::self._number_of_nodes]

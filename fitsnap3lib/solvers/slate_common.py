@@ -226,12 +226,16 @@ class SlateCommon(Solver):
         if self.config.debug:
             debug_flag = 1
             
-        slate_ridge_augmented_qr_cython(aw, bw, m, lld, debug_flag)
         
-        # Broadcast solution from Node 0 to all nodes via head ranks
         if pt._sub_rank == 0:  # This rank is head of its node
-            pt._head_group_comm.Bcast(bw[:n], root=0)
 
+            slate_ridge_augmented_qr_cython(aw, bw, m, lld, debug_flag)
+
+            # Broadcast solution from Node 0 to all nodes via head ranks
+            pt._head_group_comm.Bcast(bw[:n], root=0)
+        
+
+        pt.polite_barrier(pt._comm)
         self.fit = bw[:n]
                 
         # *** DO NOT REMOVE !!! ***
