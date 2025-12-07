@@ -114,8 +114,6 @@ class SlateValidation(SlateCommon):
             "metadata": {},
             "outputs": [],
             "source": [
-                "import json\n",
-                "\n",
                 "# Configuration from FitSNAP run\n",
                 f"config = {config_json}\n\n",
             ]
