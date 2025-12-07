@@ -369,10 +369,14 @@ class SlateValidation(SlateCommon):
                                 preds_train = data_train[:, 1]
                                 all_preds.extend(preds_train)
                                 all_truths.extend(truths_train)
+                                if len(all_preds) > 0:
+                                    size = 99/np.log10(len(all_preds))
+                                else:
+                                    size = 1
                                 ax.scatter(truths_train, preds_train, zorder=8,
                                          c=[tab20(color_idx_light)], alpha=.8,
-                                         s=99/np.log10(len(all_preds)),
-                                         label=f"{group_name} (train)", edgecolors='none')
+                                         s=size, edgecolors='none',
+                                         label=f"{group_name} (train)")
                         
                         # Read testing data
                         var_name_test = f"{row_type_lower}_{group_idx}_testing"
