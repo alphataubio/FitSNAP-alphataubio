@@ -369,7 +369,7 @@ class SlateValidation(SlateCommon):
                                 preds_train = data_train[:, 1]
                                 all_preds.extend(preds_train)
                                 all_truths.extend(truths_train)
-                                if len(all_preds) > 0:
+                                if len(all_preds) > 1:
                                     size = 99/np.log10(len(all_preds))
                                 else:
                                     size = 1
