@@ -70,7 +70,8 @@ jobs:
     - name: Install Python dependencies (with MPI/ADIOS2)
       run: |
         python -m pip install --upgrade pip setuptools wheel
-        python -m pip install numpy pandas scipy psutil tqdm matplotlib tabulate torch sympy pyyaml mpi4py adios2 flake8 pytest
+        # CRITICAL FIX: Added Cython here. Required for --no-build-isolation
+        python -m pip install numpy Cython pandas scipy psutil tqdm matplotlib tabulate torch sympy pyyaml mpi4py adios2 flake8 pytest
 
     # ===== pyace installation =====
     
@@ -133,7 +134,9 @@ jobs:
           export CPPFLAGS="-I/opt/homebrew/opt/libomp/include"
         fi
         cd fitsnap3lib/lib/slate_solver
-        pip install .
+        # CRITICAL FIX: --no-build-isolation so it uses the manually installed mpi4py/Cython
+        # This matches the behavior of the Cluster (using pre-installed modules)
+        pip install --no-build-isolation .
 
     # ===== Lint =====
     
