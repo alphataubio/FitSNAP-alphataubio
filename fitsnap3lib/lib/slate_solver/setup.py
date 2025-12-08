@@ -95,7 +95,7 @@ extra_link_args = ["-fopenmp"] + [
 
 ext = Extension(
     "slate_wrapper",
-    sources=["slate_wrapper.pyx"],
+    sources=["slate_wrapper.pyx", "slate.cpp"],
     include_dirs=include_dirs,
     library_dirs=library_dirs,
     libraries=libraries,
