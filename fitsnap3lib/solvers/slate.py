@@ -207,6 +207,11 @@ class SLATE(SlateValidation):
                 sigma_diag[:] = s_d
                 coef_active_[:] = c_a
                 cond_box[0] = cn
+                
+            # sub ranks 1,...,N on each node wait in non-blocking "polite" barrier
+            # while sub rank 0 on each node solves in SLATE using openmp intra-node
+            # and mpi across nodes.
+            pt.polite_barrier(pt._comm)
 
             # 4. BROADCAST RESULTS (Intra-Node)
             # Head shares results with sleeping workers so everyone has the updated model state
