@@ -12,26 +12,26 @@ import glob
 # -----------------------------------------------------------------------------
 mpi4py_include = []
 try:
+    # Try importing (works if --no-build-isolation is used)
     import mpi4py
     mpi4py_include = [mpi4py.get_include()]
 except ImportError:
-    # We are likely in an isolated build environment where module site-packages are hidden.
-    # On Trillium/EasyBuild, we can find mpi4py via the EBROOTMPI4PY env var.
+    # Fallback for build isolation: Use EBROOTMPI4PY from environment
     eb_root = os.environ.get("EBROOTMPI4PY")
     if eb_root:
-        # Search for the include directory inside the module root
+        # Search for include dir in the module path
         # Typically: $EBROOTMPI4PY/lib/pythonX.Y/site-packages/mpi4py/include
         found_includes = glob.glob(os.path.join(eb_root, "lib", "python*", "site-packages", "mpi4py", "include"))
         if found_includes:
             print(f"Found mpi4py headers via EBROOTMPI4PY: {found_includes[0]}")
             mpi4py_include = [found_includes[0]]
         else:
-            print("Warning: EBROOTMPI4PY set but include path not found.")
+            print(f"Warning: EBROOTMPI4PY is set to {eb_root}, but could not find 'include' dir.")
     else:
         print("Warning: Could not find mpi4py headers. Cython cimport mpi4py may fail.")
 
 # -----------------------------------------------------------------------------
-# 2. MPI Compiler Wrapper Detection (Your original logic)
+# 2. MPI Compiler Wrapper Detection
 # -----------------------------------------------------------------------------
 try:
     mpicc_path = shutil.which("mpicc")
@@ -113,6 +113,8 @@ setup(
     name="slate_solver",
     ext_modules=cythonize(
         [ext],
+        # CRITICAL FIX: Tell Cython where to find .pxd files
+        include_path=include_dirs,
         compiler_directives={'language_level': "3"}
     ),
     zip_safe=False,
