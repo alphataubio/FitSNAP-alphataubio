@@ -1,17 +1,16 @@
-
 from fitsnap3lib.solvers.slate_validation import SlateValidation
-import sys, os, json, time, signal, adios2
+import sys, os, json, time, signal
 import numpy as np
 from mpi4py import MPI
 
 try:
-    from slate_wrapper import slate_ridge_augmented_qr_cython, slate_ard_update_cython
+    from slate_wrapper import slate_ridge_augmented_qr_cython, slate_ard_update_cython, set_openmp_threads
 except ImportError:
     try:
         slate_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'lib', 'slate_solver')
         if slate_path not in sys.path:
             sys.path.insert(0, slate_path)
-        from slate_wrapper import slate_ridge_augmented_qr_cython, slate_ard_update_cython
+        from slate_wrapper import slate_ridge_augmented_qr_cython, slate_ard_update_cython, set_openmp_threads
     except ImportError as e:
         print(f"Warning: Could not import SLATE ARD functions: {e}")
         slate_ard_update_cython = None
@@ -87,12 +86,14 @@ class SLATE(SlateValidation):
         a_start_idx, a_end_idx = pt.fitsnap_dict["sub_a_indices"]
         local_slice = slice(a_start_idx, a_end_idx+1)
         local_w = w[local_slice].copy()
-        m = aw.shape[0] * pt._number_of_nodes  # global number of samples
-        n = aw.shape[1]  # number of features
-        lld = aw.shape[0]  # local leading dimension
+        
+        # Hybrid Architecture: Data is distributed across nodes.
+        # m = Total Global Samples. lld = Samples on this Node.
+        m = aw.shape[0] * pt._number_of_nodes 
+        n = aw.shape[1] 
+        lld = aw.shape[0] 
 
         # -------- TRAINING/TESTING SPLIT --------
-        # Zero out test samples and count training samples
         if 'Testing' in pt.fitsnap_dict and pt.fitsnap_dict['Testing'] is not None:
             testing_mask = pt.fitsnap_dict['Testing'][local_slice]
             local_m_training = np.sum(~np.array(testing_mask, dtype=bool))
@@ -104,24 +105,28 @@ class SLATE(SlateValidation):
             
         # -------- IN-PLACE WEIGHTING/CENTERING/SCALING --------
         eps = np.finfo(np.float64).eps
-        # Apply weights to a and b
+        
+        # Apply weights to a and b (All ranks do this to their slice)
         aw[local_slice] = local_w[:, np.newaxis] * a[local_slice]
         bw[local_slice] = local_w * b[local_slice]
+        
         # Compute mean/std of weighted b across MPI
         local_sum_bw, local_sum_bw2 = np.sum(bw[local_slice]), np.sum(bw[local_slice]**2)
         local_values = np.array([local_sum_bw, local_sum_bw2, local_m_training])
-        global_values = pt._comm.allreduce(local_values, op=MPI.SUM)
-        global_sum_bw, global_sum_bw2, global_m_training = global_values.tolist()
+        
+        # Allreduce to get global stats
+        pt._comm.Allreduce(MPI.IN_PLACE, local_values, op=MPI.SUM)
+        global_sum_bw, global_sum_bw2, global_m_training = local_values.tolist()
+        
         mean_bw = global_sum_bw / m
         var_bw = global_sum_bw2 / m - mean_bw**2
 
         # Compute adaptive hyperparameters
-        ap = 1.0 / (var_bw + eps)  # inverse variance ("alpha prior")
+        ap = 1.0 / (var_bw + eps) 
         
         pt.debug_single_print(f"inverse variance in training data: {ap:.6f}, logscale for threshold_lambda: {np.log10(ap):.6f}")
         
         if self.directmethod:
-            # Direct method: use specified hyperparameters
             self.alpha_1 = self.alphabig
             self.alpha_2 = self.alphabig
             self.lambda_1 = self.lambdasmall
@@ -129,11 +134,9 @@ class SLATE(SlateValidation):
             if self.threshold_lambda_config > 0:
                 self.threshold_lambda = self.threshold_lambda_config
             else:
-                # Auto-compute threshold if not specified
                 self.threshold_lambda = 10**(int(np.abs(np.log10(ap))) + self.logcut)
             pt.single_print(f"ARD directmethod: alpha_1={self.alpha_1:.2e}, lambda_1={self.lambda_1:.2e}, threshold_lambda={self.threshold_lambda:.2e}")
         else:
-            # Adaptive method: scale by inverse variance
             self.alpha_1 = self.scap * ap
             self.alpha_2 = self.scap * ap
             self.lambda_1 = self.scai * ap
@@ -141,7 +144,6 @@ class SLATE(SlateValidation):
             if self.threshold_lambda_config > 0:
                 self.threshold_lambda = self.threshold_lambda_config
             else:
-                # Auto-compute threshold: 10^(int(abs(log10(ap))) + logcut)
                 self.threshold_lambda = 10**(int(np.abs(np.log10(ap))) + self.logcut)
             pt.debug_single_print(f"automated threshold_lambda will be 10**({self.logcut:.6f} + {np.abs(np.log10(ap)):.3f})={self.threshold_lambda:.2g}")
             pt.single_print(f"SLATE ARD: m {m} n {n} scap {self.scap:.2g} scai {self.scai:.2g} ap {ap:.2g} alpha_1 {self.alpha_1:.2g} alpha_2 {self.alpha_2:.2g} lambda_1 {self.lambda_1:.2g} lambda_2 {self.lambda_2:.2g}")
@@ -152,7 +154,12 @@ class SLATE(SlateValidation):
         lambda_mask = np.ones(n, dtype=bool)
         coef_old_ = None
         
-        # Iterative procedure of ARDRegression
+        # --- THREAD CONFIGURATION (ONCE) ---
+        # Only set OpenMP threads once, on the Head Ranks.
+        if pt._sub_rank == 0:
+            # Thread count = Total Ranks on Node (since other ranks are sleeping)
+            set_openmp_threads(pt._sub_size, self.config.debug)
+
         iteration = 1
         start_time_iteration = time.time()
         
@@ -165,49 +172,83 @@ class SLATE(SlateValidation):
                 pt.debug_single_print(f"ARD: all features pruned at iteration {iteration}")
                 break
                         
-            # Pack active columns of a into first columns of aw (both are column-major for SLATE)
-            aw[local_slice, :len(active_indices)] = local_w[:, np.newaxis] * a[local_slice, active_indices]
+            # 1. PACK DATA (Distributed Write to Shared Memory)
+            # All ranks write their slice of active columns to the shared array 'aw'
+            aw[local_slice, :n_active] = local_w[:, np.newaxis] * a[local_slice, active_indices]
+            lambda_active = lambda_[active_indices].copy()
 
-            lambda_active = lambda_[active_indices]
-                        
-            # Update sigma diagonal and coef using SLATE C++ functions
-            # NOTE: Returns diagonal of sigma directly (not full matrix) to save memory
-            sigma_diag, coef_active_, cond_number = slate_ard_update_cython(
-                aw, bw, lambda_active, alpha_, m, n_active, lld, self.config.debug
-            )
-                        
+            # 2. NODE BARRIER (Crucial!)
+            # Wait for all workers to finish writing to 'aw' before Head Rank reads it.
+            pt._sub_comm.Barrier()
+            
+            # --- HYBRID SOLVER CALL ---
+            
+            # Allocate buffers on all ranks
+            sigma_diag = np.zeros(n_active, dtype=np.float64)
+            coef_active_ = np.zeros(n_active, dtype=np.float64)
+            cond_box = np.zeros(1, dtype=np.float64)
+
+            # 3. SOLVE (Head Rank Only)
+            if pt._sub_rank == 0:
+                
+                # Determine Communicator (Single vs Multi-Node)
+                if pt._number_of_nodes > 1:
+                    comm = pt._head_group_comm
+                else:
+                    comm = pt.MPI.COMM_SELF
+                
+                # Call C++ Wrapper
+                s_d, c_a, cn = slate_ard_update_cython(
+                    aw, bw, lambda_active, alpha_, 
+                    m, n_active, lld, comm, self.config.debug
+                )
+                
+                # Copy results to buffers
+                sigma_diag[:] = s_d
+                coef_active_[:] = c_a
+                cond_box[0] = cn
+
+            # 4. BROADCAST RESULTS (Intra-Node)
+            # Head shares results with sleeping workers so everyone has the updated model state
+            pt._sub_comm.Bcast(sigma_diag, root=0)
+            pt._sub_comm.Bcast(coef_active_, root=0)
+            pt._sub_comm.Bcast(cond_box, root=0)
+            
+            cond_number = cond_box[0]
+            
+            # --- UPDATE STATE (All Ranks) ---
+            
             # Map active coefficients back to full coefficient vector
             coef_ = np.zeros(n, dtype=np.float64)
             coef_[active_indices] = coef_active_
             
-            # Compute SSE (sum of squared errors) across all ranks
-            # Use weighted data consistently: residual = bw - aw @ coef
-            
+            # Compute SSE (All Ranks)
+            # residual = bw - aw_active @ coef
             with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
                 local_pred = aw[local_slice, :n_active] @ coef_active_
                 
             local_residual = bw[local_slice] - local_pred
-            local_sse = np.sum(local_residual**2)  # Already weighted, don't apply weights again
+            local_sse = np.sum(local_residual**2)
+            
+            # Global Reduction of SSE
             sse_ = pt._comm.allreduce(local_sse, op=MPI.SUM)
                         
-            # Update alpha and lambda (on all ranks to stay synchronized)
-            # Use sigma diagonal (returned directly from SLATE)
+            # Update Gamma/Lambda
             gamma_active = 1.0 - lambda_active * sigma_diag
-            
-            # Map gamma back to full feature set
             gamma_ = np.zeros(n, dtype=np.float64)
             gamma_[active_indices] = gamma_active
-                        
+            
             lambda_[active_indices] = (gamma_active + 2.0 * self.lambda_1) / (coef_active_**2 + 2.0 * self.lambda_2)
-                
-            # Store gamma and lambda history if validation enabled
+            
+            # Store history for validation
             if self.validation and pt._rank == 0:
                 stream = self.config.sections["OUTFILE"].adios2_stream
                 stream.begin_step()
                 stream.write("gamma", gamma_, count=[n])
                 stream.write("lambda", lambda_, count=[n])
                 stream.end_step()
-                        
+            
+            # Update Alpha
             alpha_ = (global_m_training - gamma_active.sum() + 2.0 * self.alpha_1) / (sse_ + 2.0 * self.alpha_2)
 
             # Prune features
@@ -216,7 +257,7 @@ class SLATE(SlateValidation):
                 
             coef_[~lambda_mask] = 0
 
-            # Log iteration
+            # --- LOGGING & CONVERGENCE ---
 
             end_time_iteration = time.time()
             elapsed_iteration = end_time_iteration - start_time_iteration
@@ -233,8 +274,6 @@ class SLATE(SlateValidation):
             
             iteration += 1
             
-            # Check for stopping criteria
-            
             if iteration > self.max_iter:
                 pt.single_print(f"SLATE ARD: stopping... reached max_iter {self.max_iter}")
                 break
@@ -246,10 +285,6 @@ class SLATE(SlateValidation):
             if coef_abs_converged:
                 pt.single_print(f"SLATE ARD: stopping... coef_abs_change {coef_abs_change} < {self.atol}")
                 break
-
-            #if cond_number > 1e16:
-            #    pt.single_print(f"SLATE ARD: stopping... cond_number {cond_number} > 1e16")
-            #    break
 
             if SIGUSR1_signal_received:
                 pt.single_print(f"SLATE ARD: stopping... received SIGUSR1 signal")
@@ -267,11 +302,9 @@ class SLATE(SlateValidation):
             else:
                 pyace_section.lambda_mask = lambda_mask[pyace_section.numtypes:]
 
-        self.fit = coef_ # * std_aw + mean_aw  # * std_bw/
+        self.fit = coef_
         
         if self.config.debug and pt._rank == 0:
             active_features = np.sum(lambda_mask)
             pt.single_print(f"\nARD final: {active_features}/{n} features active, "
                           f"alpha={alpha_:.2e}, lambda range=[{np.min(lambda_):.2e}, {np.max(lambda_):.2e}]")
-
-
