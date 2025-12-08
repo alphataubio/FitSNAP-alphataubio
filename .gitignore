@@ -20,7 +20,7 @@ docs/build/
 # ignoring .pyc files
 *.pyc
 *.egg-info
-
+__pycache__
 
 # ignoring FitSnap3 outputs
 #*.lammps
@@ -45,5 +45,3 @@ fitsnap3lib/lib/slate_solver/slate_wrapper.cpp
 .ipynb_checkpoints
 .jupyter
 ~*
-/fitsnap3lib/lib/pyace/build
-/fitsnap3lib/lib/pyace
