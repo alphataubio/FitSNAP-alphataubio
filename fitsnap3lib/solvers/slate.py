@@ -4,7 +4,7 @@ import numpy as np
 from mpi4py import MPI
 
 try:
-    from slate_wrapper import slate_ridge_augmented_qr_cython, slate_ard_update_cython, set_openmp_threads
+    from slate_wrapper import set_openmp_threads, slate_ard_update_cython
 except ImportError:
     try:
         slate_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'lib', 'slate_solver')
