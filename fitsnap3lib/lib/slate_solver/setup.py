@@ -8,27 +8,37 @@ import shutil
 import glob
 
 # -----------------------------------------------------------------------------
-# 1. Robust mpi4py Detection (Handles Build Isolation on Clusters)
+# 1. Robust mpi4py Detection
 # -----------------------------------------------------------------------------
-mpi4py_include = []
+mpi4py_paths = []
 try:
-    # Try importing (works if --no-build-isolation is used)
     import mpi4py
-    mpi4py_include = [mpi4py.get_include()]
+    # If import works, we are good
+    mpi4py_inc = mpi4py.get_include()
+    mpi4py_paths.append(mpi4py_inc)
+    # Add parent (site-packages) so 'cimport mpi4py' finds the package
+    mpi4py_paths.append(os.path.dirname(os.path.dirname(mpi4py_inc)))
 except ImportError:
-    # Fallback for build isolation: Use EBROOTMPI4PY from environment
+    # Build isolation: find via EBROOTMPI4PY
     eb_root = os.environ.get("EBROOTMPI4PY")
     if eb_root:
-        # Search for include dir in the module path
-        # Typically: $EBROOTMPI4PY/lib/pythonX.Y/site-packages/mpi4py/include
+        # Search for 'include' dir
         found_includes = glob.glob(os.path.join(eb_root, "lib", "python*", "site-packages", "mpi4py", "include"))
         if found_includes:
-            print(f"Found mpi4py headers via EBROOTMPI4PY: {found_includes[0]}")
-            mpi4py_include = [found_includes[0]]
+            found_inc = found_includes[0]
+            print(f"Found mpi4py headers: {found_inc}")
+            mpi4py_paths.append(found_inc)
+            # CRITICAL FIX: Add the 'site-packages' directory
+            # found_inc is .../site-packages/mpi4py/include
+            # parent    is .../site-packages/mpi4py
+            # grandparent is .../site-packages
+            site_pkg = os.path.dirname(os.path.dirname(found_inc))
+            print(f"Adding site-packages to Cython path: {site_pkg}")
+            mpi4py_paths.append(site_pkg)
         else:
-            print(f"Warning: EBROOTMPI4PY is set to {eb_root}, but could not find 'include' dir.")
+            print("Warning: EBROOTMPI4PY set but include path not found.")
     else:
-        print("Warning: Could not find mpi4py headers. Cython cimport mpi4py may fail.")
+        print("Warning: Could not find mpi4py headers.")
 
 # -----------------------------------------------------------------------------
 # 2. MPI Compiler Wrapper Detection
@@ -38,13 +48,8 @@ try:
     if mpicc_path is None:
         raise RuntimeError("mpicc not found")
     
-    mpi_compile_flags = subprocess.check_output(
-        ["mpicc", "--showme:compile"]
-    ).decode().strip().split()
-    
-    mpi_link_flags = subprocess.check_output(
-        ["mpicc", "--showme:link"]
-    ).decode().strip().split()
+    mpi_compile_flags = subprocess.check_output(["mpicc", "--showme:compile"]).decode().strip().split()
+    mpi_link_flags = subprocess.check_output(["mpicc", "--showme:link"]).decode().strip().split()
     print(f"Found MPI compiler: {mpicc_path}")
 except Exception as e:
     print(f"Warning: MPI detection failed ({e}). Using defaults.")
@@ -74,10 +79,11 @@ slate_dir = find_slate_dir()
 # -----------------------------------------------------------------------------
 # 4. Final Configuration
 # -----------------------------------------------------------------------------
+# Directories for C Compiler
 include_dirs = [
     np.get_include(),
     os.path.join(slate_dir, "include"),
-] + mpi4py_include + mpi_include_dirs
+] + mpi4py_paths + mpi_include_dirs
 
 library_dirs = [
     os.path.join(slate_dir, "lib"),
@@ -86,17 +92,13 @@ library_dirs = [
 
 libraries = ["slate", "blas", "lapack"]
 
-# OpenMP & Standard Flags
-extra_compile_args = ["-std=c++17", "-O3"] + [
+# Compiler Flags
+extra_compile_args = ["-std=c++17", "-O3", "-fopenmp"] + [
     f for f in mpi_compile_flags if not f.startswith("-I")
 ]
-extra_link_args = [f for f in mpi_link_flags if not f.startswith("-l")]
-
-# Force OpenMP on Linux/Cluster
-extra_compile_args += ["-fopenmp"]
-extra_link_args += ["-fopenmp"]
-
-print(f"Include Dirs: {include_dirs}")
+extra_link_args = ["-fopenmp"] + [
+    f for f in mpi_link_flags if not f.startswith("-l")
+]
 
 ext = Extension(
     "slate_wrapper",
@@ -113,7 +115,7 @@ setup(
     name="slate_solver",
     ext_modules=cythonize(
         [ext],
-        # CRITICAL FIX: Tell Cython where to find .pxd files
+        # CRITICAL: This now includes 'site-packages' so Cython finds 'mpi4py/MPI.pxd'
         include_path=include_dirs,
         compiler_directives={'language_level': "3"}
     ),
