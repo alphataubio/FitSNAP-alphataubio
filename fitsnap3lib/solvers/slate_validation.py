@@ -65,8 +65,6 @@ class SlateValidation(SlateCommon):
         if self.pt._rank != 0 or not self.config.sections["OUTFILE"].validation:
             return
     
-
-        
         output_prefix = self.config.sections['OUTFILE'].metrics.replace('.md', '')
         notebook_file = f"{output_prefix}.ipynb"
                 
@@ -410,9 +408,63 @@ class SlateValidation(SlateCommon):
                     ax.grid(True, alpha=0.3)
                     ax.set_aspect('equal', adjustable='box')
                     
+                    # --- FIXED LEGEND: Two Columns (Train Left, Test Right) ---
+                    handles, labels = ax.get_legend_handles_labels()
+                    hl_dict = dict(zip(labels, handles))
+                    
+                    train_handles = []
+                    train_labels = []
+                    test_handles = []
+                    test_labels = []
+                    
+                    # Spacer for gaps
+                    spacer = Rectangle((0,0), 1, 1, fill=False, edgecolor='none', visible=False)
+                    
+                    # 1. Sort handles into Train vs Test lists
+                    for g_name in sorted_group_names:
+                        t_key = f"{g_name} (train)"
+                        v_key = f"{g_name} (test)"
+                        
+                        # Add to Train List
+                        if t_key in hl_dict:
+                            train_handles.append(hl_dict[t_key])
+                            train_labels.append(t_key)
+                        else:
+                            train_handles.append(spacer)
+                            train_labels.append("")
+                            
+                        # Add to Test List
+                        if v_key in hl_dict:
+                            test_handles.append(hl_dict[v_key])
+                            test_labels.append(v_key)
+                        else:
+                            test_handles.append(spacer)
+                            test_labels.append("")
+
+                    # 2. Combine lists sequentially: [All Trains] + [All Tests]
+                    # Because Matplotlib with ncol=2 fills Column 1 first, then Column 2.
+                    final_handles = train_handles + test_handles
+                    final_labels = train_labels + test_labels
+
+                    # Add 'Perfect prediction' at bottom of both (spanning columns?)
+                    # Or just add to bottom of left column
+                    pp_key = 'Perfect prediction'
+                    if pp_key in hl_dict:
+                        final_handles.append(hl_dict[pp_key])
+                        final_labels.append(pp_key)
+
                     # Legend
-                    leg = fig.legend(loc="upper left", bbox_to_anchor=(1.05, .95), ncol=1, borderpad=.618,
-                        title="GROUPS", title_fontsize=12, prop={"size": 12})
+                    leg = fig.legend(
+                        handles=final_handles,
+                        labels=final_labels,
+                        loc="upper left", 
+                        bbox_to_anchor=(1.05, 0.99), 
+                        ncol=2,
+                        borderpad=.618,
+                        title="GROUPS", 
+                        title_fontsize=12, 
+                        prop={"size": 12}
+                    )
                     leg.get_title().set_fontweight("bold")
                     
                     notebook["cells"].append({
@@ -734,6 +786,3 @@ def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=
     svg_text = buf.getvalue().decode('utf-8')
     buf.close()
     return base64.b64encode(svg_text.encode('utf-8')).decode('utf-8')
-  
-
-
