@@ -11,18 +11,11 @@ from Cython.Build import cythonize
 def find_libomp():
     """
     On macOS, OpenMP (libomp) is keg-only and not in default paths.
-    We must find it to get the 'include' directory for omp.h.
     """
     if sys.platform != "darwin":
         return [], [], []
 
-    # Try standard Homebrew location first (fastest)
-    candidates = [
-        "/opt/homebrew/opt/libomp",
-        "/usr/local/opt/libomp"
-    ]
-    
-    # If not found, ask brew (slower but robust)
+    candidates = ["/opt/homebrew/opt/libomp", "/usr/local/opt/libomp"]
     for c in candidates:
         if os.path.exists(c):
             return [f"{c}/include"], [f"{c}/lib"], ["-lomp"]
@@ -31,19 +24,60 @@ def find_libomp():
         prefix = subprocess.check_output(["brew", "--prefix", "libomp"]).decode().strip()
         return [f"{prefix}/include"], [f"{prefix}/lib"], ["-lomp"]
     except (OSError, subprocess.CalledProcessError):
-        # Fallback: Hope it's in a standard path or user supplied it
-        print("WARNING: Could not find libomp via Homebrew. Build might fail if omp.h is missing.")
         return [], [], ["-lomp"]
 
-# Get OpenMP paths
+# -----------------------------------------------------------------------------
+# HELPER: Find MPI Flags (Robust for Linux/Mac)
+# -----------------------------------------------------------------------------
+def find_mpi_flags():
+    """
+    Use mpicc to find the correct include/link flags.
+    Crucial for Linux where mpi.h might be in /usr/lib/.../openmpi/include
+    """
+    mpi_includes = []
+    mpi_link_args = []
+    
+    # Try finding mpicc in path
+    mpicc = "mpicc"
+    # Check if MPICH or OpenMPI specific env vars are set, though mpicc usually suffices
+    
+    try:
+        # Get compile flags (includes)
+        cflags = subprocess.check_output([mpicc, "--showme:compile"], stderr=subprocess.DEVNULL).decode().strip()
+        for flag in cflags.split():
+            if flag.startswith("-I"):
+                mpi_includes.append(flag[2:])
+                
+        # Get link flags (if needed, though we usually just link -lmpi)
+        # ldflags = subprocess.check_output([mpicc, "--showme:link"], stderr=subprocess.DEVNULL).decode().strip()
+    except (OSError, subprocess.CalledProcessError):
+        # Fallback for MPICH or if --showme isn't supported (try -compile_info)
+        try:
+            cflags = subprocess.check_output([mpicc, "-compile_info"], stderr=subprocess.DEVNULL).decode().strip()
+            for flag in cflags.split():
+                if flag.startswith("-I"):
+                    mpi_includes.append(flag[2:])
+        except:
+            # Last resort: common locations
+            if sys.platform == "linux":
+                mpi_includes.extend([
+                    "/usr/lib/x86_64-linux-gnu/openmpi/include",
+                    "/usr/include/openmpi",
+                    "/usr/lib/openmpi/include"
+                ])
+    
+    return mpi_includes
+
+# Get paths
 omp_includes, omp_libdirs, omp_libs = find_libomp()
+mpi_includes = find_mpi_flags()
 
 # Safe import for mpi4py
 try:
     import mpi4py
-    mpi_include = mpi4py.get_include()
+    mpi_site_include = mpi4py.get_include()
 except ImportError:
-    mpi_include = []
+    mpi_site_include = []
 
 # -----------------------------------------------------------------------------
 # BUILD CONFIGURATION
@@ -57,11 +91,9 @@ cxx_flags = ["-std=c++17", "-O3", "-fPIC", "-DNDEBUG"]
 link_flags = []
 
 if is_macos:
-    # Apple Clang specific OpenMP flags
     cxx_flags += ["-Xpreprocessor", "-fopenmp"]
     link_flags += omp_libs # adds -lomp
 else:
-    # Linux (GCC)
     cxx_flags += ["-fopenmp"]
     link_flags += ["-fopenmp"]
 
@@ -76,23 +108,22 @@ extensions = [
         include_dirs=[
             ".",  # Local directory
             np.get_include(),
-            mpi_include,
-            # Add dynamically found OpenMP include path
+            mpi_site_include,
+            *mpi_includes, # <--- Added system MPI headers
             *omp_includes, 
-            # Fallbacks
             os.path.join(os.environ.get("HOME", ""), ".local/include"),
             "/usr/local/include",
-            "/opt/homebrew/include"
+            "/opt/homebrew/include",
+            "/usr/include" # Standard Linux include
         ],
         library_dirs=[
-            # Add dynamically found OpenMP lib path
             *omp_libdirs,
             os.path.join(os.environ.get("HOME", ""), ".local/lib"),
             os.path.join(os.environ.get("HOME", ""), ".local/lib64"),
             "/usr/local/lib",
-            "/opt/homebrew/lib"
+            "/opt/homebrew/lib",
+            "/usr/lib/x86_64-linux-gnu" # Standard Linux libs
         ],
-        # 'omp' usually implied by -fopenmp on Linux, but needed explicit on Mac
         libraries=["slate", "lapack", "blas", "mpi"], 
         extra_compile_args=cxx_flags,
         extra_link_args=link_flags,
