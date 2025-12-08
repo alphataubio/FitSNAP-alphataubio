@@ -17,13 +17,11 @@ bonds = {
 
 functions = {
     
-    'ALL':  {
-        'nmax_by_rank': [16,8,4],
-        'lmax_by_rank': [ 0,1,2]
-      },
-
-    'Al Al Ni Ni Ni Ni Ni': { 'nmax': 1, 'lmax': 2 },
-    'Al Ni Ni Ni Ni Ni Ni': { 'nmax': 1, 'lmax': 2 },
+    'ALL':  { 'nmax_by_rank': [20,5,2,1], 'lmax_by_rank': [0,1,2,3] },
+    
+    'Al Ni Ni Ni Ni Ni': { 'nmax': 2, 'lmax': 4 },
+    'Ni Al Al Al Al Al': { 'nmax': 1, 'lmax': 4 },
+    'Ni Ni Ni Ni Ni Ni': { 'nmax': 1, 'lmax': 4 },
 
   }
   
@@ -50,14 +48,14 @@ compute_testerrs = 1
 [SLATE]
 method = ARD
 threshold_lambda = 1e6
-scap = 1e-2
-scai = 1e-2
+scap = 1e-4
+scai = 1e-4
 max_iter = 100
 
 # -----------------------------------------------------------------------------
 [SCRAPER]
 scraper = ADIOS2
-#max_configs_per_rank = 1
+#max_configs_per_rank = 5
 
 # -----------------------------------------------------------------------------
 [PATH]
