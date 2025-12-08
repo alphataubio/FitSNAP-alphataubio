@@ -23,7 +23,11 @@ bonds = {
   }
 
 functions = {
-    'All': { 'nmax_by_rank': [8,3,2,1], 'lmax_by_rank': [0,3,2,1]  }
+    'All': { 'nmax_by_rank': [20,5,2,1], 'lmax_by_rank': [0,1,2,3] },
+    
+    'Al Ni Ni Ni Ni Ni': { 'nmax': 2, 'lmax': 4 },
+    'Ni Al Al Al Al Al': { 'nmax': 1, 'lmax': 4 },
+    'Ni Ni Ni Ni Ni Ni': { 'nmax': 1, 'lmax': 4 },
   }
   
 # -----------------------------------------------------------------------------
