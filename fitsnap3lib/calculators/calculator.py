@@ -327,10 +327,11 @@ class Calculator:
               if self.config.args.verbose:
                   pt.single_print(">>> Matrix of descriptors takes up ", "{:.4f}".format(100 * a_size / self.config.sections["MEMORY"].memory),
                               "% of the total memory:", "{:.4f}".format(self.config.sections["MEMORY"].memory*1e-9), "GB") #, "on rank", "{:d}".format(pt._rank))
-              if a_size / pt.get_ram() > 0.5 and not self.config.sections["MEMORY"].override:
-                  raise MemoryError("The descriptor matrix is larger than 50% of your RAM. \n Aborting...!")
-              elif a_size / pt.get_ram() > 0.5 and self.config.sections["MEMORY"].override:
-                  pt.single_print("Warning: > 50 % RAM. I hope you know what you are doing!")
+              override = self.config.sections.get("MEMORY", {}).get("override", False)
+              if a_size / pt.get_ram() > 0.5 and not override:
+                  raise MemoryError(f"Descriptor matrix is larger ({a_size/1024**3:.1f} GB) than 50% of your RAM ({0.5*pt.get_ram()/1014**3:.1f} GB). Aborting...!")
+              elif a_size / pt.get_ram() > 0.5 and override:
+                  pt.single_print(f"WARNING: Descriptor matrix is larger ({a_size/1024**3:.1f} GB) than 50% of your RAM ({0.5*pt.get_ram()/1014**3:.1f} GB). I hope you know what you are doing!")
             
             pt.create_shared_array('a', a_len, a_width)
             pt.create_shared_array('b', a_len)
