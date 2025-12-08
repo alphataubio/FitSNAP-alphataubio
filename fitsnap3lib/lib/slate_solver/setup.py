@@ -83,8 +83,7 @@ library_dirs = [
 
 # --- CRITICAL FIX HERE ---
 # Changed 'blas'/'lapack' to 'blaspp'/'lapackpp' to match your install logs.
-# Added 'flexiblas' to pick up the cluster's underlying math symbols.
-libraries = ["slate", "blaspp", "lapackpp", "flexiblas"]
+libraries = ["slate", "blaspp", "lapackpp"]
 
 extra_compile_args = ["-std=c++17", "-O3", "-fopenmp"] + [
     f for f in mpi_compile_flags if not f.startswith("-I")
