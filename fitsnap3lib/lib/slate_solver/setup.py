@@ -13,32 +13,24 @@ import glob
 mpi4py_paths = []
 try:
     import mpi4py
-    # If import works, we are good
     mpi4py_inc = mpi4py.get_include()
     mpi4py_paths.append(mpi4py_inc)
-    # Add parent (site-packages) so 'cimport mpi4py' finds the package
+    # Add parent (site-packages) for 'cimport mpi4py'
     mpi4py_paths.append(os.path.dirname(os.path.dirname(mpi4py_inc)))
 except ImportError:
-    # Build isolation: find via EBROOTMPI4PY
     eb_root = os.environ.get("EBROOTMPI4PY")
     if eb_root:
-        # Search for 'include' dir
         found_includes = glob.glob(os.path.join(eb_root, "lib", "python*", "site-packages", "mpi4py", "include"))
         if found_includes:
             found_inc = found_includes[0]
             print(f"Found mpi4py headers: {found_inc}")
             mpi4py_paths.append(found_inc)
-            # CRITICAL FIX: Add the 'site-packages' directory
-            # found_inc is .../site-packages/mpi4py/include
-            # parent    is .../site-packages/mpi4py
-            # grandparent is .../site-packages
+            # Add site-packages parent
             site_pkg = os.path.dirname(os.path.dirname(found_inc))
             print(f"Adding site-packages to Cython path: {site_pkg}")
             mpi4py_paths.append(site_pkg)
         else:
             print("Warning: EBROOTMPI4PY set but include path not found.")
-    else:
-        print("Warning: Could not find mpi4py headers.")
 
 # -----------------------------------------------------------------------------
 # 2. MPI Compiler Wrapper Detection
@@ -79,7 +71,6 @@ slate_dir = find_slate_dir()
 # -----------------------------------------------------------------------------
 # 4. Final Configuration
 # -----------------------------------------------------------------------------
-# Directories for C Compiler
 include_dirs = [
     np.get_include(),
     os.path.join(slate_dir, "include"),
@@ -90,9 +81,11 @@ library_dirs = [
     os.path.join(slate_dir, "lib64"),
 ]
 
-libraries = ["slate", "blas", "lapack"]
+# --- CRITICAL FIX HERE ---
+# Changed 'blas'/'lapack' to 'blaspp'/'lapackpp' to match your install logs.
+# Added 'flexiblas' to pick up the cluster's underlying math symbols.
+libraries = ["slate", "blaspp", "lapackpp", "flexiblas"]
 
-# Compiler Flags
 extra_compile_args = ["-std=c++17", "-O3", "-fopenmp"] + [
     f for f in mpi_compile_flags if not f.startswith("-I")
 ]
@@ -115,7 +108,6 @@ setup(
     name="slate_solver",
     ext_modules=cythonize(
         [ext],
-        # CRITICAL: This now includes 'site-packages' so Cython finds 'mpi4py/MPI.pxd'
         include_path=include_dirs,
         compiler_directives={'language_level': "3"}
     ),
