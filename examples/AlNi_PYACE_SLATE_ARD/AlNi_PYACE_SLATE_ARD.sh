@@ -1,13 +1,13 @@
 #!/bin/bash
 #SBATCH --job-name=AlNi_PYACE
-#SBATCH --nodes=1
+#SBATCH --nodes=2
 #SBATCH --ntasks-per-node=192
 #SBATCH --mem=0
 #SBATCH --time=3:00:00
 #SBATCH --mail-type=all
 #SBATCH --mail-user=alphataubio@gmail.com
 
-module load StdEnv/2023 intel/2024.2.0 openblas/0.3.27 openmpi/5.0.3 python/3.11.5 hdf5-mpi/1.14.5 mpi4py/4.0.0 scipy-stack/2025a
+module load StdEnv/2023 gcc/13.3 aocl-lapack/5.1 aocl-blas/5.1 openmpi/5.0.3 python/3.12.4 mpi4py/4.0.0 scipy-stack/2025a 
 
 source ~/fitsnap-venv/bin/activate
 
