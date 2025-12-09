@@ -47,153 +47,93 @@ void slate_ridge_augmented_qr(double* local_aw, double* local_bw,
     int mpi_rank, mpi_size;
     MPI_Comm_rank(comm, &mpi_rank);
     MPI_Comm_size(comm, &mpi_size);
-
-    // 1. DATA DISTRIBUTION MAP
-    // We assume data is distributed in contiguous blocks.
-    // To be perfectly robust to minor LLD variations or remainders, we gather LLDs.
-    std::vector<int64_t> all_llds(mpi_size);
-    int64_t lld64 = lld;
-    MPI_Allgather(&lld64, 1, MPI_INT64_T, all_llds.data(), 1, MPI_INT64_T, comm);
-
-    // Create prefix sum to map global row indices to ranks
-    std::vector<int64_t> row_offsets(mpi_size + 1, 0);
-    for(int i = 0; i < mpi_size; ++i) {
-        row_offsets[i+1] = row_offsets[i] + all_llds[i];
+    int num_threads = omp_get_max_threads();
+    
+    // Find optimal tile size
+    int64_t nt = 1;
+    int64_t nb = n;
+    int64_t mt_node = num_threads;
+    int64_t mt = mt_node * mpi_size;
+    int64_t mb = ceil_div64(m, mt);
+    
+    if (mpi_rank >= 0) {
+        std::cerr << "\n---------------- SLATE Ridge Solver ----------------" << std::endl;
+        std::cerr << "MPI: " << mpi_size << " rank(s) (one per node), ";
+        std::cerr            << num_threads << " OpenMP threads/node" << std::endl;
+        std::cerr << "Rank: " << mpi_rank << " lld " << lld << std::endl;
+        std::cerr << "Matrix size: " << m << " x " << n << std::endl;
+        std::cerr << "Tile size: " << mb << " x " << nb << std::endl;
+        std::cerr << "Grid: " << mt << " x " << nt << std::endl;
+        std::cerr << "----------------------------------------------------" << std::endl;
     }
     
-    // Global Row Offset for this rank
-    int64_t my_offset = row_offsets[mpi_rank];
-
-    // 2. TILE SIZE SEARCH
-    int64_t nb, nt;
-    int64_t mb = 1; 
-    int64_t nt_start = 1;
-
-    for (nt = nt_start; nt >= 1; --nt) {
-        int64_t size = ceil_div64(n, nt);
-        mb = nb = size;
-        if (size*size*sizeof(double) > 16*1024*1024) break; 
-    }
-    if (nt == 0) nt = 1;
-    
-    int64_t mt = ceil_div64(m, mb);
-
-    if (mpi_rank == 0 && debug) {
-        std::fprintf(stderr, "SLATE: Distributed %d nodes. Global M=%" PRId64 " x N=%" PRId64 ". Tile %" PRId64 "\n", 
-                     mpi_size, m, n, nb);
-    }
-
     try {
-        // --- 3. TILING LAMBDAS ---
-        
+
         std::function<int64_t (int64_t)> tileNb = [nb](int64_t) { return nb; };
-        std::function<int64_t (int64_t)> tile1  = [](int64_t) { return 1; };
-        
-        // Tile Height
-        std::function<int64_t (int64_t)> tileMb = [m, mb](int64_t i) {
-            return (i * mb + mb > m) ? (m - i * mb) : mb;
+        std::function<int64_t (int64_t)> tile1  = [  ](int64_t) { return 1; };
+       
+        std::function<int64_t (int64_t)> tileMb = [lld, mt_node, mb](int64_t i) {
+            if (i % mt_node == mt_node - 1)
+                return lld - (mt_node-1)*mb; // remainder tile
+            else
+                return mb;
+        };
+                
+        std::function<int (slate::func::ij_tuple)> tileRank = [mt_node](slate::func::ij_tuple ij) {
+            int64_t i = std::get<0>(ij);
+            //int64_t j = std::get<1>(ij);
+            return i / mt_node;
         };
 
-        // CUSTOM RANK MAP: Matches FitSNAP 1D Block Distribution
-        // "Which rank owns global tile i (starting at global row i*mb)?"
-        std::function<int (slate::func::ij_tuple)> tileRank = [row_offsets, mb, mpi_size](slate::func::ij_tuple ij) {
-            int64_t global_row_start = std::get<0>(ij) * mb;
-            
-            // Binary search to find which rank owns this row index
-            auto it = std::upper_bound(row_offsets.begin(), row_offsets.end(), global_row_start);
-            int rank = std::distance(row_offsets.begin(), it) - 1;
-            
-            if (rank < 0) rank = 0;
-            if (rank >= mpi_size) rank = mpi_size - 1;
-            return rank;
-        };
-        
+        // FIXME: GPU device tiles not implemented yet (placeholder)
+        // need to sync to device from fitsnap python shared array on node-local ram
         std::function<int (slate::func::ij_tuple)> tileDevice = [](slate::func::ij_tuple) { return 0; };
-
-        // --- 4. MATRIX CREATION ---
+        
+        // Create SLATE matrices with tile lambdas
         slate::Matrix<double> A(m, n, tileMb, tileNb, tileRank, tileDevice, comm);
-        slate::Matrix<double> b(m, 1, tileMb, tile1,  tileRank, tileDevice, comm);
+        slate::Matrix<double> b(m, 1, tileMb,  tile1, tileRank, tileDevice, comm);
         
-        A.insertLocalTiles();
-        b.insertLocalTiles();
-
-        // --- 5. ZERO-COPY DATA INSERTION ---
-        #pragma omp parallel for collapse(2)
-        for (int64_t i = 0; i < mt; ++i) {
-            for (int64_t j = 0; j < nt; ++j) {
-                if (A.tileIsLocal(i, j)) {
-                    auto tile = A(i, j);
-                    double* t_ptr = tile.data();
-                    int64_t stride = tile.stride();
-                    int64_t h = tile.mb();
-                    int64_t w = tile.nb();
-                    
-                    int64_t global_row = i * mb;
-                    int64_t global_col = j * nb;
-                    
-                    // Local coords
-                    int64_t local_row = global_row - my_offset;
-
-                    if (local_row >= 0 && local_row < lld) {
-                        for (int64_t jj = 0; jj < w; ++jj) {
-                            for (int64_t ii = 0; ii < h; ++ii) {
-                                // local_aw is Col-Major
-                                int64_t src = (global_col + jj) * lld + (local_row + ii);
-                                t_ptr[ii + jj * stride] = local_aw[src];
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // Insert A matrix tiles
+        for (int64_t i = 0; i < mt; ++i)
+            for (int64_t j = 0; j < nt; ++j)
+                if (A.tileIsLocal(i, j))
+                    A.tileInsert(i, j, local_aw, lld);
             
-        // Copy b vector
-        #pragma omp parallel for
-        for (int64_t i = 0; i < mt; ++i) {
-             if (b.tileIsLocal(i, 0)) {
-                 auto tile = b(i, 0);
-                 double* t_ptr = tile.data();
-                 int64_t h = tile.mb();
-                 int64_t local_row = (i * mb) - my_offset;
-                 
-                 if (local_row >= 0 && local_row < lld) {
-                     for(int64_t ii=0; ii<h; ++ii) {
-                         t_ptr[ii] = local_bw[local_row + ii];
-                     }
-                 }
-             }
+        // Insert b vector tiles
+        for (int64_t i = 0; i < mt; ++i)
+            if (b.tileIsLocal(i, 0))
+                b.tileInsert(i, 0, local_bw, lld);
+        
+        // Debug output
+        if (debug) {
+            slate::Options opts = {
+              {slate::Option::PrintVerbose, 4},
+              {slate::Option::PrintPrecision, 3},
+              {slate::Option::PrintWidth, 7}
+            };
+            //slate::print("A", A, opts);
+            //slate::print("b", b, opts);
         }
         
-        // --- 6. SOLVE ---
+        // Least squares solve
         slate::least_squares_solve(A, b);
-        
-        // --- 7. EXTRACT SOLUTION ---
-        // Solution X is in the first N rows of b.
-        // It will be distributed across ranks based on tileRank.
-        // We copy out any pieces we own. 
-        // Note: For N small, X often fits entirely on Rank 0's tiles.
-        
-        for (int64_t i = 0; i < mt; ++i) {
-             if (b.tileIsLocal(i, 0)) {
-                 auto tile = b(i, 0);
-                 double* t_ptr = tile.data();
-                 int64_t h = tile.mb();
-                 int64_t global_row = i * mb;
-                 int64_t local_row = global_row - my_offset;
+        MPI_Barrier(comm);
 
-                 for(int64_t ii=0; ii<h; ++ii) {
-                     if (global_row + ii < n && local_row + ii < lld) {
-                         local_bw[local_row + ii] = t_ptr[ii];
-                     }
-                 }
-             }
+        if (debug) {
+            slate::Options opts = {
+              {slate::Option::PrintVerbose, 4},
+              {slate::Option::PrintPrecision, 3},
+              {slate::Option::PrintWidth, 7}
+            };
+            //slate::print("b (solution)", b, opts);
         }
 
     } catch (const std::exception& e) {
-        std::cerr << "SLATE error: " << e.what() << std::endl;
+        std::cerr << "[Rank " << mpi_rank << "] SLATE error: " << e.what() << std::endl;
         MPI_Abort(comm, 1);
     }
 }
+
 
 // -----------------------------------------------------------------------------
 // SLATE ARD Update
@@ -202,6 +142,189 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
                      int64_t m, int64_t n_active, int64_t lld,
                      double alpha, double* lambda_active, 
                      MPI_Comm comm, int debug) {
+    
+    int mpi_rank, mpi_size;
+    MPI_Comm_rank(comm, &mpi_rank);
+    MPI_Comm_size(comm, &mpi_size);
+    int num_threads = omp_get_max_threads();
+    
+    // Find optimal tile size
+    int64_t mb = lld;
+    int64_t nb = n_active;
+    int64_t nt = 1;
+    int64_t mt = mpi_size;
+    
+    if (mpi_rank == 0 && debug) {
+        std::fprintf(stderr, "\n=== slate_ard_update ===\n");
+        std::fprintf(stderr, "  m=%" PRId64 ", n_active=%" PRId64 ", alpha=%.6e\n", m, n_active, alpha);
+    }
+    
+    if (n_active == 0) return 1.0; // Perfect conditioning for empty matrix
+    
+    // Define tile lambdas
+    std::function<int64_t (int64_t)> tileMb = [mb](int64_t) { return mb; };
+    std::function<int64_t (int64_t)> tileNb = [nb](int64_t) { return nb; };
+    std::function<int64_t (int64_t)> tile1  = [  ](int64_t) { return  1; };
+    
+    
+    std::function<int (slate::func::ij_tuple)> tileDevice = [](slate::func::ij_tuple) { return 0; };
+    
+    std::function<int (slate::func::ij_tuple)> tileRank = [](slate::func::ij_tuple ij) {
+        int64_t i = std::get<0>(ij);
+        //int64_t j = std::get<1>(ij);
+        return i;
+    };
+    
+    if (mpi_rank == 0 && debug) {
+        std::fprintf(stderr, "*** MPI: %d rank(s) (one rank per node), %d OpenMP threads/node\n",
+                    mpi_size, num_threads );
+        std::fprintf(stderr, "*** Matrix %" PRId64 " x %" PRId64 " Tile %" PRId64 " x %" PRId64 " Grid %" PRId64 " x %" PRId64 "\n",
+                    m, n_active, mb, nb, mt, nt);
+        std::fflush(stderr);
+    }
+        
+    MPI_Barrier(comm);
+    
+    try {
+        // Create matrices - now working with pre-filtered active features only
+        
+        slate::Matrix<double> X_active(m, n_active, tileMb, tileNb, tileRank, tileDevice, comm);
+        slate::Matrix<double>        y(m,        1, tileMb,  tile1, tileRank, tileDevice, comm);
+        
+        // Insert X_active and y tiles - data already filtered to active columns
+        
+        for (int64_t i = 0; i < mt; ++i)
+            for (int64_t j = 0; j < nt; ++j)
+                if (X_active.tileIsLocal(i, j))
+                    X_active.tileInsert(i, j, local_aw_active, lld);
+        
+        for (int64_t i = 0; i < mt; ++i)
+            if (y.tileIsLocal(i, 0))
+                y.tileInsert(i, 0, local_bw, lld);
+        
+        MPI_Barrier(comm);
+        
+        slate::HermitianMatrix<double> C(slate::Uplo::Lower, n_active, tileNb, tileRank, tileDevice, comm);
+        C.insertLocalTiles();
+        
+        // Initialize C with diagonal lambda values
+        slate::set(0.0, C);
+        
+        for (int64_t idx = 0; idx < n_active; ++idx) {
+            int64_t tile_i = idx / nb;
+            int64_t local_i = idx % nb;
+            
+            if (C.tileIsLocal(tile_i, tile_i)) {
+                auto tile = C(tile_i, tile_i);
+                tile.at(local_i, local_i) = lambda_active[idx];
+            }
+        }
+        
+        MPI_Barrier(comm);
+
+        // C = alpha * X.T @ X + C
+        auto X_active_T = transpose(X_active);
+        slate::herk(alpha, X_active_T, 1.0, C);
+        MPI_Barrier(comm);
+
+        // Compute Cholesky factorization
+        slate::potrf(C);
+        MPI_Barrier(comm);
+        
+        // Compute condition number from Cholesky diagonal: cond(A) ≈ (max(L_ii) / min(L_ii))^2
+        // Extract diagonal of Cholesky factor L
+        std::vector<double> L_diag(n_active, 0.0);
+        for (int64_t i = 0; i < n_active; ++i) {
+            int64_t tile_i = i / nb;
+            int64_t local_i = i % nb;
+            
+            if (C.tileIsLocal(tile_i, tile_i)) {
+                L_diag[i] = C(tile_i, tile_i).at(local_i, local_i);
+            }
+        }
+        
+        // Reduce to get full diagonal on all ranks
+        MPI_Allreduce(MPI_IN_PLACE, L_diag.data(), n_active, MPI_DOUBLE, MPI_SUM, comm);
+        
+        // Find max and min of diagonal (absolute values)
+        double max_diag = 0.0;
+        double min_diag = std::numeric_limits<double>::infinity();
+        for (int64_t i = 0; i < n_active; ++i) {
+            double abs_val = std::fabs(L_diag[i]);
+            if (abs_val > max_diag) max_diag = abs_val;
+            if (abs_val < min_diag) min_diag = abs_val;
+        }
+        
+        // Condition number estimate: cond(A) ≈ (max/min)^2
+        double cond_number = (min_diag > 0.0) ? (max_diag / min_diag) * (max_diag / min_diag) : std::numeric_limits<double>::infinity();
+        
+        if (mpi_rank == 0 && debug) {
+            std::fprintf(stderr, "*** Cholesky diagonal: max=%.6e, min=%.6e\n", max_diag, min_diag);
+            std::fprintf(stderr, "*** Condition number estimate: %.6e\n", cond_number);
+            std::fflush(stderr);
+        }
+        
+        MPI_Barrier(comm);
+        slate::potri(C);
+        MPI_Barrier(comm);
+
+        // Compute X.T @ y
+        slate::Matrix<double> XTy(n_active, 1, tileNb, tile1, tileRank, tileDevice, comm);
+        XTy.insertLocalTiles();
+        slate::set(0.0, XTy);
+        slate::gemm(1.0, X_active_T, y, 0.0, XTy);
+        MPI_Barrier(comm);
+        
+        // Compute coef = alpha * C @ XTy
+        slate::Matrix<double> coef_active(n_active, 1, tileNb, tile1, tileRank, tileDevice, comm);
+        coef_active.insertLocalTiles();
+        slate::set(0.0, coef_active);
+        slate::hemm(slate::Side::Left, alpha, C, XTy, 0.0, coef_active);
+        MPI_Barrier(comm);
+        
+        // MODIFIED: Extract only diagonal of sigma instead of full matrix
+        // This saves massive memory (n_active instead of n_active^2 doubles)
+        
+        for (int64_t i = 0; i < n_active; ++i) {
+            int64_t tile_i = i / nb;
+            int64_t local_i = i % nb;
+            
+            // Only extract diagonal elements
+            if (C.tileIsLocal(tile_i, tile_i)) local_sigma_diag[i] = C(tile_i, tile_i).at(local_i, local_i);
+            else local_sigma_diag[i] = 0.0;
+            
+            if (coef_active.tileIsLocal(tile_i, 0)) local_coef_active[i] = coef_active(tile_i, 0).at(local_i, 0);
+            else local_coef_active[i] = 0.0;
+
+        }
+        
+        MPI_Barrier(comm);
+        
+        // Reduce diagonal to all ranks (allreduce since we need it everywhere)
+        MPI_Allreduce(MPI_IN_PLACE, local_sigma_diag, n_active, MPI_DOUBLE, MPI_SUM, comm);
+        
+        // Reduce coefficients to all ranks
+        MPI_Allreduce(MPI_IN_PLACE, local_coef_active, n_active, MPI_DOUBLE, MPI_SUM, comm);
+        
+        MPI_Barrier(comm);
+        
+        if (mpi_rank == 0 && debug) {
+            std::fprintf(stderr, "=== slate_ard_update COMPLETE ===\n");
+            std::fflush(stderr);
+        }
+        
+        return cond_number;
+        
+    } catch (const std::exception& e) {
+        std::cerr << "[Rank " << mpi_rank << "] SLATE ARD error: " << e.what() << std::endl;
+        MPI_Abort(comm, 1);
+        return std::numeric_limits<double>::infinity(); // Return inf on error
+    }
+}
+
+
+/*
+{
     
     int mpi_rank, mpi_size;
     MPI_Comm_rank(comm, &mpi_rank);
@@ -357,5 +480,9 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
         return 0.0;
     }
 }
+
+*/
+
+
 
 } // extern "C"

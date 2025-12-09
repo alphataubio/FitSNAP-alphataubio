@@ -317,8 +317,8 @@ class Calculator:
                     raise RuntimeError(f"SLATE method {method} not implemented.")
 
                 aw_len = int(np.ceil((max_a_len*pt._number_of_nodes + extra_rows)/pt._number_of_nodes))
-                pt.create_shared_array('aw', aw_len, a_width, order='F')
-                pt.create_shared_array('bw', aw_len, order='F')               
+                pt.create_shared_array('aw', aw_len, a_width, order='C')
+                pt.create_shared_array('bw', aw_len, order='C')               
               
             else:
 
