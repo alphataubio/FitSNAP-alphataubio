@@ -317,8 +317,8 @@ class Calculator:
                     raise RuntimeError(f"SLATE method {method} not implemented.")
 
                 aw_len = int(np.ceil((max_a_len*pt._number_of_nodes + extra_rows)/pt._number_of_nodes))
-                pt.create_shared_array('aw', aw_len, a_width, order='C')
-                pt.create_shared_array('bw', aw_len, order='C')               
+                pt.create_shared_array('aw', aw_len, a_width, order='F')
+                pt.create_shared_array('bw', aw_len, order='F')
               
             else:
 
@@ -333,9 +333,10 @@ class Calculator:
               elif a_size / pt.get_ram() > 0.5 and override:
                   pt.single_print(f"WARNING: Descriptor matrix is larger ({a_size/1024**3:.1f} GB) than 50% of your RAM ({0.5*pt.get_ram()/1014**3:.1f} GB). I hope you know what you are doing!")
             
-            pt.create_shared_array('a', a_len, a_width)
-            pt.create_shared_array('b', a_len)
-            pt.create_shared_array('w', a_len)
+            order = 'F' if self.config.sections["SOLVER"].solver.upper() == "SLATE" else 'C'
+            pt.create_shared_array('a', a_len, a_width, order=order)
+            pt.create_shared_array('b', a_len, order=order)
+            pt.create_shared_array('w', a_len, order=order)
             pt.new_slice_a()
             self.shared_index = pt.fitsnap_dict["sub_a_indices"][0]
             # pt.slice_array('a')

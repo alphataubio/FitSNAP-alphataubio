@@ -48,7 +48,7 @@ cdef extern from *:
 def set_openmp_threads(int num_threads, int debug=0):
     slate_set_openmp_threads(num_threads, debug)
 
-def slate_ridge_augmented_qr_cython(double[:, ::1] local_aw, double[::1] local_bw,
+def slate_ridge_augmented_qr_cython(double[::1, :] local_aw, double[::1] local_bw,
                                     int m, int lld, 
                                     MPI.Comm comm_obj, 
                                     int debug=0):
@@ -60,7 +60,7 @@ def slate_ridge_augmented_qr_cython(double[:, ::1] local_aw, double[::1] local_b
     
     slate_ridge_augmented_qr(&local_aw[0, 0], &local_bw[0], m, n, lld, c_comm, debug)
 
-def slate_ard_update_cython(double[:, ::1] local_aw_active, double[::1] local_bw,
+def slate_ard_update_cython(double[::1, :] local_aw_active, double[::1] local_bw,
                            double[::1] lambda_active, double alpha,
                            int m, int n_active, int lld, 
                            MPI.Comm comm_obj, 

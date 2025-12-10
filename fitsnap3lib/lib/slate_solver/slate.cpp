@@ -50,11 +50,13 @@ void slate_ridge_augmented_qr(double* local_aw, double* local_bw,
     int num_threads = omp_get_max_threads();
     
     // Find optimal tile size
-    int64_t nt = 1;
-    int64_t nb = n;
-    int64_t mt_node = num_threads;
+    int64_t nb = 256;
+    int64_t nt = ceil_div64(n, nb);
+    
+    int64_t mb = nb;
+    int64_t m_node = m / mpi_size;
+    int64_t mt_node = ceil_div64(m_node, mb);
     int64_t mt = mt_node * mpi_size;
-    int64_t mb = ceil_div64(m, mt);
     
     if (mpi_rank >= 0) {
         std::cerr << "\n---------------- SLATE Ridge Solver ----------------" << std::endl;
@@ -69,16 +71,22 @@ void slate_ridge_augmented_qr(double* local_aw, double* local_bw,
     
     try {
 
-        std::function<int64_t (int64_t)> tileNb = [nb](int64_t) { return nb; };
-        std::function<int64_t (int64_t)> tile1  = [  ](int64_t) { return 1; };
+        std::function<int64_t (int64_t)> tile1 = [](int64_t) { return 1; };
        
-        std::function<int64_t (int64_t)> tileMb = [lld, mt_node, mb](int64_t i) {
-            if (i % mt_node == mt_node - 1)
-                return lld - (mt_node-1)*mb; // remainder tile
-            else
-                return mb;
+        int64_t tile_row_last = mt_node - 1;
+        int64_t tile_row_remainder = lld - (mt_node-1)*mb;
+        std::function<int64_t (int64_t)> tileMb = [mt_node, tile_row_last, tile_row_remainder, mb](int64_t i) {
+            if (i % mt_node == tile_row_last) return tile_row_remainder;
+            else return mb;
         };
-                
+        
+        int64_t tile_col_last = nt - 1;
+        int64_t tile_col_remainder = n - (nt-1)*nb;
+        std::function<int64_t (int64_t)> tileNb = [tile_col_last, tile_col_remainder, nb](int64_t j) {
+            if (j == tile_col_last) return tile_col_remainder;
+            else return nb;
+        };
+
         std::function<int (slate::func::ij_tuple)> tileRank = [mt_node](slate::func::ij_tuple ij) {
             int64_t i = std::get<0>(ij);
             //int64_t j = std::get<1>(ij);
@@ -96,13 +104,17 @@ void slate_ridge_augmented_qr(double* local_aw, double* local_bw,
         // Insert A matrix tiles
         for (int64_t i = 0; i < mt; ++i)
             for (int64_t j = 0; j < nt; ++j)
-                if (A.tileIsLocal(i, j))
-                    A.tileInsert(i, j, local_aw, lld);
-            
+                if (A.tileIsLocal(i, j)) {
+                    const int64_t offset = (i % mt_node) * mb + j * nb * lld;
+                    A.tileInsert(i, j, local_aw + offset, lld);
+                }
+
         // Insert b vector tiles
         for (int64_t i = 0; i < mt; ++i)
-            if (b.tileIsLocal(i, 0))
-                b.tileInsert(i, 0, local_bw, lld);
+            if (b.tileIsLocal(i, 0)) {
+                const int64_t offset = (i % mt_node) * mb;
+                b.tileInsert(i, 0, local_bw + offset, lld);
+            }
         
         // Debug output
         if (debug) {
@@ -125,7 +137,7 @@ void slate_ridge_augmented_qr(double* local_aw, double* local_bw,
               {slate::Option::PrintPrecision, 3},
               {slate::Option::PrintWidth, 7}
             };
-            //slate::print("b (solution)", b, opts);
+            slate::print("b (solution)", b, opts);
         }
 
     } catch (const std::exception& e) {
