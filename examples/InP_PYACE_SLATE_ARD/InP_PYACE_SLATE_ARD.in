@@ -112,5 +112,5 @@ dump_truth = 0
 dump_weights = 0
 dump_dataframe = 0
 debug = 0
-multinode_testing = 0
+multinode_testing = 1
 
