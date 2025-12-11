@@ -477,7 +477,6 @@ class SlateValidation(SlateCommon):
                         "source": [f"### {row_type} Scatterplot"]
                     })
                     
-                    
                     buf = io.BytesIO()
                     img_format = 'svg' if len(all_truths) < 10000 else 'png'
                     plt.savefig(buf, format=img_format, bbox_inches='tight')
@@ -627,7 +626,7 @@ class SlateValidation(SlateCommon):
             ax_lambda = axes[row_idx, 1]
             lambda_at_iter = lambda_array[iter_idx, :]
             
-            counts, edges, patches = ax_lambda.hist(lambda_at_iter, bins=20, edgecolor='black', alpha=.99)
+            counts, edges, patches = ax_lambda.hist(lambda_at_iter, bins=80, edgecolor='black', alpha=.99)
             ax_lambda.set_xlabel('Log10(Lambda)', fontsize=11)
             ax_lambda.set_ylabel('Number of Features', fontsize=11)
             ax_lambda.set_title(f'Iteration {iter_idx}: Lambda Distribution', fontsize=12, fontweight='bold')
@@ -647,14 +646,6 @@ class SlateValidation(SlateCommon):
                         horizontalalignment='right',
                         bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
                 
-        buf = io.BytesIO()
-        plt.tight_layout()
-        plt.savefig(buf, format='svg', bbox_inches='tight')
-        plt.close()
-        svg_text = buf.getvalue().decode('utf-8')
-        buf.close()
-        img_base64_summary = base64.b64encode(svg_text.encode('utf-8')).decode('utf-8')
-
         notebook["cells"].append({
             "cell_type": "markdown",
             "metadata": {
@@ -664,16 +655,25 @@ class SlateValidation(SlateCommon):
             },
             "source": [f"## Gamma / Lambda Histograms (by iteration)"]
         })
+        
+        buf = io.BytesIO()
+        img_format = 'png' #if len(all_truths) < 10000 else 'svg'
+        plt.savefig(buf, format=img_format, bbox_inches='tight')
+        plt.close()
+        buf.seek(0)
+        img_bytes = buf.getvalue()
+        buf.close()
+        img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+        mime = "image/svg+xml" if img_format == "svg" else "image/png"
 
         notebook["cells"].append({
             "cell_type": "markdown",
             "metadata": {},
             "source": [
-                f'<img src="data:image/svg+xml;base64,{img_base64_summary}" '
-                'alt="Gamma Heatmap" style="width:100%;height:auto;">'
+                f'<div align="center"><img src="data:{mime};base64,{img_base64}" '
+                'style="width:100%;height:auto;"></div>'
             ]
         })
-
 
 
 def draw_labels(ax, y_positions, texts, x=-1):
