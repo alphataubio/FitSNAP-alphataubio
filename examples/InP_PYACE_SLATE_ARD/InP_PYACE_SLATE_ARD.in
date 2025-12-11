@@ -14,11 +14,11 @@ embeddings = {
 # drcinner = 0.01 0.01 0.01 0.01
 
 bonds = {
-    "InIn": {"radbase": "ChebExpCos", "radparameters": [1.737],
+    "In In": {"radbase": "ChebExpCos", "radparameters": [1.737],
              "rcut": 5.790, "dcut": 0.01, "core-repulsion": [0,1.737], "rcut_in": 1.705, "dcut_in": 0.01},
-    "PIn":  {"radbase": "ChebExpCos", "radparameters": [1.502],
+    "P In":  {"radbase": "ChebExpCos", "radparameters": [1.502],
              "rcut": 5.007, "dcut": 0.01, "core-repulsion": [0,1.502], "rcut_in": 1.403, "dcut_in": 0.01},
-    "PP":   {"radbase": "ChebExpCos", "radparameters": [1.267],
+    "P P":   {"radbase": "ChebExpCos", "radparameters": [1.267],
              "rcut": 4.224, "dcut": 0.01, "core-repulsion": [0,1.267], "rcut_in": 1.100, "dcut_in": 0.01}
   }
 
