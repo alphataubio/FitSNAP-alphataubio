@@ -23,12 +23,12 @@ def unify_mus_ns_comb(mus_comb, ns_comb):
 
 def whitelist_for_rank(rank):
 
-    #                1  2 3 4 5 6 7 8 9
-    #lmax_by_rank = [0,10,6,4,2,2,1,1,1] ORIGINAL PYACE WHITELIST
-    nmax_by_rank =  [1, 2,3,4,3,2,1]
-    lmax_by_rank =  [0, 1,2,3,4,5,6]
-    nmax = nmax_by_rank[rank-1]
+    #                 1  2  3  4  5  6  7  8  9 10 11
+    #lmax_by_rank = [ 0,10, 6, 4, 2, 2, 1, 1, 1, 1, 1] ORIGINAL PYACE WHITELIST
+    lmax_by_rank =  [ 0, 1, 2, 3, 4, 5, 6, 7]
+    nmax_by_rank =  [ 1, 2, 3, 4, 2, 1, 1, 1]
     lmax = lmax_by_rank[rank-1]
+    nmax = nmax_by_rank[rank-1]
     
     PA_lammps, not_compat = pa_labels_raw(rank=rank,nmax=nmax,lmax=lmax,mumax=2,lmin=0)
 
