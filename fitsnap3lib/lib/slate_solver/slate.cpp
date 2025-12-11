@@ -1,4 +1,5 @@
 #include <slate/slate.hh>
+#include <lapack.hh>
 #include <mpi.h>
 #include <omp.h>
 
@@ -206,14 +207,6 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
     
     if (n_active == 0) return 1.0; // Perfect conditioning for empty matrix
     
-    if (mpi_rank == 0 && debug) {
-        std::fprintf(stderr, "*** MPI: %d rank(s) (one rank per node), %d OpenMP threads/node\n",
-                    mpi_size, num_threads );
-        std::fprintf(stderr, "*** Matrix %" PRId64 " x %" PRId64 " Tile %" PRId64 " x %" PRId64 " Grid %" PRId64 " x %" PRId64 "\n",
-                    m, n_active, mb, nb, mt, nt);
-        std::fflush(stderr);
-    }
-            
     try {
     
         // -------------------------------- SLATE MATRICES --------------------------------
@@ -237,18 +230,20 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
         
         MPI_Barrier(comm);
         
-        // -------------------------------- RANK K UPDATE --------------------------------
-        
-        slate::HermitianMatrix<double> C(slate::Uplo::Lower, n_active, tileNb, tileRank, tileDevice, comm);
+        // -------------------------------- FORM NORMAL EQUATIONS --------------------------------
+        // C = alpha * X.T @ X + Lambda
+
+        // make sure all tiles for C and y_prime are on rank 0
+        std::function<int (slate::func::ij_tuple)> tileRank0 = [](slate::func::ij_tuple ij) { return 0; };
+
+        slate::HermitianMatrix<double> C(slate::Uplo::Lower, n_active, tileNb, tileRank0, tileDevice, comm);
         C.insertLocalTiles();
         
         // Initialize C with diagonal lambda values
         slate::set(0.0, C);
-        
         for (int64_t idx = 0; idx < n_active; ++idx) {
             int64_t tile_i = idx / nb;
             int64_t local_i = idx % nb;
-            
             if (C.tileIsLocal(tile_i, tile_i)) {
                 auto tile = C(tile_i, tile_i);
                 tile.at(local_i, local_i) = lambda_active[idx];
@@ -261,95 +256,157 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
         auto X_active_T = transpose(X_active);
         slate::herk(alpha, X_active_T, 1.0, C);
         MPI_Barrier(comm);
-
-        // -------------------------------- CHOLESKY FACTORIZATION --------------------------------
-
-        slate::potrf(C);
-        MPI_Barrier(comm);
-        slate::potri(C);
-        MPI_Barrier(comm);
         
-        // -------------------------------- CONDITION NUMBER --------------------------------
+        // Compute y' = alpha * X.T @ y
+        slate::Matrix<double> y_prime(n_active, 1, tileNb, tile1, tileRank0, tileDevice, comm);
+        y_prime.insertLocalTiles();
+        slate::set(0.0, y_prime);
+        slate::gemm(alpha, X_active_T, y, 0.0, y_prime);
+        MPI_Barrier(comm);
+
+        // -------------------------------- LOCAL SOLVE (Rank 0) --------------------------------
+        // Gather C and y_prime to Rank 0 and solve using LAPACK SVD (dgelss)
         
-        // Compute condition number from Cholesky diagonal: cond(A) ≈ (max(L_ii) / min(L_ii))^2
-        // Extract diagonal of Cholesky factor L
-        std::vector<double> L_diag(n_active, 0.0);
-        for (int64_t i = 0; i < n_active; ++i) {
-            int64_t tile_i = i / nb;
-            int64_t local_i = i % nb;
-            
-            if (C.tileIsLocal(tile_i, tile_i)) {
-                L_diag[i] = C(tile_i, tile_i).at(local_i, local_i);
+        // Allocate local buffers
+        std::vector<double> C_full;
+        std::vector<double> y_prime_full;
+        
+        if (mpi_rank == 0) {
+            C_full.resize(n_active * n_active, 0.0);
+            y_prime_full.resize(n_active, 0.0);
+        }
+        
+        // Gather C (Symmetric Lower) -> Full General Matrix on Rank 0
+        // Since tileRank0 forces all tiles to Rank 0, we just copy tiles to C_full.
+        
+        // Iterate over global tiles
+        int64_t C_nt = C.nt();
+        for (int64_t j = 0; j < C_nt; ++j) {
+            for (int64_t i = j; i < C_nt; ++i) { // Lower triangular
+                if (mpi_rank == 0) {
+                    C.tileGetForReading(i, j, slate::HostNum, slate::LayoutConvert::None);
+                    auto tile = C(i, j);
+                    double* data = tile.data();
+                    int64_t stride = tile.stride();
+                    
+                    int64_t r_offset = 0; for(int k=0; k<i; ++k) r_offset += C.tileNb(k);
+                    int64_t c_offset = 0; for(int k=0; k<j; ++k) c_offset += C.tileNb(k);
+                    
+                    for (int64_t jj = 0; jj < tile.nb(); ++jj) {
+                        for (int64_t ii = 0; ii < tile.mb(); ++ii) {
+                            if (i == j && ii < jj) continue; // Lower part only
+                            
+                            double val = data[ii + jj*stride];
+                            int64_t r = r_offset + ii;
+                            int64_t c = c_offset + jj;
+                            
+                            // Fill C_full (Column Major n_active x n_active)
+                            if (r < n_active && c < n_active) {
+                                C_full[r + c*n_active] = val;
+                                // Symmetric fill
+                                if (r != c) C_full[c + r*n_active] = val; 
+                            }
+                        }
+                    }
+                }
             }
         }
         
-        // Reduce to get full diagonal on all ranks
-        MPI_Allreduce(MPI_IN_PLACE, L_diag.data(), n_active, MPI_DOUBLE, MPI_SUM, comm);
-        
-        // Find max and min of diagonal (absolute values)
-        double max_diag = 0.0;
-        double min_diag = std::numeric_limits<double>::infinity();
-        for (int64_t i = 0; i < n_active; ++i) {
-            double abs_val = std::fabs(L_diag[i]);
-            if (abs_val > max_diag) max_diag = abs_val;
-            if (abs_val < min_diag) min_diag = abs_val;
+        // Gather y_prime
+        int64_t y_mt = y_prime.mt();
+        for (int64_t i = 0; i < y_mt; ++i) {
+            if (mpi_rank == 0) {
+                y_prime.tileGetForReading(i, 0, slate::HostNum, slate::LayoutConvert::None);
+                auto tile = y_prime(i, 0);
+                double* data = tile.data();
+                
+                int64_t r_offset = 0; for(int k=0; k<i; ++k) r_offset += y_prime.tileMb(k);
+                
+                for (int64_t ii = 0; ii < tile.mb(); ++ii) {
+                    int64_t r = r_offset + ii;
+                    if (r < n_active) {
+                        y_prime_full[r] = data[ii]; // stride 1? Check? Assuming vector tile is contiguous.
+                    }
+                }
+            }
         }
         
-        // Condition number estimate: cond(A) ≈ (max/min)^2
-        double cond_number = (min_diag > 0.0) ? (max_diag / min_diag) * (max_diag / min_diag) : std::numeric_limits<double>::infinity();
-        
-        if (mpi_rank == 0 && debug) {
-            std::fprintf(stderr, "*** Cholesky diagonal: max=%.6e, min=%.6e\n", max_diag, min_diag);
-            std::fprintf(stderr, "*** Condition number estimate: %.6e\n", cond_number);
-            std::fflush(stderr);
-        }
-        
-        // -------------------------------- COMPUTE SIGMA / COEF --------------------------------
-
-        // Compute X.T @ y
-        slate::Matrix<double> XTy(n_active, 1, tileNb, tile1, tileRank, tileDevice, comm);
-        XTy.insertLocalTiles();
-        slate::set(0.0, XTy);
-        slate::gemm(1.0, X_active_T, y, 0.0, XTy);
         MPI_Barrier(comm);
         
-        // Compute coef = alpha * C @ XTy
-        slate::Matrix<double> coef_active(n_active, 1, tileNb, tile1, tileRank, tileDevice, comm);
-        coef_active.insertLocalTiles();
-        slate::set(0.0, coef_active);
-        slate::hemm(slate::Side::Left, alpha, C, XTy, 0.0, coef_active);
-        MPI_Barrier(comm);
+        double cond_number = 0.0;
         
-        // MODIFIED: Extract only diagonal of sigma instead of full matrix
-        // This saves massive memory (n_active instead of n_active^2 doubles)
-        
-        for (int64_t i = 0; i < n_active; ++i) {
-            int64_t tile_i = i / nb;
-            int64_t local_i = i % nb;
+        if (mpi_rank == 0) {
+            // Solve C * x = y' using SVD to handle near-singular C
+            // C = U S V^T. 
+            // x = V S^-1 U^T y'
+            // Covariance = V S^-1 V^T
             
-            // Only extract diagonal elements
-            if (C.tileIsLocal(tile_i, tile_i)) local_sigma_diag[i] = C(tile_i, tile_i).at(local_i, local_i);
-            else local_sigma_diag[i] = 0.0;
+            // lapack::gesvd
+            std::vector<double> S(n_active);
+            std::vector<double> U(n_active * n_active); // U
+            std::vector<double> VT(n_active * n_active); // VT
             
-            if (coef_active.tileIsLocal(tile_i, 0)) local_coef_active[i] = coef_active(tile_i, 0).at(local_i, 0);
-            else local_coef_active[i] = 0.0;
-
+            // Work query
+            // lapack::gesvd(Job::AllVec, Job::AllVec, ...)
+            
+            // Note: C_full will be destroyed. Make a copy if needed? No need.
+            
+            lapack::gesvd(lapack::Job::AllVec, lapack::Job::AllVec, n_active, n_active,
+                          C_full.data(), n_active, S.data(), U.data(), n_active, VT.data(), n_active);
+                          
+            // Compute Condition Number
+            double s_max = S[0];
+            double s_min = S[n_active-1];
+            cond_number = (s_min > 0) ? (s_max / s_min) : 1e16;
+            
+            // Invert S (with threshold)
+            std::vector<double> S_inv(n_active, 0.0);
+            double threshold = 1e-14 * s_max;
+            for(int i=0; i<n_active; ++i) {
+                if (S[i] > threshold) S_inv[i] = 1.0 / S[i];
+                else S_inv[i] = 0.0;
+            }
+            
+            // Compute x = V * (S_inv * (U^T * y_prime))
+            // 1. tmp = U^T * y_prime
+            std::vector<double> tmp(n_active, 0.0);
+            blas::gemv(blas::Layout::ColMajor, blas::Op::Trans, n_active, n_active, 
+                       1.0, U.data(), n_active, y_prime_full.data(), 1, 0.0, tmp.data(), 1);
+                       
+            // 2. tmp = S_inv * tmp (elementwise)
+            for(int i=0; i<n_active; ++i) tmp[i] *= S_inv[i];
+            
+            // 3. x = V^T^T * tmp = V * tmp. Note VT is V^T. So V is VT^T.
+            // x = VT^T * tmp = (tmp^T * VT)^T ? No.
+            // x = V * tmp. V has columns of V. VT has rows of V^T = cols of V.
+            // So V is simply VT transposed.
+            // x = VT^T * tmp. 
+            // Use gemv with Trans on VT.
+            blas::gemv(blas::Layout::ColMajor, blas::Op::Trans, n_active, n_active,
+                       1.0, VT.data(), n_active, tmp.data(), 1, 0.0, local_coef_active, 1);
+                       
+            // Compute Covariance Diagonal
+            // Sigma = V * diag(S_inv) * V^T
+            // Sigma_ii = sum_k V_ik^2 * S_inv_k
+            // V_ik is element (i,k) of V.
+            // V is transpose of VT. VT_ki.
+            // So V_ik = VT_ki.
+            // Sigma_ii = sum_k (VT_ki)^2 * S_inv_k
+            
+            for(int i=0; i<n_active; ++i) {
+                double sum = 0.0;
+                for(int k=0; k<n_active; ++k) {
+                    double v_ik = VT[k + i*n_active]; // VT is col-major n x n. VT(k, i)
+                    sum += v_ik * v_ik * S_inv[k];
+                }
+                local_sigma_diag[i] = sum;
+            }
         }
         
-        MPI_Barrier(comm);
-        
-        // Reduce diagonal to all ranks (allreduce since we need it everywhere)
-        MPI_Allreduce(MPI_IN_PLACE, local_sigma_diag, n_active, MPI_DOUBLE, MPI_SUM, comm);
-        
-        // Reduce coefficients to all ranks
-        MPI_Allreduce(MPI_IN_PLACE, local_coef_active, n_active, MPI_DOUBLE, MPI_SUM, comm);
-        
-        MPI_Barrier(comm);
-        
-        if (mpi_rank == 0 && debug) {
-            std::fprintf(stderr, "=== slate_ard_update COMPLETE ===\n");
-            std::fflush(stderr);
-        }
+        // Broadcast results
+        MPI_Bcast(local_coef_active, n_active, MPI_DOUBLE, 0, comm);
+        MPI_Bcast(local_sigma_diag, n_active, MPI_DOUBLE, 0, comm);
+        MPI_Bcast(&cond_number, 1, MPI_DOUBLE, 0, comm);
         
         return cond_number;
         
@@ -359,7 +416,5 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
         return std::numeric_limits<double>::infinity(); // Return inf on error
     }
 }
-
-
 
 } // extern "C"
