@@ -2,6 +2,7 @@ from fitsnap3lib.solvers.slate_validation import SlateValidation
 import sys, os, json, time, signal
 import numpy as np
 from mpi4py import MPI
+from sklearn.mixture import GaussianMixture
 
 try:
     from slate_wrapper import set_openmp_threads, slate_ard_update_cython
@@ -162,6 +163,38 @@ class SLATE(SlateValidation):
 
         iteration = 1
         start_time_iteration = time.time()
+
+        def adaptive_threshold_lambda(lambda_values):
+            # 1. Work in Log-Space to handle orders of magnitude
+            log_data = np.log10(lambda_values + 1e-9).reshape(-1, 1)
+    
+            # 2. Fit GMMs for 1, 2, and 3 components to find best fit
+            best_gmm = None
+            lowest_bic = np.inf
+    
+            for n in [1, 2, 3, 4]:
+                gmm = GaussianMixture(n_components=n, random_state=12345)
+                gmm.fit(log_data)
+                bic = gmm.bic(log_data)
+                if bic < lowest_bic:
+                    lowest_bic = bic
+                    best_gmm = gmm
+            
+            # 3. Apply Your Logic
+            n_best = best_gmm.n_components
+    
+            if n_best == 1:
+                # Case: No separation yet (likely early iterations).
+                # Strategy: Do NOT prune. Let the model evolve.
+                return np.inf
+            else:
+                # Case: Separation exists (2, 3, or more spikes).
+                # Strategy: Cut between the highest cluster (Noise) and the one before it.
+                means = np.sort(best_gmm.means_.flatten())
+        
+                # Your logic: Average of the last two means
+                cutoff_log = (means[-2] + means[-1]) / 2.0
+                return 10**cutoff_log
         
         while True:
             # Get active indices
@@ -257,7 +290,13 @@ class SLATE(SlateValidation):
             alpha_ = (global_m_training - gamma_active.sum() + 2.0 * self.alpha_1) / (sse_ + 2.0 * self.alpha_2)
 
             # Prune features
+            
             if iteration >= 3:
+                # self.threshold_lambda = adaptive_threshold_lambda(lambda_)
+                # self.threshold_lambda = 10.0**np.quantile(np.log10(lambda_), 0.95)
+                _, edges = np.histogram(np.log10(lambda_), bins=20)
+                self.threshold_lambda = 10.0**edges[-2]
+
                 lambda_mask = lambda_ < self.threshold_lambda
                 
             coef_[~lambda_mask] = 0
@@ -275,7 +314,7 @@ class SLATE(SlateValidation):
             coef_change_str = " " if coef_old_ is None else f" coef_rel_change {coef_rel_change:.2g} coef_abs_change {coef_abs_change:.2g}"
             coef_old_ = np.copy(coef_)
 
-            pt.single_print(f"SLATE ARD #{iteration} ({elapsed_iteration/60:.1f}m): alpha {alpha_:.3g} sse {sse_:.3g} cond_number {cond_number:.1g} gamma_sum {gamma_active.sum():.1f} n_active {n_active}{coef_change_str}{slurm_time_left_str}")
+            pt.single_print(f"SLATE ARD #{iteration} ({elapsed_iteration/60:.1f}m): alpha {alpha_:.3g} sse {sse_:.3g} cond_number {cond_number:.1g} threshold_lambda {np.log10(self.threshold_lambda):.2f} gamma_sum {gamma_active.sum():.1f} n_active {n_active}{coef_change_str}{slurm_time_left_str}")
             
             iteration += 1
             
