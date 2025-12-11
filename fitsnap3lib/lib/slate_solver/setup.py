@@ -81,16 +81,41 @@ library_dirs = [
     os.path.join(slate_dir, "lib64"),
 ]
 
-# --- CRITICAL FIX HERE ---
-# Changed 'blas'/'lapack' to 'blaspp'/'lapackpp' to match your install logs.
 libraries = ["slate", "blaspp", "lapackpp"]
 
-extra_compile_args = ["-std=c++17", "-O3", "-fopenmp"] + [
+# --- OpenMP (conditional) ---
+extra_compile_args = ["-std=c++17", "-O3"] + [
     f for f in mpi_compile_flags if not f.startswith("-I")
 ]
-extra_link_args = ["-fopenmp"] + [
-    f for f in mpi_link_flags if not f.startswith("-l")
-]
+extra_link_args = [f for f in mpi_link_flags if not f.startswith("-l")]
+
+is_macos = (sys.platform == "darwin")
+libomp_prefix = None
+if is_macos:
+    try:
+        libomp_prefix = subprocess.check_output(["brew", "--prefix", "libomp"]).decode().strip()
+    except Exception:
+        libomp_prefix = None
+
+if is_macos and libomp_prefix:
+    include_dirs.append(os.path.join(libomp_prefix, "include"))
+    library_dirs.append(os.path.join(libomp_prefix, "lib"))
+    extra_compile_args += ["-Xpreprocessor", "-fopenmp"]
+    extra_link_args += ["-L" + os.path.join(libomp_prefix, "lib"), "-lomp"]
+elif is_macos and not libomp_prefix:
+    print("Note: libomp not found via Homebrew; building without OpenMP on macOS.")
+else:
+    # Non-macOS: GCC/Clang with libgomp/llvm-omp
+    extra_compile_args += ["-fopenmp"]
+    extra_link_args += ["-fopenmp"]
+
+
+# Base dependencies
+install_requires = []
+
+# Add mpi4py only if *not* loaded by LMOD
+if "mpi4py" not in os.environ.get("LOADEDMODULES", "").lower():
+    install_requires.append("mpi4py>=4.0")
 
 ext = Extension(
     "slate_wrapper",
