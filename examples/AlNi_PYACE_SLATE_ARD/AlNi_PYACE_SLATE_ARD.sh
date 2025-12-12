@@ -3,7 +3,7 @@
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=192
 #SBATCH --mem=0
-#SBATCH --time=3:00:00
+#SBATCH --time=1-00:00:00
 #SBATCH --mail-type=all
 #SBATCH --mail-user=alphataubio@gmail.com
 
