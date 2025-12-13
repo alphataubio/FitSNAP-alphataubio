@@ -5,6 +5,9 @@ from fitsnap3lib.io.sections.sections import Section
 import numpy as np
 from collections import defaultdict
 
+from fitsnap3lib.lib.sym_ACE.ctilde import *
+
+
 # ------------------------------------------------------------------------------------------------
 
 class PyAce(Section):
@@ -118,49 +121,20 @@ class PyAce(Section):
         the exact number of coefficients.
         """
         try:
-            from lammps_pyace import ACEBBasisSet, ACECTildeBasisSet, create_multispecies_basis_config
             
-            basis_config = create_multispecies_basis_config(self.ace_config)
-            b_basis = ACEBBasisSet(basis_config)
-            ctilde_basis = b_basis.to_ACECTildeBasisSet()
+            ctilde_basis = create_ctilde_basis(self.ace_config)
             self.ctilde_basis = ctilde_basis
                 
             # total number of functions for all elements and ranks
-            self.ncoeff = sum([len(f) for f in ctilde_basis.basis_rank1]) \
-                        + sum([len(f) for f in ctilde_basis.basis])
+            self.ncoeff = ctilde_basis.ncoeff
+            self.blist = ctilde_basis.blist
                         
             self.pt.single_print(f"--------\nPyACE basis: numtypes {self.numtypes} ncoeff {self.ncoeff}")
-            
-            self.blist = [] if self.bzeroflag else [f"{t} [0]" for t in self.types]
-            functions_by_rank = defaultdict(int)
-            
-            for element_basis_rank1_functions in ctilde_basis.basis_rank1:
-                for function in element_basis_rank1_functions:
-                    element = self.elements[function.mu0]
-                    elements = " ". join([self.elements[mu] for mu in function.mus])
-                    self.blist.append(f"{element} {elements} ns {function.ns} ls {function.ls}")
-                    functions_by_rank[function.rank] += 1
 
-            for element_basis_functions in ctilde_basis.basis:
-                for function in element_basis_functions:
-                    element = self.elements[function.mu0]
-                    elements = " ". join([self.elements[mu] for mu in function.mus])
-                    self.blist.append(f"{element} {elements} ns {function.ns} ls {function.ls}")
-                    functions_by_rank[function.rank] += 1
-
-            for k,v in sorted(functions_by_rank.items()):
+            for k,v in sorted(ctilde_basis.number_functions_by_rank.items()):
                 self.pt.single_print(f"    Rank {k}: {v} basis functions")
                 
             self.pt.single_print("--------\n")
-
-            if 'EXTRAS' in self.sections and self.sections['EXTRAS'].debug:
-                for element_basis_rank1_functions in b_basis.basis_rank1:
-                    for basis_rank1_function in element_basis_rank1_functions:
-                        basis_rank1_function.print()
-            
-                for element_basis_functions in b_basis.basis:
-                    for basis_function in element_basis_functions:
-                        basis_function.print()
             
         except ImportError:
             raise RuntimeError("PyACE not available - cannot create basis")

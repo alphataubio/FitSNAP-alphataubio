@@ -96,11 +96,7 @@ try:
         def write_pyace_potential(self, coeffs):
             """Write potential using pyace library for [PYACE] sections only"""
 
-            # Import pyace components for PYACE sections
-            try:
-                from lammps_pyace import ACEBBasisSet, ACECTildeBasisSet
-            except ImportError:
-                raise ModuleNotFoundError("Missing pyace python package.")
+            from fitsnap3lib.lib.sym_ACE.ctilde import CTildeBasisSet
 
             pyace_section = self.config.sections["PYACE"]
             assert hasattr(pyace_section, 'ctilde_basis') and pyace_section.ctilde_basis is not None
@@ -213,6 +209,8 @@ try:
                 fp.write(f"{refsec}")
 
 except ModuleNotFoundError:
+
+    raise
 
     class Pace(Output):
         """

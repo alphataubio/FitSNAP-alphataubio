@@ -4,19 +4,6 @@ from fitsnap3lib.calculators.lammps_base import LammpsBase, _extract_compute_np
 from fitsnap3lib.calculators.lammps_pace import LammpsPace
 import lammps
 
-# Import pyace components directly to avoid circular imports
-try:
-    from lammps_pyace import BBasisConfiguration, ACEBBasisSet, ACECTildeBasisSet,  create_multispecies_basis_config
-    PYACE_AVAILABLE = True
-except ImportError as e:
-    print(f"Warning: Could not import pyace: {e}")
-    PYACE_AVAILABLE = False
-    # Define dummy classes to prevent errors
-    class ACEBBasisSet: pass
-    class ACECTildeBasisSet: pass
-    class BBasisConfiguration: pass
-    def create_multispecies_basis_config(*args, **kwargs): pass
-
 # ------------------------------------------------------------------------------------------------
 
 class LammpsPyace(LammpsPace):
