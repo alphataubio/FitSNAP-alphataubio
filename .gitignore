@@ -9,11 +9,6 @@ wig_LR*
 *.yace
 *.bp
 
-
-
-# ignoring built test docs
-docs/build/
-
 # ignoring VS Code workspace file
 *.code-workspace
 
@@ -21,6 +16,12 @@ docs/build/
 *.pyc
 *.egg-info
 __pycache__
+
+# ignoring build files
+build/
+fitsnap3lib/lib/slate_solver/slate_wrapper.cpp
+*.so
+
 
 # ignoring FitSnap3 outputs
 #*.lammps
@@ -38,9 +39,6 @@ __pycache__
 
 # ignore PACE library files
 fitsnap3lib/lib/sym_ACE/lib/*.pickle
-/fitsnap3lib/lib/slate_solver/slate_solver.egg-info
-fitsnap3lib/lib/slate_solver/slate_wrapper.cpp
-*.so
 
 .ipynb_checkpoints
 .jupyter
