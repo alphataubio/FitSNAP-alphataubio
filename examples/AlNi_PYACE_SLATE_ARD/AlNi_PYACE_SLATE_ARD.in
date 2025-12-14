@@ -83,8 +83,8 @@ aimd-from-PBE-3000-nvt  =  3.0   300.0  10.0
 # -----------------------------------------------------------------------------
 [OUTFILE]
 output_style = PACE
-metrics = AlNi_PYACE_SLATE_ARD_v1.md
-potential = AlNi_PYACE_SLATE_ARD_v1
+metrics = AlNi_PYACE_SLATE_ARD.md
+potential = AlNi_PYACE_SLATE_ARD
 validation = 1
 
 # -----------------------------------------------------------------------------
