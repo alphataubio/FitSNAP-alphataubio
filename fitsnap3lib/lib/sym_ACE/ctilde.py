@@ -146,14 +146,30 @@ class CTildeBasisSet:
             for func in sorted_funcs:
                 central_el = self.elements[func.mu0]
                 neighbor_els = " ".join([self.elements[m] for m in func.mus])
-                # Format: "Si Si Si ns [1, 2] ls [0, 0]"
-                # Using tolist() to ensure standard list formatting with commas if needed, 
-                # though space separation is common in ACE outputs. 
-                # Python list str() gives [1, 2], numpy gives [1 2]. 
-                # We use list representation to match PyACE snippet style.
                 blist.append(f"{central_el} {neighbor_els} ns {func.ns.tolist()} ls {func.ls.tolist()}")
                 
         return blist
+
+    @property
+    def basis_ranks(self):
+        """List of ranks for all basis functions."""
+        ranks = []
+        if not self.bzeroflag:
+            # Rank 0 corresponds to atomic energy/background
+            ranks.extend([0] * self.nelements)
+        
+        # Iterate in standard element order (0, 1, 2...)
+        for mu in sorted(self.functions.keys()):
+            current_funcs = self.functions[mu]
+            
+            # Sort: Rank 1 first, then others (matching blist order)
+            rank1 = [f for f in current_funcs if f.rank == 1]
+            others = [f for f in current_funcs if f.rank != 1]
+            sorted_funcs = rank1 + others
+            
+            for func in sorted_funcs:
+                ranks.append(int(func.rank))
+        return ranks
 
     def save_yaml(self, filename):
         def format_flow_list(lst):

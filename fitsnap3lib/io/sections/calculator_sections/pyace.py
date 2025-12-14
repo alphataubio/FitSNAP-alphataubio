@@ -124,10 +124,7 @@ class PyAce(Section):
             
             ctilde_basis = create_ctilde_basis(self.ace_config)
             self.ctilde_basis = ctilde_basis
-                
-            # total number of functions for all elements and ranks
             self.ncoeff = ctilde_basis.ncoeff
-            self.blist = ctilde_basis.blist
                         
             self.pt.single_print(f"--------\nPyACE basis: numtypes {self.numtypes} ncoeff {self.ncoeff}")
 

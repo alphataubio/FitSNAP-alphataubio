@@ -26,9 +26,6 @@ class LammpsPyace(LammpsPace):
     def get_width(self):
         """Get width of descriptor vector for PYACE calculator"""
         
-        if not PYACE_AVAILABLE:
-            raise RuntimeError("pyace not available")
-        
         if self._bzeroflag:
             return self._ncoeff
         else:

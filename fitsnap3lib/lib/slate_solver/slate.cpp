@@ -55,9 +55,9 @@ void slate_ridge_augmented_qr(double* local_aw, double* local_bw,
     // -------------------------------- TILE SIZE --------------------------------
     // FIXME: find optimal tile size based on cache size
     
-    int64_t nb = 256;
+    int64_t mb = 64;
+    int64_t nb = 64;
     int64_t nt = ceil_div64(n, nb);
-    int64_t mb = nb;
     int64_t m_node = m / mpi_size;
     int64_t mt_node = ceil_div64(m_node, mb);
     int64_t mt = mt_node * mpi_size;
@@ -83,9 +83,7 @@ void slate_ridge_augmented_qr(double* local_aw, double* local_bw,
         return i / mt_node;
     };
 
-    // FIXME: GPU device tiles not implemented yet (placeholder)
-    // need to sync to device from fitsnap python shared array on node-local ram
-    std::function<int (slate::func::ij_tuple)> tileDevice = [](slate::func::ij_tuple) { return 0; };
+    std::function<int (slate::func::ij_tuple)> none;
     
     if (mpi_rank == 0) {
         std::cerr << "\n---------------- SLATE Ridge Solver ----------------" << std::endl;
@@ -103,8 +101,8 @@ void slate_ridge_augmented_qr(double* local_aw, double* local_bw,
         // -------------------------------- SLATE MATRICES --------------------------------
         // pointer to fitsnap python shared array in node-local ram
         
-        slate::Matrix<double> A(m, n, tileMb, tileNb, tileRank, tileDevice, comm);
-        slate::Matrix<double> b(m, 1, tileMb,  tile1, tileRank, tileDevice, comm);
+        slate::Matrix<double> A(m, n, tileMb, tileNb, tileRank, none, comm);
+        slate::Matrix<double> b(m, 1, tileMb,  tile1, tileRank, none, comm);
         
         for (int64_t i = 0; i < mt; ++i)
             for (int64_t j = 0; j < nt; ++j)
@@ -155,7 +153,7 @@ void slate_ridge_augmented_qr(double* local_aw, double* local_bw,
 // -----------------------------------------------------------------------------
 double slate_ard_update(double* local_aw_active, double* local_bw, double* local_sigma_diag, double* local_coef_active,
                      int64_t m, int64_t n_active, int64_t lld,
-                     double alpha, double* lambda_active, 
+                     double alpha, double* lambda_active,
                      MPI_Comm comm, int debug) {
 
     // -------------------------------- HYBRID MPI/OPENMP --------------------------------
@@ -168,9 +166,9 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
     // -------------------------------- TILE SIZE --------------------------------
     // FIXME: find optimal tile size based on cache size
     
-    int64_t nb = 256;
+    int64_t mb = 64;
+    int64_t nb = 64;
     int64_t nt = ceil_div64(n_active, nb);
-    int64_t mb = nb;
     int64_t m_node = m / mpi_size;
     int64_t mt_node = ceil_div64(m_node, mb);
     int64_t mt = mt_node * mpi_size;
@@ -196,9 +194,7 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
         return i / mt_node;
     };
 
-    // FIXME: GPU device tiles not implemented yet (placeholder)
-    // need to sync to device from fitsnap python shared array on node-local ram
-    std::function<int (slate::func::ij_tuple)> tileDevice = [](slate::func::ij_tuple) { return 0; };
+    std::function<int (slate::func::ij_tuple)> none;
     
     if (mpi_rank == 0 && debug) {
         std::fprintf(stderr, "\n=== slate_ard_update ===\n");
@@ -212,8 +208,8 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
         // -------------------------------- SLATE MATRICES --------------------------------
         // pointer to fitsnap python shared array in node-local ram
 
-        slate::Matrix<double> X_active(m, n_active, tileMb, tileNb, tileRank, tileDevice, comm);
-        slate::Matrix<double>        y(m,        1, tileMb,  tile1, tileRank, tileDevice, comm);
+        slate::Matrix<double> X_active(m, n_active, tileMb, tileNb, tileRank, none, comm);
+        slate::Matrix<double>        y(m,        1, tileMb,  tile1, tileRank, none, comm);
                 
         for (int64_t i = 0; i < mt; ++i)
             for (int64_t j = 0; j < nt; ++j)
@@ -236,7 +232,7 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
         // make sure all tiles for C and y_prime are on rank 0
         std::function<int (slate::func::ij_tuple)> tileRank0 = [](slate::func::ij_tuple ij) { return 0; };
 
-        slate::HermitianMatrix<double> C(slate::Uplo::Lower, n_active, tileNb, tileRank0, tileDevice, comm);
+        slate::HermitianMatrix<double> C(slate::Uplo::Lower, n_active, tileNb, tileRank0, none, comm);
         C.insertLocalTiles();
         
         // Initialize C with diagonal lambda values
@@ -258,7 +254,7 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
         MPI_Barrier(comm);
         
         // Compute y' = alpha * X.T @ y
-        slate::Matrix<double> y_prime(n_active, 1, tileNb, tile1, tileRank0, tileDevice, comm);
+        slate::Matrix<double> y_prime(n_active, 1, tileNb, tile1, tileRank0, none, comm);
         y_prime.insertLocalTiles();
         slate::set(0.0, y_prime);
         slate::gemm(alpha, X_active_T, y, 0.0, y_prime);
@@ -361,7 +357,7 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
             
             // Invert S (with threshold)
             std::vector<double> S_inv(n_active, 0.0);
-            double threshold = 1e-14 * s_max;
+            double threshold = 1e-13 * s_max;
             for(int i=0; i<n_active; ++i) {
                 if (S[i] > threshold) S_inv[i] = 1.0 / S[i];
                 else S_inv[i] = 0.0;

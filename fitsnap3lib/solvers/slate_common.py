@@ -108,19 +108,10 @@ class SlateCommon(Solver):
             # Get rank information from PYACE basis if available
             if "PYACE" in self.config.sections:
                 pyace_section = self.config.sections["PYACE"]
-
                 if hasattr(pyace_section, 'ctilde_basis'):
-                    basis_ranks = []
-                    if not pyace_section.bzeroflag:
-                        basis_ranks.extend([0] * len(pyace_section.types))
-                    for element_basis_rank1_functions in pyace_section.ctilde_basis.basis_rank1:
-                        for basis_rank1_function in element_basis_rank1_functions:
-                            basis_ranks.append(int(basis_rank1_function.rank))
-                    for element_basis_functions in pyace_section.ctilde_basis.basis:
-                        for basis_function in element_basis_functions:
-                            basis_ranks.append(int(basis_function.rank))
-                    stream.write_attribute('basis_ranks', basis_ranks)
-                    stream.write_attribute('blist', pyace_section.blist)
+                    ctilde_basis = pyace_section.ctilde_basis
+                    stream.write_attribute('basis_ranks', ctilde_basis.basis_ranks)
+                    stream.write_attribute('blist', ctilde_basis.blist)
         
         if self.method.upper() == "ARD":
             self.perform_fit_ard()

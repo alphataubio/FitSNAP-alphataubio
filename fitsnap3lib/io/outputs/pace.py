@@ -255,11 +255,11 @@ def _to_pyace_coeff_string(coeffs, config):
     out = f"# FitSNAP generated on {datetime.now()} with Hash: {config.hash}\n\n"
     
     from collections import Counter
-    counts = Counter(s.split()[0] for s in pyace_section.blist)
+    counts = Counter(s.split()[0] for s in pyace_section.ctilde_basis.blist)
     out += " ".join(f"{k} {v}" for k, v in counts.items())
     out += "\n"
     
-    for bval, bname in zip(coeffs, pyace_section.blist):
+    for bval, bname in zip(coeffs, pyace_section.ctilde_basis.blist):
         out += f" {bval:<30.18} # {bname}\n"
     out += "\n# End of potential"
     return out
