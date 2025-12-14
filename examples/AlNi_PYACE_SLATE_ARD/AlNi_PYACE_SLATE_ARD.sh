@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=AlNi_PYACE
-#SBATCH --nodes=2
+#SBATCH --nodes=1
 #SBATCH --ntasks-per-node=192
 #SBATCH --mem=0
 #SBATCH --time=1-00:00:00
@@ -14,5 +14,5 @@ source ~/fitsnap-venv/bin/activate
 export PYTHONPATH=~/scratch/FitSNAP-alphataubio:~/scratch/lammps-alphataubio/python:$PYTHONPATH
 export LD_LIBRARY_PATH=~/.local/lib64:~/scratch/lammps-alphataubio/build-fitsnap:$LD_LIBRARY_PATH
 
-srun python -m fitsnap3 AlNi_PYACE_SLATE_ARD_v2.in --overwrite
+srun python -m fitsnap3 AlNi_PYACE_SLATE_ARD.in --overwrite
 

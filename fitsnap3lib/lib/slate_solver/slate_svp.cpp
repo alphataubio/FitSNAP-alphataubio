@@ -166,8 +166,8 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
     // -------------------------------- TILE SIZE --------------------------------
     // FIXME: find optimal tile size based on cache size
     
-    int64_t mb = 256;
-    int64_t nb = 256;
+    int64_t mb = 64;
+    int64_t nb = 64;
     int64_t nt = ceil_div64(n_active, nb);
     int64_t m_node = m / mpi_size;
     int64_t mt_node = ceil_div64(m_node, mb);
@@ -258,84 +258,80 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
         slate::gemm(alpha, X_active_T, y, 0.0, y_prime);
         MPI_Barrier(comm);
 
-        // -------------------------------- SLATE QR SOLVE --------------------------------
-        // Solve C * x = y' using QR: C = QR
-        // R * x = Q^H * y'
-        // x = R^-1 * Q^H * y'
-        // Covariance C^-1 = R^-1 * Q^H
+        // -------------------------------- SLATE SVD --------------------------------
+        // Solve C * x = y' using SVD: C = U S V^H
+        // x = V S^-1 U^H y'
         
-        // 1. Convert Hermitian C to General Matrix C_gen for slate::qr_factor
+        // 1. Convert Hermitian C to General Matrix C_gen for slate::svd
         // Workaround: Use slate::multiply with Identity (HEMM) instead of slate::copy
+        // because slate::copy<Hermitian, Matrix> is not instantiated in the library.
         
         slate::Matrix<double> C_gen(n_active, n_active, tileNb, tileNb, tileRank, none, comm);
         C_gen.insertLocalTiles();
         
         slate::Matrix<double> Eye(n_active, n_active, tileNb, tileNb, tileRank, none, comm);
         Eye.insertLocalTiles();
-        slate::set(0.0, 1.0, Eye); // Identity
+        slate::set(0.0, 1.0, Eye); // Off-diag=0.0, Diag=1.0 -> Identity
         
-        // C_gen = C * I
+        // C_gen = 1.0 * C * Eye + 0.0 * C_gen
         slate::multiply(1.0, C, Eye, 0.0, C_gen);
 
-        // 2. Compute QR: C_gen = Q * R
-        // T holds the triangular factors for the reflectors
-        slate::TriangularFactors<double> T;
-        slate::qr_factor(C_gen, T);
+        // 2. Compute SVD: C_gen = U * Sigma * VH
+        slate::Matrix<double> U(n_active, n_active, tileNb, tileNb, tileRank, none, comm);
+        slate::Matrix<double> VH(n_active, n_active, tileNb, tileNb, tileRank, none, comm);
+        std::vector<double> Sigma(n_active);
+        
+        U.insertLocalTiles();
+        VH.insertLocalTiles();
+        
+        slate::svd(C_gen, Sigma, U, VH);
 
-        // 3. Compute Condition Number of R (which estimates cond(C))
-        // Create a Triangular view of R (Upper part of C_gen)
-        auto R = slate::TriangularMatrix<double>(slate::Uplo::Upper, slate::Diag::NonUnit, C_gen);
-        double R_norm = slate::norm(slate::Norm::One, R);
-        
-        slate::Options opts;
-        // Compute reciprocal condition number estimate
-        double rcond = slate::trcondest(slate::Norm::One, R, R_norm, opts);
-        double cond_number = (rcond > 1e-16) ? (1.0 / rcond) : 1e16;
+        // 3. Compute condition number
+        double s_max = Sigma[0];
+        double s_min = Sigma[n_active-1];
+        double cond_number = (s_min > 0) ? (s_max / s_min) : 1e16;
 
-        // 4. Solve for x
-        // Compute rhs = Q^H * y_prime
-        // Apply Q^H to y_prime in-place
-        slate::qr_multiply_by_q(slate::Side::Left, slate::Op::ConjTrans, C_gen, T, y_prime);
+        // 4. Invert Sigma (S_inv)
+        std::vector<double> Sigma_inv(n_active);
+        double threshold = 1e-13 * s_max;
+        for(int i=0; i<n_active; ++i) {
+             Sigma_inv[i] = (Sigma[i] > threshold) ? (1.0/Sigma[i]) : 0.0;
+        }
 
-        // Solve R * x = rhs
-        slate::triangular_solve(1.0, R, y_prime);
-        
-        // y_prime now holds the solution vector x.
+        // 5. Compute tmp = U^H * y_prime (Using transpose of U, assuming real)
+        slate::Matrix<double> tmp(n_active, 1, tileNb, tile1, tileRank, none, comm);
+        tmp.insertLocalTiles();
+        auto UT = slate::transpose(U);
+        slate::multiply(1.0, UT, y_prime, 0.0, tmp);
 
-        // 5. Compute Covariance Matrix (Inverse of C) for Variance Diagonal
-        // C^-1 = (QR)^-1 = R^-1 Q^H
-        // We compute this by solving R * X = Q^H for X.
-        
-        // Generate Q^H
-        // Initialize Q_H as Identity, then apply Q^H to it.
-        slate::Matrix<double> Q_H(n_active, n_active, tileNb, tileNb, tileRank, none, comm);
-        Q_H.insertLocalTiles();
-        slate::set(0.0, 1.0, Q_H); // Set to Identity
-        
-        slate::qr_multiply_by_q(slate::Side::Left, slate::Op::ConjTrans, C_gen, T, Q_H);
-        
-        // Solve R * Cov = Q^H  =>  Cov = R^-1 Q^H
-        slate::triangular_solve(1.0, R, Q_H);
-        
-        // Q_H now holds the full covariance matrix C^-1.
+        // 6. Scale tmp = Sigma_inv * tmp (Row scaling)
+        // slate::scale_row_col applies D_r * A * D_c. Here A=tmp. D_r = Sigma_inv.
+        std::vector<double> ones(1, 1.0);
+        slate::scale_row_col(slate::Equed::Row, Sigma_inv, ones, tmp);
+
+        // 7. Compute x = V * tmp = VH^T * tmp
+        slate::Matrix<double> x_sol(n_active, 1, tileNb, tile1, tileRank, none, comm);
+        x_sol.insertLocalTiles();
+        auto V = slate::transpose(VH);
+        slate::multiply(1.0, V, tmp, 0.0, x_sol);
 
         // -------------------------------- GATHER & EXTRACT --------------------------------
-        // Gather solution x (y_prime) and Covariance (Q_H) to Rank 0
+        // Gather solution x and VH (for variance) to Rank 0
         
         std::function<int (slate::func::ij_tuple)> tileRank0 = [](slate::func::ij_tuple ij) { return 0; };
         
         slate::Matrix<double> x_loc(n_active, 1, tileNb, tile1, tileRank0, none, comm);
         x_loc.insertLocalTiles();
-        slate::copy(y_prime, x_loc);
+        slate::copy(x_sol, x_loc);
 
-        slate::Matrix<double> Cov_loc(n_active, n_active, tileNb, tileNb, tileRank0, none, comm);
-        Cov_loc.insertLocalTiles();
-        slate::copy(Q_H, Cov_loc);
+        slate::Matrix<double> VH_loc(n_active, n_active, tileNb, tileNb, tileRank0, none, comm);
+        VH_loc.insertLocalTiles();
+        slate::copy(VH, VH_loc);
         
         MPI_Barrier(comm);
 
         if (mpi_rank == 0) {
-            // Extract coefficients from x_loc
+            // Extract coefficients
             for(int64_t i=0; i<n_active; ++i) {
                 int64_t tile_i = i / nb;
                 int64_t loc_i = i % nb;
@@ -344,13 +340,28 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
                 }
             }
             
-            // Extract Variance Diagonal from Cov_loc
+            // Extract Variance Diagonal
+            // Sigma_ii = sum_k (V_ik)^2 * S_inv_k
+            // V_ik is element (i,k) of V.
+            // VH contains V^T. Element (k, i) of VH is V^T_ki = V_ik.
+            // So Cov_ii = sum_k (VH(k, i))^2 * S_inv_k
+            
             for(int64_t i=0; i<n_active; ++i) {
-                int64_t tile_i = i / nb;
-                int64_t loc_i = i % nb;
-                if(Cov_loc.tileIsLocal(tile_i, tile_i)) {
-                    local_sigma_diag[i] = Cov_loc(tile_i, tile_i).at(loc_i, loc_i);
+                double sum = 0.0;
+                for(int64_t k=0; k<n_active; ++k) {
+                    // Access VH_loc(k, i)
+                    int64_t tile_k = k / nb;
+                    int64_t local_k = k % nb;
+                    int64_t tile_i = i / nb;
+                    int64_t local_i = i % nb;
+                    
+                    double v_ik = 0.0;
+                    if (VH_loc.tileIsLocal(tile_k, tile_i)) {
+                        v_ik = VH_loc(tile_k, tile_i).at(local_k, local_i);
+                    }
+                    sum += v_ik * v_ik * Sigma_inv[k];
                 }
+                local_sigma_diag[i] = sum;
             }
         }
         

@@ -271,7 +271,7 @@ def get_constrained_permutations(ref_full, curr_full):
         all_maps.append(indices)
     return all_maps
 
-class CharacterIntegration:
+class MolienWeylIntegration:
     @staticmethod
     def chi_l(l, theta):
         if abs(theta) < 1e-9: return 2 * l + 1
@@ -282,7 +282,7 @@ class CharacterIntegration:
         for m in range(1, k + 1):
             sum_val = 0.0
             for i in range(1, m + 1):
-                p_i = CharacterIntegration.chi_l(l, i * theta)
+                p_i = MolienWeylIntegration.chi_l(l, i * theta)
                 sum_val += p_i * h[m - i]
             h[m] = sum_val / m
         return h[k]
@@ -292,14 +292,14 @@ class CharacterIntegration:
         counts = Counter(pairs)
         total_chi = 1.0
         for (n, l), k in counts.items():
-            if k == 1: total_chi *= CharacterIntegration.chi_l(l, theta)
-            else: total_chi *= CharacterIntegration.cycle_index_term(l, k, theta)
+            if k == 1: total_chi *= MolienWeylIntegration.chi_l(l, theta)
+            else: total_chi *= MolienWeylIntegration.cycle_index_term(l, k, theta)
         return total_chi
     @staticmethod
     def count_invariants(lin, nin, integration_points=200):
         thetas, dt = np.linspace(0, np.pi, integration_points, retstep=True)
         haar_measure = 1 - np.cos(thetas)
-        chis = np.array([CharacterIntegration.get_total_character(lin, nin, t) for t in thetas])
+        chis = np.array([MolienWeylIntegration.get_total_character(lin, nin, t) for t in thetas])
         integral = np.trapz(chis * haar_measure, dx=dt)
         return int(round(integral / np.pi))
 
@@ -325,7 +325,7 @@ def apply_ladder_relationships_serial(lin, nin, L_R=0):
             real_n.append(x)
             
     # 2. Theory Count
-    n_expected = CharacterIntegration.count_invariants(lin, nin)
+    n_expected = MolienWeylIntegration.count_invariants(lin, nin)
     if n_expected == 0: return [], {}
 
     # 3. Generate Candidates
@@ -532,7 +532,7 @@ def get_rpi_basis_vectors(mu_in, n_in, l_in, local_wigner_cache=None):
         local_wigner_cache = {}
 
     # 1. Check theoretical count (Group Theory)
-    n_expected = CharacterIntegration.count_invariants(l_in, n_in)
+    n_expected = MolienWeylIntegration.count_invariants(l_in, n_in)
     if n_expected == 0:
         return []
 

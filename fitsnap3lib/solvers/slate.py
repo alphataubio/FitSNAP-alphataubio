@@ -294,8 +294,8 @@ class SLATE(SlateValidation):
             if iteration >= 3:
                 # self.threshold_lambda = adaptive_threshold_lambda(lambda_)
                 # self.threshold_lambda = 10.0**np.quantile(np.log10(lambda_), 0.95)
-                _, edges = np.histogram(np.log10(lambda_), bins=20)
-                self.threshold_lambda = 10.0**edges[-2]
+                #_, edges = np.histogram(np.log10(lambda_), bins=20)
+                #self.threshold_lambda = 10.0**edges[-2]
 
                 lambda_mask = lambda_ < self.threshold_lambda
                 

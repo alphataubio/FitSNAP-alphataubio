@@ -10,18 +10,19 @@ embeddings = {
   }
 
 bonds = {
-    'Al Al': {"radbase": "ChebExpCos", "radparameters": [0.342], "rcut": 6.832, "dcut": 0.01, "core-repulsion": [0, 0.342], "rcut_in": 0.625, "dcut_in": 0.01},
-    'Al Ni': {"radbase": "ChebExpCos", "radparameters": [0.318], "rcut": 6.356, "dcut": 0.01, "core-repulsion": [0, 0.318], "rcut_in": 0.650, "dcut_in": 0.01},
-    'Ni Ni': {"radbase": "ChebExpCos", "radparameters": [0.281], "rcut": 5.610, "dcut": 0.01, "core-repulsion": [0, 0.281], "rcut_in": 0.540, "dcut_in": 0.01}
+    'Al Al': {"radbase": "ChebExpCos", "radparameters": [0.342], "rcut": 10.0, "dcut": 0.01, "core-repulsion": [0, 0.342], "rcut_in": 0.625, "dcut_in": 0.01},
+    'Al Ni': {"radbase": "ChebExpCos", "radparameters": [0.318], "rcut": 10.0, "dcut": 0.01, "core-repulsion": [0, 0.318], "rcut_in": 0.650, "dcut_in": 0.01},
+    'Ni Ni': {"radbase": "ChebExpCos", "radparameters": [0.281], "rcut": 10.0, "dcut": 0.01, "core-repulsion": [0, 0.281], "rcut_in": 0.540, "dcut_in": 0.01}
   }
 
 functions = {
-    
-    'ALL':  { 'nmax_by_rank': [20,4,2,1], 'lmax_by_rank': [0,1,2,3] },
-    
-    'Al Ni Ni Ni Ni Ni': { 'nmax': 2, 'lmax': 4 },
-    'Ni Al Al Al Al Al': { 'nmax': 1, 'lmax': 4 },
-    'Ni Ni Ni Ni Ni Ni': { 'nmax': 1, 'lmax': 4 },
+
+    #'ALL':  { 'nmax_by_rank': [16,3,2,1,1], 'lmax_by_rank': [0,1,2,3,4] },
+    'ALL':  { 'nmax_by_rank': [32,8,2], 'lmax_by_rank': [0,4,4] },
+
+    #'Al Ni Ni Ni Ni Ni': { 'nmax': 1, 'lmax': 4 },
+    #'Ni Al Al Al Al Al': { 'nmax': 2, 'lmax': 4 },
+    #'Ni Ni Ni Ni Ni Ni': { 'nmax': 2, 'lmax': 4 },
 
   }
   
@@ -36,7 +37,7 @@ stress = 0    # goal < 0.09 GPa
 [REFERENCE]
 units = metal
 atom_style = atomic
-pair_style = zero 6.842222
+pair_style = zero 10.0
 pair_coeff = * *
 
 # -----------------------------------------------------------------------------
@@ -47,7 +48,6 @@ compute_testerrs = 1
 # -----------------------------------------------------------------------------
 [SLATE]
 method = ARD
-threshold_lambda = 1e6
 scap = 1e-6
 scai = 1e-6
 max_iter = 100
@@ -55,7 +55,7 @@ max_iter = 100
 # -----------------------------------------------------------------------------
 [SCRAPER]
 scraper = ADIOS2
-#max_configs_per_rank = 5
+#max_configs_per_rank = 10
 
 # -----------------------------------------------------------------------------
 [PATH]
@@ -83,8 +83,8 @@ aimd-from-PBE-3000-nvt  =  3.0   300.0  10.0
 # -----------------------------------------------------------------------------
 [OUTFILE]
 output_style = PACE
-metrics = AlNi_PYACE_SLATE_ARD_v2.md
-potential = AlNi_PYACE_SLATE_ARD_v2
+metrics = AlNi_PYACE_SLATE_ARD_v1.md
+potential = AlNi_PYACE_SLATE_ARD_v1
 validation = 1
 
 # -----------------------------------------------------------------------------
