@@ -48,8 +48,8 @@ compute_testerrs = 1
 # -----------------------------------------------------------------------------
 [SLATE]
 method = ARD
-scap = 1e-6
-scai = 1e-6
+scap = 1e-5
+scai = 1e-5
 max_iter = 100
 threshold_lambda = 1e6
 
