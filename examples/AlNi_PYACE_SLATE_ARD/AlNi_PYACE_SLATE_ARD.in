@@ -10,15 +10,15 @@ embeddings = {
   }
 
 bonds = {
-    'Al Al': {"radbase": "ChebExpCos", "radparameters": [0.342], "rcut": 10.0, "dcut": 0.01, "core-repulsion": [0, 0.342], "rcut_in": 0.625, "dcut_in": 0.01},
-    'Al Ni': {"radbase": "ChebExpCos", "radparameters": [0.318], "rcut": 10.0, "dcut": 0.01, "core-repulsion": [0, 0.318], "rcut_in": 0.650, "dcut_in": 0.01},
-    'Ni Ni': {"radbase": "ChebExpCos", "radparameters": [0.281], "rcut": 10.0, "dcut": 0.01, "core-repulsion": [0, 0.281], "rcut_in": 0.540, "dcut_in": 0.01}
+    'Al Al': {"radbase": "ChebExpCos", "radparameters": [0.342], "rcut": 5.0, "dcut": 0.01, "core-repulsion": [0, 0.342], "rcut_in": 0.625, "dcut_in": 0.01},
+    'Al Ni': {"radbase": "ChebExpCos", "radparameters": [0.318], "rcut": 5.0, "dcut": 0.01, "core-repulsion": [0, 0.318], "rcut_in": 0.650, "dcut_in": 0.01},
+    'Ni Ni': {"radbase": "ChebExpCos", "radparameters": [0.281], "rcut": 5.0, "dcut": 0.01, "core-repulsion": [0, 0.281], "rcut_in": 0.540, "dcut_in": 0.01}
   }
 
 functions = {
 
-    #'ALL':  { 'nmax_by_rank': [16,3,2,1,1], 'lmax_by_rank': [0,1,2,3,4] },
-    'ALL':  { 'nmax_by_rank': [32,8,2,1], 'lmax_by_rank': [0,4,4,4] },
+    #'ALL':  { 'nmax_by_rank': [32,8,2,1], 'lmax_by_rank': [0,4,4,4] },
+    'ALL':  { 'nmax_by_rank': [16,4,2,1], 'lmax_by_rank': [0,4,3,2] },
 
     #'Al Ni Ni Ni Ni Ni': { 'nmax': 1, 'lmax': 4 },
     #'Ni Al Al Al Al Al': { 'nmax': 2, 'lmax': 4 },
@@ -37,7 +37,7 @@ stress = 0    # goal < 0.09 GPa
 [REFERENCE]
 units = metal
 atom_style = atomic
-pair_style = zero 10.0
+pair_style = zero 5.0
 pair_coeff = * *
 
 # -----------------------------------------------------------------------------
