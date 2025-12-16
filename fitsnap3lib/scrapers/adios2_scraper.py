@@ -16,13 +16,10 @@ class ADIOS2(Scraper):
     ADIOS2 scraper for reading .bp files created by fairchem_to_adios2.py.
     Designed for scalable MPI-parallel reading of FAIRChem datasets.
     
-    Expected .bp file structure:
-    - Attributes: nconfigs, element_map, has_forces, has_stress, unique_group_names
-    - Arrays: NumAtoms, Energy, test_bool, GroupIndices
-    - Variable-length arrays: PositionOffsets, PositionsFlat, AtomTypesFlat, ForcesFlat
-    - Fixed-size arrays: Lattice (nconfigs, 3, 3), Stress (nconfigs, 3, 3)
-    
-    Note: Weights (eweight, fweight, vweight) are read from config file [GROUPS] section.
+    Includes AUTOMATIC features:
+    1. Calculates and applies ESHIFT (formation energy) automatically.
+    2. Converts Stress from eV/A^3 to Bar.
+    3. Handles correct Lattice orientation (Column-Major).
     """
 
     def __init__(self, name, pt, config):
@@ -58,6 +55,7 @@ class ADIOS2(Scraper):
         self.has_forces = False
         self.has_stress = False
         self.unique_group_names = []
+        self.eshifts = {}  # Will store auto-calculated atomic energies
         
         # Data arrays
         self.num_atoms = None
@@ -76,10 +74,10 @@ class ADIOS2(Scraper):
 
     def scrape_groups(self, group_names=None):
         """
-        Read metadata from ADIOS2 file and determine configuration distribution.
+        Read metadata, calculate ESHIFT, and determine configuration distribution.
         """
         
-        # Only rank 0 reads metadata, then broadcasts
+        # Only rank 0 reads metadata, performs regression, then broadcasts
         if self.rank == 0:
             try:
                 with Stream(self.dataPath, 'r') as s:
@@ -99,10 +97,8 @@ class ADIOS2(Scraper):
                             element_map_str = element_map_attr['Value']
                             if isinstance(element_map_str, bytes):
                                 element_map_str = element_map_str.decode('utf-8')
-                            # Strip any surrounding quotes and whitespace
                             element_map_str = element_map_str.strip('"\' ')
                             self.element_map = element_map_str.split(',')
-                            # Strip quotes and whitespace from each element
                             self.element_map = [elem.strip('"\' ') for elem in self.element_map]
                         else:
                             raise KeyError('element_map attribute not found')
@@ -124,12 +120,45 @@ class ADIOS2(Scraper):
                             unique_group_names_str = unique_group_names_attr['Value']
                             if isinstance(unique_group_names_str, bytes):
                                 unique_group_names_str = unique_group_names_str.decode('utf-8')
-                            # Strip any surrounding quotes
                             unique_group_names_str = unique_group_names_str.strip('"\'')
                             self.unique_group_names = unique_group_names_str.split('|')
                         else:
                             raise KeyError('unique_group_names attribute not found')
                         
+                        # --- AUTO ESHIFT CALCULATION START ---
+                        # Read minimal data needed for regression on Rank 0
+                        all_energies = s.read('Energy')
+                        all_num_atoms = s.read('NumAtoms')
+                        all_atom_types = s.read('AtomTypesFlat')
+                        
+                        self.pt.single_print("ADIOS2: Calculating Auto-ESHIFT (Formation Energy)...")
+                        
+                        # Build Linear Regression Matrices (X*b = y)
+                        # X = [n_atoms_elem1, n_atoms_elem2, ...]
+                        n_elems = len(self.element_map)
+                        X = np.zeros((self.nconfigs, n_elems))
+                        y = all_energies
+                        
+                        current_idx = 0
+                        for i in range(self.nconfigs):
+                            n_in_config = int(all_num_atoms[i])
+                            # Get indices for this config
+                            types_indices = all_atom_types[current_idx : current_idx + n_in_config]
+                            current_idx += n_in_config
+                            # Count occurrences
+                            for t_idx in types_indices:
+                                X[i, int(t_idx)] += 1
+                                
+                        # Solve Least Squares
+                        coeffs, residuals, rank, s_vals = np.linalg.lstsq(X, y, rcond=None)
+                        
+                        self.eshifts = {self.element_map[i]: coeffs[i] for i in range(n_elems)}
+                        
+                        self.pt.single_print("ADIOS2: Calculated Atomic Baselines:")
+                        for elem, val in self.eshifts.items():
+                            self.pt.single_print(f"    {elem} = {val:.6f} eV")
+                        # --- AUTO ESHIFT CALCULATION END ---
+
                         break  # Only need first step
                     
                 self.pt.single_print(
@@ -141,7 +170,7 @@ class ADIOS2(Scraper):
             except Exception as e:
                 raise RuntimeError(f"Failed to read ADIOS2 file metadata: {e}")
         
-        # Broadcast metadata to all ranks
+        # Broadcast metadata AND ESHIFTS to all ranks
         if self.pt.stubs == 0:
             self.nconfigs = self.comm.bcast(self.nconfigs, root=0)
             self.pt.add_2_fitsnap("nconfigs", self.nconfigs)
@@ -149,9 +178,9 @@ class ADIOS2(Scraper):
             self.has_forces = self.comm.bcast(self.has_forces, root=0)
             self.has_stress = self.comm.bcast(self.has_stress, root=0)
             self.unique_group_names = self.comm.bcast(self.unique_group_names, root=0)
+            self.eshifts = self.comm.bcast(self.eshifts, root=0)
         
         # Build group_table from config file [GROUPS] section
-        # This gets us the weights but we need to set training/testing sizes
         group_dict = {k: self.config.sections["GROUPS"].group_types[i]
                       for i, k in enumerate(self.config.sections["GROUPS"].group_sections)}
         self.group_table = self.config.sections["GROUPS"].group_table
@@ -159,7 +188,6 @@ class ADIOS2(Scraper):
         # Initialize training/testing sizes to 0 for all groups
         for group_name in self.unique_group_names:
             if group_name not in self.group_table:
-                # Group exists in BP file but not in config - add with default weights
                 self.group_table[group_name] = {
                     'eweight': 1.0,
                     'fweight': 1.0,
@@ -180,9 +208,7 @@ class ADIOS2(Scraper):
     def divvy_up_configs(self):
         """
         Configuration distribution is already done in scrape_groups.
-        Just store the local config indices.
         """
-        # my_config_indices already set in scrape_groups
         self.my_configs = self.my_config_indices
         
     def scrape_configs(self):
@@ -191,7 +217,7 @@ class ADIOS2(Scraper):
         """
         self.data = []
         
-        # Read all data arrays (all ranks read the same data, but only process their slice)
+        # Read all data arrays
         try:
             with Stream(self.dataPath, 'r') as s:
                 for step in s.steps():
@@ -214,7 +240,7 @@ class ADIOS2(Scraper):
                     if self.has_stress:
                         self.stresses = s.read('Stress')  # Shape: (nconfigs, 3, 3)
                     
-                    break  # Only need first step
+                    break
                 
         except Exception as e:
             raise RuntimeError(f"Failed to read ADIOS2 data arrays: {e}")
@@ -279,13 +305,12 @@ class ADIOS2(Scraper):
         
         # Get position range
         pos_start = int(self.position_offsets[config_idx])
-        # For the last config, use total length instead of next offset
         if config_idx == self.nconfigs - 1:
             pos_end = len(self.atom_types_flat)
         else:
             pos_end = int(self.position_offsets[config_idx + 1])
         
-        # Extract positions (already shaped as (natoms, 3) in the file)
+        # Extract positions
         positions = self.positions_flat[pos_start:pos_end]
         
         # Extract atom types
@@ -302,34 +327,39 @@ class ADIOS2(Scraper):
             'Positions': positions.copy(),
             'AtomTypes': atom_types,
             'NumAtoms': natoms,
-            'Lattice': lattice.copy(),
-            'QMLattice': lattice.copy().T,  # Transpose for compatibility with parent class
+            'QMLattice': lattice.T.copy(),
             'Energy': float(self.energy[config_idx]),
             'test_bool': bool(self.test_bool[config_idx]),
         }
         
-        # Extract forces if available (already shaped as (natoms, 3) in the file)
+        # Extract forces
         if self.has_forces and self.use_forces:
             forces = self.forces_flat[pos_start:pos_end]
             data_dict['Forces'] = forces.copy()
         
-        # Extract stress if available (3x3 matrix)
+        # Extract stress
         if self.has_stress and self.use_stress:
             stress = self.stresses[config_idx].reshape((3, 3))
-            data_dict['Stress'] = stress.copy()
+            # CRITICAL FIX: Convert eV/A^3 to Bar
+            data_dict['Stress'] = stress.copy() * 1602176.6208
         
+        # --- AUTOMATIC ESHIFT APPLICATION ---
+        # Subtract the calculated atomic energy baselines to get formation energy
+        # FitSNAP expects to fit small numbers (formation energy), not large totals.
+        if self.eshifts:
+            for atom in atom_types:
+                data_dict['Energy'] -= self.eshifts[atom]
+        # ------------------------------------
+
         # Apply weights from config file using parent class method
-        # We need to temporarily set self.data for parent methods to work
         old_data = self.data
         old_conversions = self.conversions
         self.data = data_dict
         self.conversions = self.default_conversions
         
-        # Normalize coordinates for LAMMPS (FIXME: double check if needed)
         self._rotate_coords()
         self._translate_coords()
         
-        # Apply weighting (off, only normalized fweight/natoms)
         self._weighting(natoms)
         
         result = self.data
@@ -337,4 +367,3 @@ class ADIOS2(Scraper):
         self.conversions = old_conversions
         
         return result
-
