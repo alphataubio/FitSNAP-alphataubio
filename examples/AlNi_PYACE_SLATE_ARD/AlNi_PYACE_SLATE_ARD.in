@@ -17,7 +17,7 @@ bonds = {
 
 functions = {
 
-    'ALL':  { 'nmax_by_rank': [32,8,6,1], 'lmax_by_rank': [0,4,0,4] },
+    'ALL':  { 'nmax_by_rank': [32,8,6,4,3], 'lmax_by_rank': [0,4,0,1,1] },
     
     #'Al Ni Ni Ni Ni Ni': { 'nmax': 1, 'lmax': 4 },
     #'Ni Al Al Al Al Al': { 'nmax': 2, 'lmax': 4 },
@@ -47,9 +47,9 @@ compute_testerrs = 1
 # -----------------------------------------------------------------------------
 [SLATE]
 method = ARD
-scap = 1e-6
-scai = 1e-6
-max_iter = 20
+scap = 1e-5
+scai = 1e-5
+max_iter = 10
 threshold_lambda = 1e6
 
 # -----------------------------------------------------------------------------
