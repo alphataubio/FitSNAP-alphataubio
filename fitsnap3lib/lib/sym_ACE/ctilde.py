@@ -4,20 +4,7 @@ import itertools
 import re
 from copy import deepcopy
 
-# Import from wigner_rpi
-try:
-    from fitsnap3lib.lib.sym_ACE.wigner_rpi import (
-        WignerCacheManager,
-        get_rpi_basis_vectors
-    )
-except ImportError:
-    try:
-        from wigner_rpi import (
-            WignerCacheManager,
-            get_rpi_basis_vectors
-        )
-    except ImportError:
-        raise ImportError("Could not import 'wigner_rpi'. Ensure wigner_rpi.py is available.")
+from fitsnap3lib.lib.sym_ACE.wigner_rpi import WignerRPI
 
 # Regex for parsing element strings (e.g. "InIn" -> ["In", "In"])
 element_patt = re.compile("([A-Z][a-z]?) ?")
@@ -296,15 +283,17 @@ def generate_functions_ext(potential_config):
                 if rank == 0:
                     functions_ext[species].update({})
                 else:
-                    functions_ext[species] = deepcopy(all_spec)
+                    #functions_ext[species] = deepcopy(all_spec)
+                    
+                    functions_ext[species]['rank'] = rank
                     
                     nmax_by_rank = all_spec.get('nmax_by_rank', [1]*rank)
                     lmin_by_rank = all_spec.get('lmin_by_rank', [0]*rank)
                     lmax_by_rank = all_spec.get('lmax_by_rank', [0]*rank)
                     
-                    functions_ext[species]['nmax_by_rank'] = nmax_by_rank
-                    functions_ext[species]['lmin_by_rank'] = lmin_by_rank
-                    functions_ext[species]['lmax_by_rank'] = lmax_by_rank
+                    #functions_ext[species]['nmax_by_rank'] = nmax_by_rank
+                    #functions_ext[species]['lmin_by_rank'] = lmin_by_rank
+                    #functions_ext[species]['lmax_by_rank'] = lmax_by_rank
                     
                     idx = rank - 1
                     if idx < len(nmax_by_rank):
@@ -327,7 +316,7 @@ def generate_functions_ext(potential_config):
             if 'lmin' not in functions_ext[key]:
                 functions_ext[key]['lmin'] = 0
 
-    return {k: v for k, v in functions_ext.items() if len(v) > 0}
+    return max_rank, {k: v for k, v in functions_ext.items() if len(v) > 0}
 
 def generate_bonds_ext(potential_config):
     elements = sorted(potential_config["elements"])
@@ -383,31 +372,9 @@ def update_bonds_ext(bonds_ext, functions_ext):
         if 'lmax_by_rank' in funcs_spec:
             lmax = max([lmax] + funcs_spec['lmax_by_rank'])
 
-        """
-        if len(key) > 2:
-            funcs_spec['nradmax'] = max(nradmax, nradbasemax)
-            funcs_spec['nradbasemax'] = nradbasemax
-            funcs_spec['nradbase'] = nradbasemax
-            funcs_spec['rcut'] = np.inf
-            funcs_spec['dcut'] = 0.0
-            funcs_spec['rcut_in'] = 0.0
-            funcs_spec['dcut_in'] = 0.0
-        """
-        
         for bkey in species_key_to_bonds(key):
             if bkey not in bonds_ext_updated: continue
-            
             bond = bonds_ext_updated[bkey]
-            
-            """
-            if len(key) > 2:
-                funcs_spec['radparameters'] = bond.get('radparameters', [])
-                funcs_spec['core-repulsion'] = bond.get('core-repulsion', [0,0])
-                if 'rcut' in bond: funcs_spec['rcut'] = min(funcs_spec['rcut'], bond['rcut'])
-                if 'dcut' in bond: funcs_spec['dcut'] = max(funcs_spec['dcut'], bond['dcut'])
-                if 'rcut_in' in bond: funcs_spec['rcut_in'] = max(funcs_spec['rcut_in'], bond['rcut_in'])
-                if 'dcut_in' in bond: funcs_spec['dcut_in'] = max(funcs_spec['dcut_in'], bond['dcut_in'])
-            """
             
             if 'nradbase' not in bond or bond['nradbase'] < nradbasemax:
                 bond['nradbase'] = nradbasemax
@@ -438,16 +405,15 @@ def generate_embeddings_ext(potential_config):
 def parse_full_potential_config(potential_config):
     embs_expanded = generate_embeddings_ext(potential_config)
     bonds_expanded = generate_bonds_ext(potential_config)
-    funcs_expanded = generate_functions_ext(potential_config)
+    max_rank, funcs_expanded = generate_functions_ext(potential_config)
     bonds_expanded = update_bonds_ext(bonds_expanded, funcs_expanded)
-    return funcs_expanded, bonds_expanded, embs_expanded
+    return max_rank, funcs_expanded, bonds_expanded, embs_expanded
 
 def create_ctilde_basis(potential_config):
     """
     Main entry point. Creates a CTildeBasisSet directly from configuration 
     using Wigner PA-RPI construction.
     """
-    print(">>> Creating CTildeBasisSet using Wigner RPI...")
     
     cbasis = CTildeBasisSet()
     cbasis.elements = sorted(potential_config['elements'])
@@ -460,7 +426,7 @@ def create_ctilde_basis(potential_config):
     
     elem_map = {e: i for i, e in enumerate(cbasis.elements)}
     
-    funcs_spec, bonds_spec, embs_spec = parse_full_potential_config(potential_config)
+    max_rank, funcs_spec, bonds_spec, embs_spec = parse_full_potential_config(potential_config)
 
     for el, spec in embs_spec.items():
         idx = elem_map[el]
@@ -508,11 +474,13 @@ def create_ctilde_basis(potential_config):
         bs.lambdahc = spec.get('core-repulsion', [0,0])[1]
         
         cbasis.bonds[(i, j)] = bs
-
-    wigner_cache = {}
-    wigner_mgr = WignerCacheManager()
-    wigner_mgr.load()
-    wigner_cache = wigner_mgr.cache
+    
+    lmax_by_rank = [0]*max_rank
+    for f in funcs_spec.values():
+        rank = f['rank']
+        lmax_by_rank[rank-1] = max(lmax_by_rank[rank-1], f['lmax'])
+    
+    wigner_rpi = WignerRPI(lmax_by_rank=lmax_by_rank)
 
     for species_tuple, spec in funcs_spec.items():
         rank = len(species_tuple) - 1
@@ -551,8 +519,6 @@ def create_ctilde_basis(potential_config):
             
             if any(l < lmin or l>lmax for l in current_ls):
                 continue
-                
-            #print(f"*** rank {rank} lmax {lmax} current_ls {current_ls}")
             
             shell_key = tuple(sorted(zip(neighbor_mu, current_ns, current_ls)))
             
@@ -564,7 +530,8 @@ def create_ctilde_basis(potential_config):
             can_n = [x[1] for x in shell_key]
             can_l = [x[2] for x in shell_key]
             
-            rpi_funcs = get_rpi_basis_vectors(can_mu, can_n, can_l, wigner_cache)
+            # CALL TO WIGNER RPI: No explicit cache argument
+            rpi_funcs = wigner_rpi.get_rpi_basis_vectors(can_mu, can_n, can_l)
             
             for rpi_f in rpi_funcs:
                 new_func = CTildeBasisFunction(
@@ -588,9 +555,7 @@ def create_ctilde_basis(potential_config):
                 new_func.ctildes = ctildes_matrix.flatten()
                 
                 cbasis.functions[mu0].append(new_func)
-                    
-    wigner_mgr.new_entries.update(wigner_cache)
-    wigner_mgr.save()
-    
-    print(f">>> Basis creation complete. Total functions: {sum(len(f) for f in cbasis.functions.values())}")
+               
+
+    #print(f">>> Basis creation complete. Total functions: {sum(len(f) for f in cbasis.functions.values())}")
     return cbasis
