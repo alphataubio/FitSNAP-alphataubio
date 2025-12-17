@@ -383,21 +383,23 @@ def update_bonds_ext(bonds_ext, functions_ext):
         if 'lmax_by_rank' in funcs_spec:
             lmax = max([lmax] + funcs_spec['lmax_by_rank'])
 
+        """
         if len(key) > 2:
             funcs_spec['nradmax'] = max(nradmax, nradbasemax)
             funcs_spec['nradbasemax'] = nradbasemax
-            funcs_spec['lmax'] = lmax
             funcs_spec['nradbase'] = nradbasemax
             funcs_spec['rcut'] = np.inf
             funcs_spec['dcut'] = 0.0
             funcs_spec['rcut_in'] = 0.0
             funcs_spec['dcut_in'] = 0.0
-
+        """
+        
         for bkey in species_key_to_bonds(key):
             if bkey not in bonds_ext_updated: continue
             
             bond = bonds_ext_updated[bkey]
             
+            """
             if len(key) > 2:
                 funcs_spec['radparameters'] = bond.get('radparameters', [])
                 funcs_spec['core-repulsion'] = bond.get('core-repulsion', [0,0])
@@ -405,7 +407,8 @@ def update_bonds_ext(bonds_ext, functions_ext):
                 if 'dcut' in bond: funcs_spec['dcut'] = max(funcs_spec['dcut'], bond['dcut'])
                 if 'rcut_in' in bond: funcs_spec['rcut_in'] = max(funcs_spec['rcut_in'], bond['rcut_in'])
                 if 'dcut_in' in bond: funcs_spec['dcut_in'] = max(funcs_spec['dcut_in'], bond['dcut_in'])
-
+            """
+            
             if 'nradbase' not in bond or bond['nradbase'] < nradbasemax:
                 bond['nradbase'] = nradbasemax
             if 'nradmax' not in bond or bond['nradmax'] < nradmax:
@@ -546,8 +549,10 @@ def create_ctilde_basis(potential_config):
             if sum(current_ls) % 2 != 0:
                 continue
             
-            if any(l < lmin for l in current_ls):
+            if any(l < lmin or l>lmax for l in current_ls):
                 continue
+                
+            #print(f"*** rank {rank} lmax {lmax} current_ls {current_ls}")
             
             shell_key = tuple(sorted(zip(neighbor_mu, current_ns, current_ls)))
             
