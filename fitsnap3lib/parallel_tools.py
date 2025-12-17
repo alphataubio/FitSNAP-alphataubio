@@ -510,7 +510,7 @@ class ParallelTools():
         if self.stubs == 0:
             self._sub_comm.Barrier()
 
-    def polite_barrier(self, comm, sleep_sec=0.01):
+    def polite_barrier(self, comm, sleep_sec=0.1):
         """
         A low-CPU usage "polite barrier" for SLATE
         https://github.com/FitSNAP/FitSNAP/pull/278#issuecomment-3620984756
