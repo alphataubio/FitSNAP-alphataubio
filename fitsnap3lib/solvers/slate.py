@@ -92,7 +92,9 @@ class SLATE(SlateValidation):
         # m = Total Global Samples. lld = Samples on this Node.
         m = aw.shape[0] * pt._number_of_nodes 
         n = aw.shape[1] 
-        lld = aw.shape[0] 
+        lld = aw.shape[0]
+        
+        assert m>n, f"SLATE ARD: m ({m}) < n ({n}), m > n needed for regression."
 
         # -------- TRAINING/TESTING SPLIT --------
         if 'Testing' in pt.fitsnap_dict and pt.fitsnap_dict['Testing'] is not None:
