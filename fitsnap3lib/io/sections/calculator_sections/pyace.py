@@ -126,7 +126,7 @@ class PyAce(Section):
             self.ctilde_basis = ctilde_basis
             self.ncoeff = ctilde_basis.ncoeff
                         
-            self.pt.single_print(f"--------\nPyACE basis: numtypes {self.numtypes} ncoeff {self.ncoeff}")
+            self.pt.single_print(f"--------\nPyACE Wigner-RPI basis: numtypes {self.numtypes} ncoeff {self.ncoeff}")
 
             for k,v in sorted(ctilde_basis.number_functions_by_rank.items()):
                 self.pt.single_print(f"    Rank {k}: {v} basis functions")
