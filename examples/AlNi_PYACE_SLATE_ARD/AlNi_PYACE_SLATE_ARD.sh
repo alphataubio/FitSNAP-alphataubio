@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=AlNi_PYACE
-#SBATCH --nodes=2
+#SBATCH --nodes=1
 #SBATCH --ntasks-per-node=192
 #SBATCH --mem=0
 #SBATCH --time=3-00:00:00
