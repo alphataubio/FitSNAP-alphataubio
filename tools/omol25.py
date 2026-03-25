@@ -44,20 +44,15 @@ def process_chunk(args):
                                    key=lambda x: ATOMIC_NUMBERS.get(x, 999))
             elements_str = ' '.join(unique_elements)
             
-            # Extract data from atoms.info
-            data_id = atoms.info.get('data_id', '')
-            charge = atoms.info.get('charge', '')
-            spin = atoms.info.get('spin', '')
-            num_atoms = atoms.info.get('num_atoms', '')
-            composition = atoms.info.get('composition', '')
-            
             data_rows.append({
-                'data_id': data_id,
+                'source': atoms.info.get('source', ''),
+                'reference_source': atoms.info.get('reference_source', ''),
+                'data_id': atoms.info.get('data_id', ''),
                 'elements': elements_str,
-                'charge': charge,
-                'spin': spin,
-                'num_atoms': num_atoms,
-                'composition': composition
+                'charge': atoms.info.get('charge', ''),
+                'spin': atoms.info.get('spin', ''),
+                'num_atoms': atoms.info.get('num_atoms', ''),
+                'composition': atoms.info.get('composition', '')
             })
     finally:
         del dataset
@@ -107,7 +102,7 @@ def process_neutral_val(db_path):
     
     # Create DataFrame
     df = pd.DataFrame(all_data_rows)
-    
+
     # Group by composition/charge/spin and aggregate
     print("Aggregating by composition/charge/spin...", file=sys.stderr)
     df_grouped = df.groupby(['data_id', 'composition', 'charge', 'spin'], dropna=False).agg({
@@ -129,9 +124,17 @@ def process_neutral_val(db_path):
     
     # Use last part of db_path for output filename
     db_name = os.path.basename(db_path.rstrip('/'))
+
+    # Detailed xlsx's
+
+    for data_id in sorted(data_ids):
+      output_file = f'{db_name}-{data_id}.xlsx'
+      print(f"Saving {output_file}...", file=sys.stderr)
+      df_subset = df[df['data_id'] == data_id].reset_index(drop=True)
+      df_subset.to_excel(output_file, index=False, engine='openpyxl')
+
     output_file = f'{db_name}.xlsx'
-    print(f"Saving results to {output_file}...", file=sys.stderr)
-    
+    print(f"Saving grouped results to {output_file}...", file=sys.stderr)
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
         for data_id in sorted(data_ids):
             # Filter data for this data_id
