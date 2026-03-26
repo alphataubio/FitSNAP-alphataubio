@@ -7,6 +7,7 @@ Expects LMDB databases to be already extracted in train/ and val/ directories.
 
 Usage:
     python fairchem_to_adios2.py --dataset scratch/omat24 --elements Al Ni --output omat24_AlNi.bp
+    python fairchem_to_adios2.py --dataset scratch/omol25_4M --elements C H O --output omol25_CHO.bp
 """
 
 import os
@@ -175,6 +176,36 @@ def _process_chunk(args):
     return configs, filtered_count
 
 
+def _is_lmdb_dir(path: Path) -> bool:
+    """True if path looks like an AseDB / LMDB root (data.mdb or *.aselmdb)."""
+    if not path.is_dir():
+        return False
+    if (path / "data.mdb").exists():
+        return True
+    return any(path.glob("*.aselmdb"))
+
+
+def _discover_lmdb_roots(subset_dir: Path) -> list[tuple[Path, str]]:
+    """
+    Find LMDB roots under train/ or val/.
+
+    omat24: each group is a subdirectory of train/val containing an LMDB.
+    omol25: train/ and val/ are each a single LMDB directory; logical groups
+    come from atoms.info['data_id'] (applied in _process_chunk).
+    """
+    if not subset_dir.is_dir():
+        return []
+
+    if _is_lmdb_dir(subset_dir):
+        return [(subset_dir, subset_dir.name)]
+
+    roots: list[tuple[Path, str]] = []
+    for item in sorted(subset_dir.iterdir()):
+        if item.is_dir() and _is_lmdb_dir(item):
+            roots.append((item, item.name))
+    return roots
+
+
 def process_lmdb_dir(lmdb_path, group_name, allowed_elements, test_bool, num_workers=None):
     """
     Process a single LMDB database directory using fairchem's AseDBDataset with multiprocessing.
@@ -235,30 +266,22 @@ def process_dataset_path(dataset_root, subset_type, allowed_elements, num_worker
     if not subset_dir.exists():
         print(f"Warning: {subset_dir} does not exist, skipping", file=sys.stderr)
         return []
-    
-    # Find all LMDB database directories
-    lmdb_dirs = []
-    for item in subset_dir.iterdir():
-        if item.is_dir():
-            # Check if directory contains LMDB files
-            has_lmdb = (item / 'data.mdb').exists() or any(item.glob('*.aselmdb'))
-            if has_lmdb:
-                lmdb_dirs.append(item)
-    
-    if not lmdb_dirs:
+
+    lmdb_entries = _discover_lmdb_roots(subset_dir)
+    if not lmdb_entries:
         print(f"Warning: No LMDB databases found in {subset_dir}", file=sys.stderr)
         return []
-    
-    lmdb_dirs = sorted(lmdb_dirs)
-    print(f"\nProcessing {subset_type} subset with {len(lmdb_dirs)} LMDB databases", file=sys.stderr)
-    
+
+    layout = "flat (e.g. omol25)" if len(lmdb_entries) == 1 and lmdb_entries[0][0] == subset_dir else "per-group subdirs (e.g. omat24)"
+    print(
+        f"\nProcessing {subset_type} subset: {len(lmdb_entries)} LMDB root(s), layout={layout}",
+        file=sys.stderr,
+    )
+
     all_configs = []
     test_bool = (subset_type == 'val')
-    
-    # Process each LMDB database
-    for lmdb_dir in lmdb_dirs:
-        group_name = lmdb_dir.name
-        
+
+    for lmdb_dir, group_name in lmdb_entries:
         try:
             configs, filtered = process_lmdb_dir(lmdb_dir, group_name, allowed_elements, test_bool, num_workers)
             all_configs.extend(configs)
@@ -424,16 +447,21 @@ def main():
 Example:
     python fairchem_to_adios2.py --dataset scratch/omat24 --elements Al Ni --output omat24_AlNi.bp
     
-Expected directory structure:
+Expected directory structures:
+
+    omat24 (one LMDB per group under train/val):
     scratch/omat24/
     ├── train/
     │   ├── rattled-300/
     │   ├── rattled-500/
     │   └── ...
     └── val/
-        ├── rattled-300/
-        ├── rattled-500/
         └── ...
+
+    omol25 (single LMDB per split; groups from atoms.info['data_id']):
+    scratch/omol25_4M/
+    ├── train/    # LMDB files live here
+    └── val/
         """
     )
     
