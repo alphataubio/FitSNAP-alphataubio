@@ -1,29 +1,29 @@
 from fitsnap3lib.scrapers.scrape import Scraper
-import numpy as np
-import logging
 import json
+import logging
 import time
+import numpy as np
 from itertools import islice
 
-# #region agent log
+# region agent log
 _AGENT_DEBUG_LOG = "/Users/mitch/github/FitSNAP-alphataubio/.cursor/debug-e1339f.log"
 
 
-def _agent_dbg(hypothesis_id, location, message, data=None):
-  payload = {
-    "sessionId": "e1339f",
-    "hypothesisId": hypothesis_id,
-    "location": location,
-    "message": message,
-    "data": data or {},
-    "timestamp": int(time.time() * 1000),
-  }
+def _agent_debug_ndjson(hypothesis_id, location, message, data):
   try:
-    with open(_AGENT_DEBUG_LOG, "a", encoding="utf-8") as _f:
-      _f.write(json.dumps(payload, default=str) + "\n")
+    rec = {
+      "sessionId": "e1339f",
+      "hypothesisId": hypothesis_id,
+      "location": location,
+      "message": message,
+      "data": data,
+      "timestamp": int(time.time() * 1000),
+    }
+    with open(_AGENT_DEBUG_LOG, "a", encoding="utf-8") as f:
+      f.write(json.dumps(rec, default=str) + "\n")
   except Exception:
     pass
-# #endregion
+# endregion
 
 try:
   from adios2 import Stream
@@ -31,12 +31,97 @@ try:
 except ImportError:
   HAS_ADIOS2 = False
 
+
+def _find_attr(attrs, name):
+  """Resolve attribute; BP5 may use plain keys or path-like names."""
+  if name in attrs:
+    return attrs[name]
+  for k in attrs:
+    if k.endswith('/' + name) or k.rpartition('/')[-1] == name:
+      return attrs[k]
+  return None
+
+
+def _attr_value(entry):
+  """Scalar from an available_attributes() entry (bytes, str, int, or small array)."""
+  if not entry or 'Value' not in entry:
+    return None
+  v = entry['Value']
+  if isinstance(v, bytes):
+    return v.decode('utf-8')
+  if isinstance(v, str):
+    return v
+  if isinstance(v, (np.ndarray, list, tuple)) and len(v) > 0:
+    x = np.asarray(v).reshape(-1)[0]
+    if isinstance(x, bytes):
+      return x.decode('utf-8')
+    return x.item() if hasattr(x, 'item') else x
+  return v
+
+
+def _fix_left_handed_qmlattice(data_dict, config_idx=None, rank=None):
+  """
+  FAIRChem / OMOL-style datasets often store a left-handed cell (det(QMLattice) < 0).
+  OMAT24-style exports were usually right-handed. FitSNAP _rotate_coords requires det > 0.
+
+  Reflect through the xy-plane: S = diag(1,1,-1). Lattice columns are cell vectors a,b,c;
+  each maps to S @ a, so C' = S @ C. Cartesian coords and forces use r' = (x,y,-z).
+  Stress transforms as S σ S^T.
+  """
+  qm = np.asarray(data_dict['QMLattice'], dtype=np.float64)
+  det_in = float(np.linalg.det(qm))
+  # region agent log
+  if config_idx is not None and (config_idx < 8 or det_in <= 0):
+    _agent_debug_ndjson(
+      "H1",
+      "adios2_scraper:_fix_left_handed_qmlattice:entry",
+      "det_before_fix",
+      {"config_idx": config_idx, "rank": rank, "det_in": det_in, "shape": list(qm.shape)},
+    )
+  # endregion
+  if det_in > 0:
+    return
+  qm = qm.copy()
+  S = np.diag([1.0, 1.0, -1.0])
+  qm = S @ qm
+  data_dict['QMLattice'] = qm
+  det_out = float(np.linalg.det(qm))
+  # region agent log
+  if config_idx is not None:
+    _agent_debug_ndjson(
+      "H3",
+      "adios2_scraper:_fix_left_handed_qmlattice:after_S",
+      "det_after_S_leftmul",
+      {"config_idx": config_idx, "rank": rank, "det_in": det_in, "det_out": det_out},
+    )
+  # endregion
+  pos = np.asarray(data_dict['Positions'], dtype=np.float64)
+  pos = pos.copy()
+  pos[:, 2] *= -1.0
+  data_dict['Positions'] = pos
+  if 'Forces' in data_dict:
+    frc = np.asarray(data_dict['Forces'], dtype=np.float64).copy()
+    frc[:, 2] *= -1.0
+    data_dict['Forces'] = frc
+  if 'Stress' in data_dict:
+    sig = np.asarray(data_dict['Stress'], dtype=np.float64).reshape(3, 3)
+    S = np.diag([1.0, 1.0, -1.0])
+    data_dict['Stress'] = (S @ sig @ S.T).reshape(3, 3)
+
+
 # ------------------------------------------------------------------------------------------------
 
 class ADIOS2(Scraper):
   """
   ADIOS2 scraper for reading .bp files created by fairchem_to_adios2.py.
   Designed for scalable MPI-parallel reading of FAIRChem datasets.
+
+  File attributes include ``element_map``: comma-separated symbols (e.g. ``H,C,N,O``) whose
+  order defines integer indices stored in ``AtomTypesFlat`` for each atom.
+
+  FAIRChem OMOL-style datasets may use left-handed unit cells (uncommon in older OMAT24-style
+  data); the scraper reflects z consistently on lattice, positions, forces, and stress so
+  FitSNAP's LAMMPS path sees a right-handed ``QMLattice``.
 
   Includes AUTOMATIC features:
   1. Calculates and applies ESHIFT (formation energy) automatically.
@@ -61,8 +146,7 @@ class ADIOS2(Scraper):
 
     # MPI setup
     if self.pt.stubs == 0:
-      from mpi4py import MPI
-      self.comm = MPI.COMM_WORLD
+      self.comm = pt._comm
       self.rank = pt.get_rank()
       self.size = pt.get_size()
     else:
@@ -103,79 +187,44 @@ class ADIOS2(Scraper):
 
     self.pt.all_print("*** scrape_groups()")
 
-    # #region agent log
-    _agent_dbg("H1", "adios2_scraper.py:scrape_groups:entry", "scrape_groups after all_print", {"rank": self.rank, "size": self.size, "stubs": self.pt.stubs})
-    # #endregion
-
-    # H2/H4: ADIOS2 MPI streaming may require all ranks in comm to participate in
-    # BeginStep; rank-0-only Stream + other ranks at bcast causes deadlock.
-    stream_comm = self.comm if self.pt.stubs == 0 else None
+    # Serial ADIOS2 per process (comm=None) avoids collective BeginStep on fairchem .bp files.
+    stream_comm = None
 
     try:
-      # #region agent log
-      _agent_dbg("H2", "adios2_scraper.py:scrape_groups:before_stream", "opening Stream", {"rank": self.rank, "has_comm": stream_comm is not None})
-      # #endregion
       with Stream(self.dataPath, 'r', stream_comm) as s:
-        # Step to make attributes available
-
-        if self.rank == 0:
-          self.pt.all_print(f"*** self.unique_group_names {self.unique_group_names}" )
-
-        # #region agent log
-        _agent_dbg("H2", "adios2_scraper.py:scrape_groups:before_steps", "inside Stream, before s.steps()", {"rank": self.rank})
-        # #endregion
 
         for step in s.steps():
 
-          # #region agent log
-          _agent_dbg("H2", "adios2_scraper.py:scrape_groups:step_iter", "entered step loop body", {"rank": self.rank})
-          # #endregion
-
           if self.rank == 0:
-            self.pt.all_print(f"*** self.unique_group_names {self.unique_group_names}" )
-
             attrs = s.available_attributes()
 
-            # #region agent log
-            _agent_dbg("H3", "adios2_scraper.py:scrape_groups:after_attrs", "available_attributes done", {"rank": self.rank, "n_attr_keys": len(attrs)})
-            # #endregion
-
-            nconfigs_attr = attrs.get('nconfigs')
-            if nconfigs_attr:
-              self.nconfigs = int(nconfigs_attr['Value'])
-            else:
+            nc = _find_attr(attrs, 'nconfigs')
+            if nc is None:
               raise KeyError('nconfigs attribute not found')
+            self.nconfigs = int(_attr_value(nc))
 
-            element_map_attr = attrs.get('element_map')
-            if element_map_attr:
-              element_map_str = element_map_attr['Value']
-              if isinstance(element_map_str, bytes):
-                element_map_str = element_map_str.decode('utf-8')
-                element_map_str = element_map_str.strip('"\' ')
-                self.element_map = element_map_str.split(',')
-                self.element_map = [elem.strip('"\' ') for elem in self.element_map]
-              else:
-                raise KeyError('element_map attribute not found')
+            em = _find_attr(attrs, 'element_map')
+            if em is None:
+              raise KeyError('element_map attribute not found')
+            element_map_str = str(_attr_value(em)).strip('"\' ')
+            self.element_map = [x.strip('"\' ') for x in element_map_str.split(',') if x.strip()]
+            if not self.element_map:
+              raise ValueError('element_map is empty after parsing')
 
-            has_forces_attr = attrs.get('has_forces')
-            if has_forces_attr: self.has_forces = bool(int(has_forces_attr['Value']))
-            else: self.has_forces = False
+            hf = _find_attr(attrs, 'has_forces')
+            if hf is not None:
+              self.has_forces = bool(int(_attr_value(hf)))
+            hs = _find_attr(attrs, 'has_stress')
+            if hs is not None:
+              self.has_stress = bool(int(_attr_value(hs)))
 
-            has_stress_attr = attrs.get('has_stress')
-            if has_stress_attr: self.has_stress = bool(int(has_stress_attr['Value']))
-            else: self.has_stress = False
-
-            unique_group_names_attr = attrs.get('unique_group_names')
-            if unique_group_names_attr:
-              unique_group_names_str = unique_group_names_attr['Value']
-              if isinstance(unique_group_names_str, bytes):
-                unique_group_names_str = unique_group_names_str.decode('utf-8')
-                unique_group_names_str = unique_group_names_str.strip('"\'')
-                self.unique_group_names = unique_group_names_str.split('|')
-              else:
-                raise KeyError('unique_group_names attribute not found')
-
-            self.pt.all_print(f"*** self.unique_group_names {self.unique_group_names}" )
+            ug = _find_attr(attrs, 'unique_group_names')
+            if ug is None:
+              raise KeyError('unique_group_names attribute not found')
+            ug_str = str(_attr_value(ug)).strip('"\'')
+            self.unique_group_names = [p for p in ug_str.split('|') if p]
+            if not self.unique_group_names:
+              raise ValueError('unique_group_names is empty after parsing')
 
             # --- AUTO ESHIFT (disabled): regression on rank 0 ---
             # all_energies = s.read('Energy')
@@ -211,9 +260,6 @@ class ADIOS2(Scraper):
       raise RuntimeError(f"Failed to read ADIOS2 file metadata: {e}")
 
     # Broadcast metadata AND ESHIFTS to all ranks (collective)
-    # #region agent log
-    _agent_dbg("H1", "adios2_scraper.py:scrape_groups:before_bcast", "reached metadata bcast section", {"rank": self.rank, "nconfigs_pre_bcast": self.nconfigs})
-    # #endregion
     if self.pt.stubs == 0:
       self.nconfigs = self.comm.bcast(self.nconfigs, root=0)
       self.pt.add_2_fitsnap("nconfigs", self.nconfigs)
@@ -260,8 +306,8 @@ class ADIOS2(Scraper):
     """
     self.data = []
 
-    # Read all data arrays (collective MPI when stubs==0)
-    stream_comm = self.comm if self.pt.stubs == 0 else None
+    # Serial read per rank (same as scrape_groups)
+    stream_comm = None
     try:
       with Stream(self.dataPath, 'r', stream_comm) as s:
         for step in s.steps():
@@ -395,19 +441,32 @@ class ADIOS2(Scraper):
         data_dict['Energy'] -= self.eshifts[atom]
     # ------------------------------------
 
-    # Apply weights from config file using parent class method
+    # OMOL / FAIRChem .bp often has left-handed cells vs typical OMAT24 exports
+    _fix_left_handed_qmlattice(data_dict, config_idx=config_idx, rank=self.rank)
+
+    # Apply weights from config file using parent class method.
+    # If _rotate_coords / _weighting raise, we must restore self.data or the scraper
+    # stays a dict and scrape_configs can return a broken structure (dict keys look like configs).
     old_data = self.data
     old_conversions = self.conversions
     self.data = data_dict
     self.conversions = self.default_conversions
-
-    self._rotate_coords()
-    self._translate_coords()
-
-    self._weighting(natoms)
-
-    result = self.data
-    self.data = old_data
-    self.conversions = old_conversions
-
-    return result
+    try:
+      # region agent log
+      qmr = np.asarray(self.data["QMLattice"], dtype=np.float64)
+      d_rot = float(np.linalg.det(qmr))
+      if config_idx < 8 or d_rot <= 0:
+        _agent_debug_ndjson(
+          "H2",
+          "adios2_scraper:_extract_config:pre_rotate",
+          "det_immediately_before_rotate_coords",
+          {"config_idx": config_idx, "rank": self.rank, "det": d_rot},
+        )
+      # endregion
+      self._rotate_coords()
+      self._translate_coords()
+      self._weighting(natoms)
+      return dict(self.data)
+    finally:
+      self.data = old_data
+      self.conversions = old_conversions
