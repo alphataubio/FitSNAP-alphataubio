@@ -240,8 +240,9 @@ def _process_chunk(args):
             config['Forces'] = forces
         if stress is not None:
             config['Stress'] = stress
-        
-        configs.append(config)
+
+        if config['Group'] != "spice":
+          configs.append(config)
     
     return configs, filtered_count
 
