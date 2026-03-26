@@ -5,6 +5,10 @@ Convert FAIRChem LMDB datasets to ADIOS2 .bp format with element filtering.
 Uses fairchem's AseDBDataset to read LMDB databases (mocks torch if not installed).
 Expects LMDB databases to be already extracted in train/ and val/ directories.
 
+OMOL-style data may omit a usable periodic cell (zeros / singular). The converter then writes
+an orthorhombic ``Lattice`` from atomic coordinates plus ``--lattice-pad`` / ``--lattice-min-side``,
+which is what FitSNAP/LAMMPS use for box size.
+
 Usage:
     python fairchem_to_adios2.py --dataset scratch/omat24 --elements Al Ni --output omat24_AlNi.bp
     python fairchem_to_adios2.py --dataset scratch/omol25_4M --elements C H O --output omol25_CHO.bp
@@ -79,6 +83,62 @@ os.close(_original_stderr)
 # Global variables for worker processes
 _worker_dataset = None
 
+
+def _ensure_lattice_for_adios2(
+    cell,
+    positions,
+    forces=None,
+    stress=None,
+    *,
+    pad_angstrom=10.0,
+    min_side_angstrom=8.0,
+):
+    """
+    FitSNAP expects a full-rank, right-handed 3x3 lattice (rows = ASE cell vectors, Å).
+
+    OMOL25 / SPICE-style LMDB entries often carry **no meaningful cell** (zeros or rank-deficient
+    ``get_cell()``), so there is nothing to "read" for LAMMPS box size. In that case we **define**
+    the simulation box as an axis-aligned cell: edge lengths = max(span + 2*pad, min_side) per
+    axis from Cartesian positions, then shift positions so the lower corner is the origin.
+
+    OMAT24-style periodic configs keep their stored cell when it is full-rank; if ``det < 0``
+    (left-handed), we apply a z-reflection on lattice rows and matching flips on positions,
+    forces, and stress.
+    """
+    cell = np.asarray(cell, dtype=np.float64).reshape(3, 3).copy()
+    pos = np.asarray(positions, dtype=np.float64).copy()
+    frc = None if forces is None else np.asarray(forces, dtype=np.float64).copy()
+    sig = None if stress is None else np.asarray(stress, dtype=np.float64).reshape(3, 3).copy()
+
+    det = float(np.linalg.det(cell))
+    rank = int(np.linalg.matrix_rank(cell, tol=1e-8))
+    need_box = (not np.isfinite(det)) or abs(det) < 1e-6 or rank < 3
+
+    if need_box:
+        lo = pos.min(axis=0) - pad_angstrom
+        hi = pos.max(axis=0) + pad_angstrom
+        span = np.maximum(hi - lo, min_side_angstrom)
+        cell = np.diag(span.astype(np.float64))
+        pos -= lo
+        det = float(np.linalg.det(cell))
+    elif det < 0:
+        drefl = np.diag([1.0, 1.0, -1.0])
+        cell = cell @ drefl
+        pos[:, 2] *= -1.0
+        if frc is not None:
+            frc[:, 2] *= -1.0
+        if sig is not None:
+            sig = drefl @ sig @ drefl.T
+        det = float(np.linalg.det(cell))
+
+    if not np.isfinite(det) or det <= 0:
+        raise RuntimeError(
+            f"_ensure_lattice_for_adios2: invalid cell after fix (det={det}, rank={np.linalg.matrix_rank(cell)})"
+        )
+
+    return cell, pos, frc, sig
+
+
 def _init_worker(lmdb_path):
     """Initialize worker process with dataset."""
     global _worker_dataset
@@ -89,12 +149,13 @@ def _process_chunk(args):
     Process a chunk of configuration indices.
     
     Args:
-        args: Tuple of (start_idx, end_idx, group_name, allowed_elements, test_bool)
+        args: Tuple of (start_idx, end_idx, group_name, allowed_elements, test_bool,
+            lattice_pad, lattice_min_side)
     
     Returns:
         Tuple of (list of configs, number filtered)
     """
-    start_idx, end_idx, group_name, allowed_elements, test_bool = args
+    start_idx, end_idx, group_name, allowed_elements, test_bool, lattice_pad, lattice_min_side = args
     
     configs = []
     filtered_count = 0
@@ -148,7 +209,16 @@ def _process_chunk(args):
                 ])
             except:
                 pass
-                        
+
+        cell, positions, forces, stress = _ensure_lattice_for_adios2(
+            cell,
+            positions,
+            forces,
+            stress,
+            pad_angstrom=lattice_pad,
+            min_side_angstrom=lattice_min_side,
+        )
+
         config = {
             'Group': group_name,
             'NumAtoms': num_atoms,
@@ -206,7 +276,15 @@ def _discover_lmdb_roots(subset_dir: Path) -> list[tuple[Path, str]]:
     return roots
 
 
-def process_lmdb_dir(lmdb_path, group_name, allowed_elements, test_bool, num_workers=None):
+def process_lmdb_dir(
+    lmdb_path,
+    group_name,
+    allowed_elements,
+    test_bool,
+    num_workers=None,
+    lattice_pad=10.0,
+    lattice_min_side=8.0,
+):
     """
     Process a single LMDB database directory using fairchem's AseDBDataset with multiprocessing.
     
@@ -233,7 +311,17 @@ def process_lmdb_dir(lmdb_path, group_name, allowed_elements, test_bool, num_wor
     for i in range(0, dataset_size, chunk_size):
         start_idx = i
         end_idx = min(i + chunk_size, dataset_size)
-        chunks.append((start_idx, end_idx, group_name, allowed_elements, test_bool))
+        chunks.append(
+            (
+                start_idx,
+                end_idx,
+                group_name,
+                allowed_elements,
+                test_bool,
+                lattice_pad,
+                lattice_min_side,
+            )
+        )
     
     # Process chunks in parallel with global progress bar
     all_configs = []
@@ -249,7 +337,14 @@ def process_lmdb_dir(lmdb_path, group_name, allowed_elements, test_bool, num_wor
     return all_configs, total_filtered
 
 
-def process_dataset_path(dataset_root, subset_type, allowed_elements, num_workers=None):
+def process_dataset_path(
+    dataset_root,
+    subset_type,
+    allowed_elements,
+    num_workers=None,
+    lattice_pad=10.0,
+    lattice_min_side=8.0,
+):
     """
     Process train or val directory containing LMDB database directories.
     
@@ -283,7 +378,15 @@ def process_dataset_path(dataset_root, subset_type, allowed_elements, num_worker
 
     for lmdb_dir, group_name in lmdb_entries:
         try:
-            configs, filtered = process_lmdb_dir(lmdb_dir, group_name, allowed_elements, test_bool, num_workers)
+            configs, filtered = process_lmdb_dir(
+                lmdb_dir,
+                group_name,
+                allowed_elements,
+                test_bool,
+                num_workers,
+                lattice_pad=lattice_pad,
+                lattice_min_side=lattice_min_side,
+            )
             all_configs.extend(configs)
             tqdm.write(f"    {group_name}: kept {len(configs)}, filtered {filtered}")
         except Exception as e:
@@ -396,6 +499,17 @@ def write_adios2_file(configs, output_path, allowed_elements):
     print(f"  Total atoms across all configs: {total_atoms}", file=sys.stderr)
     print(f"  Has forces: {has_forces}", file=sys.stderr)
     print(f"  Has stress: {has_stress}", file=sys.stderr)
+
+    dets = np.linalg.det(lattice_array)
+    if np.any(~np.isfinite(dets)) or np.any(dets <= 0):
+        nbad = int(np.sum(~np.isfinite(dets) | (dets <= 0)))
+        raise RuntimeError(
+            f"Lattice verification failed: {nbad}/{nconfigs} configs have det(Lattice) <= 0 or non-finite"
+        )
+    print(
+        f"  Lattice det check: min={float(np.min(dets)):.6g} max={float(np.max(dets)):.6g} (Å³, all > 0)",
+        file=sys.stderr,
+    )
     
     # Write to ADIOS2
     print("  Writing to ADIOS2...", file=sys.stderr)
@@ -473,7 +587,21 @@ Expected directory structures:
                         help='Output ADIOS2 .bp file path')
     parser.add_argument('--workers', type=int, default=None,
                         help='Number of parallel workers (default: cpu_count)')
-    
+    parser.add_argument(
+        '--lattice-pad',
+        type=float,
+        default=10.0,
+        metavar='ANG',
+        help='Vacuum padding (Å) on each side when synthesizing a box from positions (OMOL / missing cell)',
+    )
+    parser.add_argument(
+        '--lattice-min-side',
+        type=float,
+        default=8.0,
+        metavar='ANG',
+        help='Minimum orthorhombic edge (Å) when synthesizing a cell from positions',
+    )
+
     args = parser.parse_args()
     
     # Validate inputs
@@ -484,6 +612,11 @@ Expected directory structures:
     
     allowed_elements = set(args.elements)
     print(f"Allowed elements: {', '.join(sorted(allowed_elements))}", file=sys.stderr)
+    print(
+        f"Synthetic LAMMPS box (when cell missing/singular): pad={args.lattice_pad} Å, "
+        f"min edge={args.lattice_min_side} Å",
+        file=sys.stderr,
+    )
     
     if args.workers:
         print(f"Using {args.workers} parallel workers", file=sys.stderr)
@@ -493,11 +626,25 @@ Expected directory structures:
     # Process train and val subsets
     all_configs = []
     
-    train_configs = process_dataset_path(dataset_root, 'train', allowed_elements, args.workers)
+    train_configs = process_dataset_path(
+        dataset_root,
+        'train',
+        allowed_elements,
+        args.workers,
+        lattice_pad=args.lattice_pad,
+        lattice_min_side=args.lattice_min_side,
+    )
     all_configs.extend(train_configs)
     print(f"\nCollected {len(train_configs)} training configurations", file=sys.stderr)
     
-    val_configs = process_dataset_path(dataset_root, 'val', allowed_elements, args.workers)
+    val_configs = process_dataset_path(
+        dataset_root,
+        'val',
+        allowed_elements,
+        args.workers,
+        lattice_pad=args.lattice_pad,
+        lattice_min_side=args.lattice_min_side,
+    )
     all_configs.extend(val_configs)
     print(f"Collected {len(val_configs)} validation configurations", file=sys.stderr)
     
