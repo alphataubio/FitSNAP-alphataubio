@@ -94,6 +94,8 @@ class LammpsPyace(LammpsPace):
             factor = 23.060549   # eV -> kcal/mol
         else:
             factor = 1.0
+            
+        # -------------------------------- ENERGY --------------------------------
 
         if self.config.sections["CALCULATOR"].energy:
         
@@ -118,6 +120,8 @@ class LammpsPyace(LammpsPace):
             index += nrows_energy
             dindex += nrows_energy
         irow += nrows_energy
+        
+        # -------------------------------- FORCE --------------------------------
 
         if self.config.sections["CALCULATOR"].force:
             s = slice(index, index + num_atoms*ndim_force)
@@ -138,6 +142,8 @@ class LammpsPyace(LammpsPace):
             index += nrows_force
             dindex += nrows_force
         irow += nrows_force
+        
+        # -------------------------------- STRESS --------------------------------
 
         if self.config.sections["CALCULATOR"].stress:
             vb_sum_temp = 160.2176565 * lmp_pace[irow:irow + nrows_virial, :ncols_descriptors] / lmp_volume
