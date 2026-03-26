@@ -45,8 +45,8 @@ def process_chunk(args):
             elements_str = ' '.join(unique_elements)
             
             data_rows.append({
+                'index': i,
                 'source': atoms.info.get('source', ''),
-                'reference_source': atoms.info.get('reference_source', ''),
                 'data_id': atoms.info.get('data_id', ''),
                 'elements': elements_str,
                 'charge': atoms.info.get('charge', ''),
