@@ -244,6 +244,9 @@ class FitSnap:
         else:
             raise NameError("No list of data dictionaries to process.")
 
+        if isinstance(data, dict):
+            data = [data]
+
         # Zero distributed index before parallel loop over configs.
         self.calculator.distributed_index = 0
 
