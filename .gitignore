@@ -1,5 +1,5 @@
 # ignoring run example files
-examples/*
+#examples/*
 examples/library/genetic_algorithm/__pycache__
 coupling_coefficients.yace
 wig_LR*
@@ -43,3 +43,8 @@ fitsnap3lib/lib/sym_ACE/lib/*.pickle
 .ipynb_checkpoints
 .jupyter
 ~*
+/omol25
+fitsnap3lib/lib/sym_ACE/lib/wigner_rpi_rank1.json
+fitsnap3lib/lib/sym_ACE/lib/wigner_rpi_rank2.json
+fitsnap3lib/lib/sym_ACE/lib/wigner_rpi_rank3.json
+fitsnap3lib/lib/sym_ACE/lib/wigner_rpi_rank4.json
