@@ -241,7 +241,7 @@ def _process_chunk(args):
         if stress is not None:
             config['Stress'] = stress
 
-        if config['Group'] != "spice":
+        if config['Group'] == "spice":
           configs.append(config)
     
     return configs, filtered_count
