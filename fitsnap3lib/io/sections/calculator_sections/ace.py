@@ -1,7 +1,5 @@
 import numpy as np
 import itertools
-import pickle
-import json
 #from fitsnap3lib.lib.sym_ACE.rpi_lib import *
 #from fitsnap3lib.lib.sym_ACE.yamlpace_tools.potential import  *
 from fitsnap3lib.io.sections.sections import Section
@@ -163,14 +161,13 @@ try:
             nus.sort(key = lambda x : mu0s[nus_unsort.index(x)],reverse = False)
             nus.sort(key = lambda x : len(x),reverse = False)
             nus.sort(key = lambda x : mu0s[nus_unsort.index(x)],reverse = False)
+            byattyp = srt_by_attyp(nus)
             #config.nus = [item for sublist in list(byattyp.values()) for item in sublist]
-            
-            # mu0 = 1,2,... duplicate same functions as mu0 from nus
             for atype in range(self.numtypes):
+                nus = byattyp[str(atype)]
                 for nu in nus:
                     i += 1
-                    mu0 = atype
-                    _,mu,n,l,L = get_mu_n_l(nu,return_L=True)
+                    mu0,mu,n,l,L = get_mu_n_l(nu,return_L=True)
                     if L != None:
                         flat_nu = [mu0] + mu + n + l + list(L)
                     else:
@@ -178,7 +175,6 @@ try:
                     self.blist.append([i] + flat_nu)
                     self.nus.append(nu)
                     self.blank2J.append([prefac])
-
             self.ncoeff = int(len(self.blist)/self.numtypes)
             if not self.bzeroflag:
                 self.blank2J = np.reshape(self.blank2J, (self.numtypes, int(len(self.blist)/self.numtypes)))
@@ -189,8 +185,7 @@ try:
                 self.blank2J = np.reshape(self.blank2J, len(self.blist))
         
         def _write_couple(self):
-            # Only global rank 0 handles all file I/O since nodes share scratch directory
-            @self.pt.rank_zero
+            @self.pt.sub_rank_zero
             def decorated_write_couple():
                 if self.bzeroflag:
                     assert len(self.types) ==  len(self.erefs), "must provide reference energy for each atom type"
@@ -200,8 +195,7 @@ try:
                 bondinds=range(len(self.types))
                 bonds = [b for b in itertools.product(bondinds,bondinds)]
                 bondstrs = ['[%d, %d]' % b for b in bonds]
-                #print(f"*** len(self.rcutfac) {len(self.rcutfac)} len(bondstrs) {len(bondstrs)} bondstrs {bondstrs}\n", flush=True);
-                assert len(self.rcutfac) == len(bondstrs), "must provide rc (radial cutoff) for each BOND type"
+                assert len(self.rcutfac) == len(bondstrs), "must provide rc (radial cutoff) for each BOND type" 
                 assert len(self.lmbda) == len(bondstrs), "must provide lambda (radial decay parameter) for each BOND type" 
                 assert len(self.rcinner) == len(bondstrs), "must provide rcinner for each BOND type" 
                 assert len(self.drcinner) == len(bondstrs), "must provide drcinner for each BOND type" 
@@ -223,34 +217,29 @@ try:
                 rankstr = ''.join(rankstrlst) % tuple(self.ranks)
                 lstrlst = ['%s']*len(self.ranks)
                 lstr = ''.join(lstrlst) % tuple(self.lmax)
-                
-                # Load or create pickle files
                 if not self.wigner_flag:
                     try:
                         with open('cg_LR_%d_r%s_lmax%s.pickle' %(L_R,rankstr,lstr),'rb') as handle:
                             ccs = pickle.load(handle)
-                            #self.pt.single_print(f"Loaded existing CG coupling coefficients from pickle")
                     except FileNotFoundError:
-                        #self.pt.single_print(f"Creating CG coupling coefficients...")
                         ccs = get_cg_coupling(ldict,L_R=L_R)
+                        #print (ccs)
+                        #store them for later so they don't need to be recalculated
                         store_generalized(ccs, coupling_type='cg',L_R=L_R)
                 else:
                     try:
                         with open('wig_LR_%d_r%s_lmax%s.pickle' %(L_R,rankstr,lstr),'rb') as handle:
                             ccs = pickle.load(handle)
-                            #self.pt.single_print(f"Loaded existing Wigner coupling coefficients from pickle")
                     except FileNotFoundError:
-                        #self.pt.single_print(f"Creating Wigner coupling coefficients...")
                         ccs = get_wig_coupling(ldict,L_R)
+                        #print (ccs)
+                        #store them for later so they don't need to be recalculated
                         store_generalized(ccs, coupling_type='wig',L_R=L_R)
-                
-                # Create AcePot and write the potential file
+
                 apot = AcePot(self.types, reference_ens, [int(k) for k in self.ranks], [int(k) for k in self.nmax],  [int(k) for k in self.lmax], self.nmaxbase, rcvals, lmbdavals, rcinnervals, drcinnervals, [int(k) for k in self.lmin], self.b_basis, **{'ccs':ccs[M_R]})
                 apot.write_pot('coupling_coefficients')
-            
+
             decorated_write_couple()
-            # Wait for global rank 0 to finish all file I/O
-            self.pt.all_barrier()
 
 except ModuleNotFoundError:
 
