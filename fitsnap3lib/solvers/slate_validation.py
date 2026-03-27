@@ -332,12 +332,22 @@ class SlateValidation(SlateCommon):
                     if row_type not in ['Energy', 'Force', 'Stress']:
                         continue
                     
-                    # Get units for axis labels
+                    # Match slate_common.error_analysis: for metal, MAE/RMSE use ×1000 (meV-scale).
+                    # Scatter raw .bp columns are in eV / (eV/Å); scale and label like the tables.
                     reference_section = self.config.sections["REFERENCE"]
+                    scatter_factor = 1.0
                     if row_type == 'Energy':
-                        units = reference_section.energy_units
+                        if reference_section.units == "metal":
+                            scatter_factor = 1000.0
+                            units = reference_section.error_energy_units
+                        else:
+                            units = reference_section.energy_units
                     elif row_type == 'Force':
-                        units = reference_section.force_units
+                        if reference_section.units == "metal":
+                            scatter_factor = 1000.0
+                            units = reference_section.error_force_units
+                        else:
+                            units = reference_section.force_units
                     elif row_type == 'Stress':
                         units = reference_section.stress_units
                     else:
@@ -361,8 +371,8 @@ class SlateValidation(SlateCommon):
                         if var_name_train in available_vars:
                             data_train = adios2_file.read(var_name_train, step_selection=[0,1])
                             if len(data_train) > 0:
-                                truths_train = data_train[:, 0]
-                                preds_train = data_train[:, 1]
+                                truths_train = scatter_factor * data_train[:, 0]
+                                preds_train = scatter_factor * data_train[:, 1]
                                 all_preds.extend(preds_train)
                                 all_truths.extend(truths_train)
                                 if len(all_preds) > 1:
@@ -379,8 +389,8 @@ class SlateValidation(SlateCommon):
                         if var_name_test in available_vars:
                             data_test = adios2_file.read(var_name_test, step_selection=[0,1])
                             if len(data_test) > 0:
-                                truths_test = data_test[:, 0]
-                                preds_test = data_test[:, 1]
+                                truths_test = scatter_factor * data_test[:, 0]
+                                preds_test = scatter_factor * data_test[:, 1]
                                 all_preds.extend(preds_test)
                                 all_truths.extend(truths_test)
                                 ax.scatter(truths_test, preds_test, zorder=9, linewidths=0.5,
@@ -527,7 +537,10 @@ class SlateValidation(SlateCommon):
             gamma_history = adios2_file.read("gamma", step_selection=[0,num_steps])
             lambda_history = adios2_file.read("lambda", step_selection=[0,num_steps])
             gamma_array = gamma_history.reshape((num_steps,len(blist)))
-            lambda_array = np.log10(lambda_history.reshape((num_steps,len(blist)))+1e-10)
+            lam = lambda_history.reshape((num_steps, len(blist)))
+            lambda_array = np.full_like(lam, np.nan, dtype=float)
+            pos = (lam > 0) & np.isfinite(lam)
+            lambda_array[pos] = np.log10(lam[pos])
         
         blist_rank = defaultdict(list)
         rank_indices = defaultdict(list)
@@ -625,26 +638,38 @@ class SlateValidation(SlateCommon):
             # Right column: Lambda distribution (log scale)
             ax_lambda = axes[row_idx, 1]
             lambda_at_iter = lambda_array[iter_idx, :]
-            
-            counts, edges, patches = ax_lambda.hist(lambda_at_iter, bins=80, edgecolor='black', alpha=.99)
-            ax_lambda.set_xlabel('Log10(Lambda)', fontsize=11)
-            ax_lambda.set_ylabel('Number of Features', fontsize=11)
-            ax_lambda.set_title(f'Iteration {iter_idx}: Lambda Distribution', fontsize=12, fontweight='bold')
-            ax_lambda.grid(True, alpha=0.3, axis='y')
+            lambda_finite = lambda_at_iter[np.isfinite(lambda_at_iter)]
 
-            bin_centers = 0.5 * (edges[:-1] + edges[1:])
-            norm_centers = (bin_centers - bin_centers.min()) / (bin_centers.max() - bin_centers.min())
-            for c, p in zip(norm_centers, patches):
-                p.set_facecolor(cmap_lambda(c))
+            if len(lambda_finite) > 0:
+                counts, edges, patches = ax_lambda.hist(lambda_finite, bins=80, edgecolor='black', alpha=.99)
+                ax_lambda.set_xlabel('Log10(Lambda)', fontsize=11)
+                ax_lambda.set_ylabel('Number of Features', fontsize=11)
+                ax_lambda.set_title(f'Iteration {iter_idx}: Lambda Distribution', fontsize=12, fontweight='bold')
+                ax_lambda.grid(True, alpha=0.3, axis='y')
 
-            # Add statistics text
-            n_small_lambda = np.sum(lambda_at_iter < 1e3)
-            stats_text = f'Log range: [{lambda_at_iter.min():.1f}, {lambda_at_iter.max():.1f}] '
-            stats_text += f'Log mean: {lambda_at_iter.mean():.1f}'
-            ax_lambda.text(0.98, 0.98, stats_text,
-                        transform=ax_lambda.transAxes, fontsize=9, verticalalignment='top',
-                        horizontalalignment='right',
-                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                bin_centers = 0.5 * (edges[:-1] + edges[1:])
+                span = bin_centers.max() - bin_centers.min()
+                if span > 0:
+                    norm_centers = (bin_centers - bin_centers.min()) / span
+                else:
+                    norm_centers = np.zeros_like(bin_centers)
+                for c, p in zip(norm_centers, patches):
+                    p.set_facecolor(cmap_lambda(c))
+
+                stats_text = (
+                    f'Log range: [{lambda_finite.min():.1f}, {lambda_finite.max():.1f}] '
+                    f'Log mean: {lambda_finite.mean():.1f}'
+                )
+                if np.any(~np.isfinite(lambda_at_iter)):
+                    stats_text += ' (non-positive λ omitted from log plot)'
+                ax_lambda.text(0.98, 0.98, stats_text,
+                            transform=ax_lambda.transAxes, fontsize=9, verticalalignment='top',
+                            horizontalalignment='right',
+                            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+            else:
+                ax_lambda.text(0.5, 0.5, 'No positive finite λ (log undefined)',
+                            transform=ax_lambda.transAxes, ha='center', va='center', fontsize=12)
+                ax_lambda.set_title(f'Iteration {iter_idx}: Lambda Distribution', fontsize=12, fontweight='bold')
                 
         notebook["cells"].append({
             "cell_type": "markdown",
@@ -710,23 +735,33 @@ def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=
         xlim, xticks_extra = -4*label_spacing-.5, [-2*label_spacing-.5, -label_spacing-.5]
         figsize = (10, max(6, heatmap_rows*11/72))
 
+    finite = history_array[np.isfinite(history_array)]
+    if finite.size == 0:
+        dmin, dmax = 0.0, 1.0
+    else:
+        dmin, dmax = float(finite.min()), float(finite.max())
+
     if threshold is None:
-        vmin, vmax = np.min(history_array), np.max(history_array)
+        vmin, vmax = dmin, dmax
         cbar_extend = 'neither'
         cmap = plt.cm.turbo
     elif threshold_position == 'min':
-        vmin, vmax = max(threshold, np.min(history_array)), np.max(history_array)
+        vmin, vmax = max(threshold, dmin), dmax
         cbar_extend = 'min'
         cmap = plt.cm.turbo
         cmap.set_under('white')
     else:
-        vmin, vmax = np.min(history_array), min(threshold, np.max(history_array))
+        vmin, vmax = dmin, min(threshold, dmax)
         cbar_extend = 'max'
         cmap = plt.cm.turbo.reversed()
         cmap.set_over('white')
 
+    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin >= vmax:
+        vmin, vmax = dmin, max(dmax, np.nextafter(dmin, np.inf))
+
     fig, ax = plt.subplots(figsize=figsize, layout="constrained")
-    im = ax.imshow(history_array[rank_indices[rank]], aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)
+    im_data = np.ma.masked_invalid(history_array[rank_indices[rank]])
+    im = ax.imshow(im_data, aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)
 
     # --- atom labels ---
     atoms = Counter([basis[0] for basis in sorted_blist])
@@ -768,7 +803,11 @@ def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=
     fig.suptitle(f"{title} History (rank {rank})", fontsize="x-large", fontweight="bold")
 
     cbar = fig.colorbar(im, ax=ax, orientation='horizontal', pad=2*min(.1,1/heatmap_rows), shrink=.8, extend=cbar_extend)
-    cbar_ticks = [vmin + (vmax - vmin) * f for f in [0, 0.25, 0.5, 0.75, 1.0]]
+    span = vmax - vmin
+    if np.isfinite(span) and span > 0:
+        cbar_ticks = [vmin + span * f for f in [0, 0.25, 0.5, 0.75, 1.0]]
+    else:
+        cbar_ticks = [vmin]
     cbar.set_ticks(cbar_ticks)
     cbar.ax.set_xticklabels([f'{t:.2g}' for t in cbar_ticks])
     title_extra = "" if threshold is None else " (white: removed features)"
@@ -776,9 +815,11 @@ def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=
 
     if threshold is not None:
         cax_top = cbar.ax.twiny()
-        cax_top.set_xlim(cbar.ax.get_xlim())
-        cax_top.set_xticks([threshold])
-        cax_top.xaxis.set_ticks_position('top')
+        xl0, xl1 = cbar.ax.get_xlim()
+        if np.isfinite(xl0) and np.isfinite(xl1):
+            cax_top.set_xlim(xl0, xl1)
+            cax_top.set_xticks([threshold])
+            cax_top.xaxis.set_ticks_position('top')
     
     buf = io.BytesIO()
     plt.savefig(buf, format='svg', bbox_inches='tight')
