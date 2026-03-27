@@ -5,26 +5,6 @@ import time
 import numpy as np
 from itertools import islice
 
-# region agent log
-_AGENT_DEBUG_LOG = "/Users/mitch/github/FitSNAP-alphataubio/.cursor/debug-e1339f.log"
-
-
-def _agent_debug_ndjson(hypothesis_id, location, message, data):
-  try:
-    rec = {
-      "sessionId": "e1339f",
-      "hypothesisId": hypothesis_id,
-      "location": location,
-      "message": message,
-      "data": data,
-      "timestamp": int(time.time() * 1000),
-    }
-    with open(_AGENT_DEBUG_LOG, "a", encoding="utf-8") as f:
-      f.write(json.dumps(rec, default=str) + "\n")
-  except Exception:
-    pass
-# endregion
-
 try:
   from adios2 import Stream
   HAS_ADIOS2 = True
@@ -326,7 +306,7 @@ class ADIOS2(Scraper):
       try:
         data_dict = self._extract_config(config_idx)
         if data_dict is not None:
-          self.pt.all_print(f"*** {data_dict}")
+          # self.pt.all_print(f"*** {data_dict}")
           self.data.append(data_dict)
       except Exception as e:
         logging.warning(f"Failed to extract config {config_idx}: {e}")
@@ -401,17 +381,6 @@ class ADIOS2(Scraper):
     self.data = data_dict
     self.conversions = self.default_conversions
     try:
-      # region agent log
-      qmr = np.asarray(self.data["QMLattice"], dtype=np.float64)
-      d_rot = float(np.linalg.det(qmr))
-      if config_idx < 8 or d_rot <= 0:
-        _agent_debug_ndjson(
-          "H2",
-          "adios2_scraper:_extract_config:pre_rotate",
-          "det_immediately_before_rotate_coords",
-          {"config_idx": config_idx, "rank": self.rank, "det": d_rot},
-        )
-      # endregion
       self._rotate_coords()
       self._translate_coords()
       self._weighting(natoms)
