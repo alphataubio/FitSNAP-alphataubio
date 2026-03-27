@@ -177,6 +177,14 @@ class ParallelTools():
 
             self.double_size = self.MPI.DOUBLE.Get_size()
 
+            # _comm_split() runs after Config (needs multinode_testing from EXTRAS).
+            # Sections such as ACE may call sub_rank_zero during parse; use WORLD as a
+            # provisional sub-comm so only global rank 0 runs those (same as sub_rank 0
+            # on a single shared-memory node). _comm_split() replaces these.
+            self._sub_comm = self._comm
+            self._sub_rank = self._rank
+            self._sub_size = self._size
+
         if self.stubs == 1:
             self._rank = 0
             self._size = 1
