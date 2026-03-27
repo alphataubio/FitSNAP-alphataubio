@@ -327,7 +327,8 @@ class Calculator:
               if self.config.args.verbose:
                   pt.single_print(">>> Matrix of descriptors takes up ", "{:.4f}".format(100 * a_size / self.config.sections["MEMORY"].memory),
                               "% of the total memory:", "{:.4f}".format(self.config.sections["MEMORY"].memory*1e-9), "GB") #, "on rank", "{:d}".format(pt._rank))
-              override = self.config.sections.get("MEMORY", {}).get("override", False)
+              _mem = self.config.sections.get("MEMORY")
+              override = getattr(_mem, "override", False) if _mem is not None else False
               if a_size / pt.get_ram() > 0.5 and not override:
                   raise MemoryError(f"Descriptor matrix is larger ({a_size/1024**3:.1f} GB) than 50% of your RAM ({0.5*pt.get_ram()/1014**3:.1f} GB). Aborting...!")
               elif a_size / pt.get_ram() > 0.5 and override:
