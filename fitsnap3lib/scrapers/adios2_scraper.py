@@ -59,56 +59,6 @@ def _attr_value(entry):
   return v
 
 
-def _fix_left_handed_qmlattice(data_dict, config_idx=None, rank=None):
-  """
-  FAIRChem / OMOL-style datasets often store a left-handed cell (det(QMLattice) < 0).
-  OMAT24-style exports were usually right-handed. FitSNAP _rotate_coords requires det > 0.
-
-  Reflect through the xy-plane: S = diag(1,1,-1). Lattice columns are cell vectors a,b,c;
-  each maps to S @ a, so C' = S @ C. Cartesian coords and forces use r' = (x,y,-z).
-  Stress transforms as S σ S^T.
-  """
-  qm = np.asarray(data_dict['QMLattice'], dtype=np.float64)
-  det_in = float(np.linalg.det(qm))
-  # region agent log
-  if config_idx is not None and (config_idx < 8 or det_in <= 0):
-    _agent_debug_ndjson(
-      "H1",
-      "adios2_scraper:_fix_left_handed_qmlattice:entry",
-      "det_before_fix",
-      {"config_idx": config_idx, "rank": rank, "det_in": det_in, "shape": list(qm.shape)},
-    )
-  # endregion
-  if det_in > 0:
-    return
-  qm = qm.copy()
-  S = np.diag([1.0, 1.0, -1.0])
-  qm = S @ qm
-  data_dict['QMLattice'] = qm
-  det_out = float(np.linalg.det(qm))
-  # region agent log
-  if config_idx is not None:
-    _agent_debug_ndjson(
-      "H3",
-      "adios2_scraper:_fix_left_handed_qmlattice:after_S",
-      "det_after_S_leftmul",
-      {"config_idx": config_idx, "rank": rank, "det_in": det_in, "det_out": det_out},
-    )
-  # endregion
-  pos = np.asarray(data_dict['Positions'], dtype=np.float64)
-  pos = pos.copy()
-  pos[:, 2] *= -1.0
-  data_dict['Positions'] = pos
-  if 'Forces' in data_dict:
-    frc = np.asarray(data_dict['Forces'], dtype=np.float64).copy()
-    frc[:, 2] *= -1.0
-    data_dict['Forces'] = frc
-  if 'Stress' in data_dict:
-    sig = np.asarray(data_dict['Stress'], dtype=np.float64).reshape(3, 3)
-    S = np.diag([1.0, 1.0, -1.0])
-    data_dict['Stress'] = (S @ sig @ S.T).reshape(3, 3)
-
-
 # ------------------------------------------------------------------------------------------------
 
 class ADIOS2(Scraper):
@@ -123,10 +73,12 @@ class ADIOS2(Scraper):
   data); the scraper reflects z consistently on lattice, positions, forces, and stress so
   FitSNAP's LAMMPS path sees a right-handed ``QMLattice``.
 
-  Includes AUTOMATIC features:
-  1. Calculates and applies ESHIFT (formation energy) automatically.
-  2. Converts Stress from eV/A^3 to Bar.
-  3. Handles correct Lattice orientation (Column-Major).
+  Includes:
+  1. Applies ``[SCRAPER]`` energy unit conversion to ``Energy`` (same as VASP/JSON scrapers).
+  2. Optional per-atom ESHIFT subtraction when ``eshifts`` is populated (auto-regression is
+     currently disabled in code).
+  3. Converts Stress from eV/Å³ to bar when stress is used (see ``fairchem_to_adios2``).
+  4. Handles correct lattice orientation (column-major ``QMLattice``).
   """
 
   def __init__(self, name, pt, config):
@@ -135,8 +87,6 @@ class ADIOS2(Scraper):
 
     super().__init__(name, pt, config)
     self.data = []
-
-    self.pt.all_print("*** ok 1")
 
     # Get the .bp file path from PATH section
     if not hasattr(self.config.sections["PATH"], 'datapath'):
@@ -184,8 +134,6 @@ class ADIOS2(Scraper):
     """
     Read metadata, calculate ESHIFT, and determine configuration distribution.
     """
-
-    self.pt.all_print("*** scrape_groups()")
 
     # Serial ADIOS2 per process (comm=None) avoids collective BeginStep on fairchem .bp files.
     stream_comm = None
@@ -330,6 +278,9 @@ class ADIOS2(Scraper):
           if self.has_stress:
             self.stresses = s.read('Stress')  # Shape: (nconfigs, 3, 3)
 
+          self.pt.single_print(f"*** s.available_variables() {s.available_variables()}")
+
+
           break
 
     except Exception as e:
@@ -375,6 +326,7 @@ class ADIOS2(Scraper):
       try:
         data_dict = self._extract_config(config_idx)
         if data_dict is not None:
+          self.pt.all_print(f"*** {data_dict}")
           self.data.append(data_dict)
       except Exception as e:
         logging.warning(f"Failed to extract config {config_idx}: {e}")
@@ -410,7 +362,7 @@ class ADIOS2(Scraper):
     # Extract lattice (3x3 matrix)
     lattice = self.lattices[config_idx].reshape((3, 3))
 
-    # Create data dictionary
+    # Create data dictionary ([SCRAPER] property_array energy: ... -> conversions, same as VASP/JSON)
     data_dict = {
       'Group': group_name,
       'File': f"{group_name}/{config_idx}",
@@ -418,7 +370,7 @@ class ADIOS2(Scraper):
       'AtomTypes': atom_types,
       'NumAtoms': natoms,
       'QMLattice': lattice.T.copy(),
-      'Energy': float(self.energy[config_idx]),
+      'Energy': float(self.energy[config_idx]) * self.default_conversions['Energy'],
       'test_bool': bool(self.test_bool[config_idx]),
     }
 
@@ -440,9 +392,6 @@ class ADIOS2(Scraper):
       for atom in atom_types:
         data_dict['Energy'] -= self.eshifts[atom]
     # ------------------------------------
-
-    # OMOL / FAIRChem .bp often has left-handed cells vs typical OMAT24 exports
-    _fix_left_handed_qmlattice(data_dict, config_idx=config_idx, rank=self.rank)
 
     # Apply weights from config file using parent class method.
     # If _rotate_coords / _weighting raise, we must restore self.data or the scraper
