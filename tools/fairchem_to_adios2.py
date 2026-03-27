@@ -5,9 +5,23 @@ Convert FAIRChem LMDB datasets to ADIOS2 .bp format with element filtering.
 Uses fairchem's AseDBDataset to read LMDB databases (mocks torch if not installed).
 Expects LMDB databases to be already extracted in train/ and val/ directories.
 
-OMOL-style data may omit a usable periodic cell (zeros / singular). The converter then writes
-an orthorhombic ``Lattice`` from atomic coordinates plus ``--lattice-pad`` / ``--lattice-min-side``,
-which is what FitSNAP/LAMMPS use for box size.
+**OMOL25 labels (per Meta ``DATASET.md``, Hugging Face ``facebook/OMol25``):** structures are ASE
+``Atoms`` with **DFT total energy (eV)** and **force (eV/Å)** — the same convention this script
+reads via ``get_potential_energy()`` and ``get_forces()``. Stress is not part of that dataset
+description; use ``[CALCULATOR] stress = False`` in FitSNAP so virial rows are off (calculator
+defaults stress to ``True``).
+
+**FitSNAP ``[REFERENCE] units = metal``:** LAMMPS uses eV and Å. The linear system uses **per-atom**
+energy in eV after the calculator subtracts the reference row and divides by ``Natoms``; RMSE
+tables may label errors as meV/atom for readability only.
+
+**Periodic / OMAT24-style .bp with stress:** if ``get_stress()`` is present, we store the 3×3
+tensor (Voigt from ASE → full matrix) in **eV/Å³** as expected by the ADIOS2 scraper, which
+multiplies by ``1602176.6208`` to convert to bar for LAMMPS.
+
+**OMOL-style missing cell:** zeros or rank-deficient ``get_cell()`` trigger a synthetic
+orthorhombic box (``--lattice-pad``, ``--lattice-min-side``). **Stress is dropped** in that
+path — any stored stress would refer to the original DFT cell, not the padded box.
 
 Usage:
     python fairchem_to_adios2.py --dataset scratch/omat24 --elements Al Ni --output omat24_AlNi.bp
@@ -120,6 +134,9 @@ def _ensure_lattice_for_adios2(
         span = np.maximum(hi - lo, min_side_angstrom)
         cell = np.diag(span.astype(np.float64))
         pos -= lo
+        # Stress from the dataset is defined for the original (missing/aperiodic) cell, not this
+        # padded orthorhombic box; FitSNAP would otherwise compare incompatible virials.
+        sig = None
         det = float(np.linalg.det(cell))
     elif det < 0:
         drefl = np.diag([1.0, 1.0, -1.0])
@@ -236,13 +253,11 @@ def _process_chunk(args):
             config['Spin'] = atoms.info.get('spin', '')
             config['Composition'] = atoms.info.get('composition', '')
         
-        if forces is not None:
-            config['Forces'] = forces
-        if stress is not None:
-            config['Stress'] = stress
+        if forces is not None: config['Forces'] = forces
+        if stress is not None: config['Stress'] = stress
 
-        if config['Group'] == "spice":
-          configs.append(config)
+        #if config['Group'] == "spice":
+        configs.append(config)
     
     return configs, filtered_count
 
@@ -424,6 +439,10 @@ def write_adios2_file(configs, output_path, allowed_elements):
     
     Element mapping (attributes):
     - element_map: maps element index to symbol
+
+    Optional OMOL metadata (when present in LMDB):
+    - Composition: uint8 array [nconfigs, composition_max_len], UTF-8 bytes (null-padded);
+      attribute ``composition_max_len`` gives the second dimension.
     """
     
     nconfigs = len(configs)
@@ -435,7 +454,7 @@ def write_adios2_file(configs, output_path, allowed_elements):
     
     # Prepare arrays
     group_names = []
-    num_atoms_array = np.zeros(nconfigs, dtype=np.int32)
+    num_atoms_array = np.zeros(nconfigs, dtype=np.uint16)
     energy_array = np.zeros(nconfigs, dtype=np.float64)
     test_bool_array = np.zeros(nconfigs, dtype=np.int32)
     
@@ -446,13 +465,19 @@ def write_adios2_file(configs, output_path, allowed_elements):
     
     position_offsets = np.zeros(nconfigs, dtype=np.int64)
     
-    has_forces = any('Forces' in config for config in configs)
-    has_stress = any('Stress' in config for config in configs)
-    
+    has_forces      = any('Forces'      in config for config in configs)
+    has_stress      = any('Stress'      in config for config in configs)
+    has_charge      = any('Charge'      in config for config in configs)
+    has_spin        = any('Spin'        in config for config in configs)
+    has_composition = any('Composition' in config for config in configs)
+
     # Fixed-size arrays (nconfigs, 3, 3) for 3x3 matrices
     lattice_array = np.zeros((nconfigs, 3, 3), dtype=np.float64)
     stress_array = np.zeros((nconfigs, 3, 3), dtype=np.float64) if has_stress else None
-    
+    charge_array = np.zeros((nconfigs), dtype=np.int8) if has_charge else None
+    spin_array = np.zeros((nconfigs), dtype=np.int8) if has_spin else None
+    composition_strings = [] if has_composition else None
+
     total_atoms = 0
     
     print("  Flattening arrays...", file=sys.stderr)
@@ -488,7 +513,12 @@ def write_adios2_file(configs, output_path, allowed_elements):
                 stress_array[i] = config['Stress']
             else:
                 stress_array[i] = np.zeros(3, 3, dtype=np.float64)
-    
+
+        if has_charge: charge_array[i] = config['Charge']
+        if has_spin: spin_array[i] = config['Spin']
+        if has_composition:
+            composition_strings.append(str(config.get("Composition", "")))
+
     # Concatenate variable-length arrays
     print("  Concatenating arrays...", file=sys.stderr)
     positions_flat = np.concatenate(positions_list)
@@ -500,6 +530,9 @@ def write_adios2_file(configs, output_path, allowed_elements):
     print(f"  Total atoms across all configs: {total_atoms}", file=sys.stderr)
     print(f"  Has forces: {has_forces}", file=sys.stderr)
     print(f"  Has stress: {has_stress}", file=sys.stderr)
+    print(f"  Has charge: {has_charge}", file=sys.stderr)
+    print(f"  Has spin: {has_spin}", file=sys.stderr)
+    print(f"  Has composition: {has_composition}", file=sys.stderr)
 
     dets = np.linalg.det(lattice_array)
     if np.any(~np.isfinite(dets)) or np.any(dets <= 0):
@@ -544,11 +577,23 @@ def write_adios2_file(configs, output_path, allowed_elements):
         # Write fixed-size arrays
         s.write('Lattice', lattice_array, count=[nconfigs,3,3])
         
-        if has_forces:
-            s.write('ForcesFlat', forces_flat, count=[total_atoms,3])
-        if has_stress:
-            s.write('Stress', stress_array, count=[nconfigs,3,3])
-    
+        if has_forces: s.write('ForcesFlat', forces_flat, count=[total_atoms,3])
+        if has_stress: s.write('Stress', stress_array, count=[nconfigs,3,3])
+        if has_charge: s.write('Charge', charge_array, count=[nconfigs])
+        if has_spin: s.write('Spin', spin_array, count=[nconfigs])
+        if has_composition:
+            # ADIOS2 cannot define variables from object-dtype / ragged string arrays; use UTF-8 bytes.
+            byte_rows = [s.encode("utf-8") for s in composition_strings]
+            comp_max = max((len(row) for row in byte_rows), default=1)
+            comp_max = min(max(comp_max, 1), 4096)
+            composition_array = np.zeros((nconfigs, comp_max), dtype=np.uint8)
+            for i, row in enumerate(byte_rows):
+                row = row[:comp_max]
+                if row:
+                    composition_array[i, : len(row)] = np.frombuffer(row, dtype=np.uint8)
+            s.write_attribute("composition_max_len", comp_max)
+            s.write("Composition", composition_array, count=[nconfigs, comp_max])
+
     print(f"\nSuccessfully wrote {output_path}", file=sys.stderr)
     print(f"  File contains {nconfigs} configurations", file=sys.stderr)
     print(f"  Elements: {', '.join(element_list)}", file=sys.stderr)
