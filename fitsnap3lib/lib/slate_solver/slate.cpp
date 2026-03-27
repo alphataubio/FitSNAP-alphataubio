@@ -123,8 +123,8 @@ void slate_ridge_augmented_qr(double* local_aw, double* local_bw,
               {slate::Option::PrintPrecision, 3},
               {slate::Option::PrintWidth, 7}
             };
-            //slate::print("A", A, opts);
-            //slate::print("b", b, opts);
+            slate::print("A", A, opts);
+            slate::print("b", b, opts);
         }
         
         // -------------------------------- LEAST SQUARES (QR) --------------------------------
