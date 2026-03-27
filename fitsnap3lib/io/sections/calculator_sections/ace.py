@@ -57,60 +57,9 @@ try:
             if self.b_basis != 'pa_tabulated':
                 self.pt.single_print('WARNING: Only change ACE basis flags if you know what you are doing!')
             self._generate_b_list()
-
-            # Print detailed statistics about ACE basis and design matrix
-            self._print_ace_statistics()
-
             self._write_couple()
             Section.num_desc = len(self.blist)
-                        
             self.delete()
-        
-        def _print_ace_statistics(self):
-            """Print detailed statistics about the ACE basis."""
-            @self.pt.rank_zero
-            def print_stats():
-                print("\n" + "="*80, flush=True)
-                print("ACE STATISTICS", flush=True)
-                print("="*80, flush=True)
-                
-                # Basic configuration
-                print("\n[ACE Configuration]", flush=True)
-                print(f"  Atom types: {' '.join(self.types)} ({self.numtypes})", flush=True)
-                print(f"  Ranks: {' '.join(self.ranks)} "
-                      f"lmin {' '.join(str(l) for l in self.lmin)} "
-                      f"lmax {' '.join(str(l) for l in self.lmax)} "
-                      f"nmax {' '.join(str(n) for n in self.nmax)} "
-                      f"nmaxbase {self.nmaxbase}", flush=True
-                )
-                print(f"  Basis type: {self.b_basis} bzeroflag {self.bzeroflag}", flush=True)
-                
-                # Radial parameters
-                print("\n[Radial Parameters]", flush=True)
-                print(f"  rcutfac: {' '.join(str(r) for r in self.rcutfac)}", flush=True)
-                print(f"  lambda: {' '.join(str(l) for l in self.lmbda)}", flush=True)
-                print(f"  rcinner: {' '.join(str(r) for r in self.rcinner)}", flush=True)
-                print(f"  drcinner: {' '.join(str(d) for d in self.drcinner)}", flush=True)
-                
-                # Basis statistics
-                print("\n[Basis Functions]", flush=True)
-                
-                # Count basis functions by rank
-                rank_counts = {}
-                for nu in self.nus:
-                    rank = int(len(nu.split(','))/3)
-                    rank_counts[rank] = rank_counts.get(rank, 0) + 1
-                
-                for rank in sorted(rank_counts.keys()):
-                    count = rank_counts[rank]
-                    print(f"  Rank {rank}: {count} functions ({count/len(self.nus)*100:.1f}%)", flush=True)
-                
-                print(f"  Total: {len(self.blist)} functions ({self.ncoeff} functions per atom)", flush=True)
-                                
-                print("\n" + "="*80, flush=True)
-                print(flush=True)
-            
-            print_stats()
 
         def _generate_b_list(self):
             self.blist = []
