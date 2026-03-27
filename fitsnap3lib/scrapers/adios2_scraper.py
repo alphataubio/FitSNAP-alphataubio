@@ -258,9 +258,6 @@ class ADIOS2(Scraper):
           if self.has_stress:
             self.stresses = s.read('Stress')  # Shape: (nconfigs, 3, 3)
 
-          self.pt.single_print(f"*** s.available_variables() {s.available_variables()}")
-
-
           break
 
     except Exception as e:
