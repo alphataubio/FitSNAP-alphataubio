@@ -256,9 +256,8 @@ def _process_chunk(args):
         if forces is not None: config['Forces'] = forces
         if stress is not None: config['Stress'] = stress
 
-        #if config['Group'] == "spice":
-        configs.append(config)
-    
+        if config['Spin'] == 1: configs.append(config)
+
     return configs, filtered_count
 
 
