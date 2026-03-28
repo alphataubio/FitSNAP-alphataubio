@@ -252,11 +252,19 @@ def _process_chunk(args):
             config['Charge'] = atoms.info.get('charge', '')
             config['Spin'] = atoms.info.get('spin', '')
             config['Composition'] = atoms.info.get('composition', '')
+
+        # Per-atom NBO (NPA) charges from OMol25 ``atoms.info['nbo_charges']`` — not molecular ``charge``.
+        if hasattr(atoms, 'info') and isinstance(atoms.info, dict):
+            nbo = atoms.info.get('nbo_charges')
+            if nbo is not None:
+                nbo = np.asarray(nbo, dtype=np.float64).reshape(-1)
+                if nbo.size == num_atoms:
+                    config['nbo_charges'] = nbo
         
         if forces is not None: config['Forces'] = forces
         if stress is not None: config['Stress'] = stress
 
-        if config['Spin'] == 1: configs.append(config)
+        if config.get('Spin', 1) == 1: configs.append(config)
 
     return configs, filtered_count
 
@@ -442,6 +450,9 @@ def write_adios2_file(configs, output_path, allowed_elements):
     Optional OMOL metadata (when present in LMDB):
     - Composition: uint8 array [nconfigs, composition_max_len], UTF-8 bytes (null-padded);
       attribute ``composition_max_len`` gives the second dimension.
+    - Charge[nconfigs]: molecular total charge (int8); distinct from per-atom labels.
+    - NBOChargesFlat[total_atoms]: per-atom NBO charges (float64), same atom order as
+      PositionsFlat; attribute ``has_nbo_charges``; OMol25 ``DATASET.md`` / ``nbo_charges``.
     """
     
     nconfigs = len(configs)
@@ -464,11 +475,12 @@ def write_adios2_file(configs, output_path, allowed_elements):
     
     position_offsets = np.zeros(nconfigs, dtype=np.int64)
     
-    has_forces      = any('Forces'      in config for config in configs)
-    has_stress      = any('Stress'      in config for config in configs)
-    has_charge      = any('Charge'      in config for config in configs)
-    has_spin        = any('Spin'        in config for config in configs)
-    has_composition = any('Composition' in config for config in configs)
+    has_forces       = any('Forces'       in config for config in configs)
+    has_stress       = any('Stress'       in config for config in configs)
+    has_charge       = any('Charge'       in config for config in configs)
+    has_spin         = any('Spin'         in config for config in configs)
+    has_composition  = any('Composition'  in config for config in configs)
+    has_nbo_charges  = any('nbo_charges'  in config for config in configs)
 
     # Fixed-size arrays (nconfigs, 3, 3) for 3x3 matrices
     lattice_array = np.zeros((nconfigs, 3, 3), dtype=np.float64)
@@ -508,30 +520,41 @@ def write_adios2_file(configs, output_path, allowed_elements):
         
         # Store stress if available (3x3) directly in array
         if has_stress:
-            if 'Stress' in config:
-                stress_array[i] = config['Stress']
-            else:
-                stress_array[i] = np.zeros(3, 3, dtype=np.float64)
+            if 'Stress' in config: stress_array[i] = config['Stress']
+            else: stress_array[i] = np.zeros((3, 3), dtype=np.float64)
 
         if has_charge: charge_array[i] = config['Charge']
         if has_spin: spin_array[i] = config['Spin']
         if has_composition:
             composition_strings.append(str(config.get("Composition", "")))
 
+    nbo_charges_list = []
+    if has_nbo_charges:
+        for config in configs:
+            if 'nbo_charges' in config:
+                nbo = np.asarray(config['nbo_charges'], dtype=np.float64).reshape(-1)
+                if nbo.size != config['NumAtoms']:
+                    raise ValueError(
+                        f"nbo_charges length {nbo.size} != NumAtoms {config['NumAtoms']}"
+                    )
+                nbo_charges_list.append(nbo)
+            else:
+                nbo_charges_list.append(np.zeros(config['NumAtoms'], dtype=np.float64))
+
     # Concatenate variable-length arrays
     print("  Concatenating arrays...", file=sys.stderr)
     positions_flat = np.concatenate(positions_list)
     atom_types_flat = np.concatenate(atom_types_list)
-    
-    if has_forces:
-        forces_flat = np.concatenate(forces_list)
-    
+    if has_forces: forces_flat = np.concatenate(forces_list)
+    if has_nbo_charges: nbo_charges_flat = np.concatenate(nbo_charges_list)
+
     print(f"  Total atoms across all configs: {total_atoms}", file=sys.stderr)
     print(f"  Has forces: {has_forces}", file=sys.stderr)
     print(f"  Has stress: {has_stress}", file=sys.stderr)
     print(f"  Has charge: {has_charge}", file=sys.stderr)
     print(f"  Has spin: {has_spin}", file=sys.stderr)
     print(f"  Has composition: {has_composition}", file=sys.stderr)
+    print(f"  Has nbo_charges: {has_nbo_charges}", file=sys.stderr)
 
     dets = np.linalg.det(lattice_array)
     if np.any(~np.isfinite(dets)) or np.any(dets <= 0):
@@ -555,6 +578,7 @@ def write_adios2_file(configs, output_path, allowed_elements):
         s.write_attribute('has_charge', 1 if has_charge else 0)
         s.write_attribute('has_spin', 1 if has_spin else 0)
         s.write_attribute('has_composition', 1 if has_composition else 0)
+        s.write_attribute('has_nbo_charges', 1 if has_nbo_charges else 0)
         
         # Write per-config arrays
         s.write('NumAtoms', num_atoms_array, count=[nconfigs])
@@ -580,6 +604,7 @@ def write_adios2_file(configs, output_path, allowed_elements):
         s.write('Lattice', lattice_array, count=[nconfigs,3,3])
         
         if has_forces: s.write('ForcesFlat', forces_flat, count=[total_atoms,3])
+        if has_nbo_charges: s.write('NBOChargesFlat', nbo_charges_flat, count=[total_atoms])
         if has_stress: s.write('Stress', stress_array, count=[nconfigs,3,3])
         if has_charge: s.write('Charge', charge_array, count=[nconfigs])
         if has_spin: s.write('Spin', spin_array, count=[nconfigs])
