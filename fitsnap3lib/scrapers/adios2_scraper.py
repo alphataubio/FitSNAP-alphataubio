@@ -13,32 +13,26 @@ except ImportError:
 
 def _find_attr(attrs, name):
   """Resolve attribute; BP5 may use plain keys or path-like names."""
-  if name in attrs:
-    return attrs[name]
+  if name in attrs: return attrs[name]
   for k in attrs:
-    if k.endswith('/' + name) or k.rpartition('/')[-1] == name:
-      return attrs[k]
+    if k.endswith('/' + name) or k.rpartition('/')[-1] == name: return attrs[k]
   return None
 
 
 def _attr_value(entry):
   """Scalar from an available_attributes() entry (bytes, str, int, or small array)."""
-  if not entry or 'Value' not in entry:
-    return None
+  if not entry or 'Value' not in entry: return None
   v = entry['Value']
-  if isinstance(v, bytes):
-    return v.decode('utf-8')
-  if isinstance(v, str):
-    return v
+  if isinstance(v, bytes): return v.decode('utf-8')
+  if isinstance(v, str): return v
   if isinstance(v, (np.ndarray, list, tuple)) and len(v) > 0:
     x = np.asarray(v).reshape(-1)[0]
-    if isinstance(x, bytes):
-      return x.decode('utf-8')
+    if isinstance(x, bytes): return x.decode('utf-8')
     return x.item() if hasattr(x, 'item') else x
   return v
 
 
-# ------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 
 class ADIOS2(Scraper):
   """
@@ -134,33 +128,26 @@ class ADIOS2(Scraper):
             attrs = s.available_attributes()
 
             nc = _find_attr(attrs, 'nconfigs')
-            if nc is None:
-              raise KeyError('nconfigs attribute not found')
+            if nc is None: raise KeyError('nconfigs attribute not found')
             self.nconfigs = int(_attr_value(nc))
 
             em = _find_attr(attrs, 'element_map')
-            if em is None:
-              raise KeyError('element_map attribute not found')
+            if em is None: raise KeyError('element_map attribute not found')
             element_map_str = str(_attr_value(em)).strip('"\' ')
             self.element_map = [x.strip('"\' ') for x in element_map_str.split(',') if x.strip()]
-            if not self.element_map:
-              raise ValueError('element_map is empty after parsing')
+            if not self.element_map: raise ValueError('element_map is empty after parsing')
 
-            hf = _find_attr(attrs, 'has_forces')
-            if hf is not None:
+            if (hf := _find_attr(attrs, 'has_forces')) is not None:
               self.has_forces = bool(int(_attr_value(hf)))
-            hs = _find_attr(attrs, 'has_stress')
-            if hs is not None:
+            if (hs := _find_attr(attrs, 'has_stress')) is not None:
               self.has_stress = bool(int(_attr_value(hs)))
-            hc = _find_attr(attrs, 'has_charge')
-            if hc is not None:
+            if (hc := _find_attr(attrs, 'has_charge')) is not None:
               self.has_charge = bool(int(_attr_value(hc)))
-            hnbo = _find_attr(attrs, 'has_nbo_charges')
-            if hnbo is not None:
+            if (hnbo := _find_attr(attrs, 'has_nbo_charges')) is not None:
               self.has_nbo_charges = bool(int(_attr_value(hnbo)))
 
-            ug = _find_attr(attrs, 'unique_group_names')
-            if ug is None:
+
+            if (ug := _find_attr(attrs, 'unique_group_names')) is None:
               raise KeyError('unique_group_names attribute not found')
             ug_str = str(_attr_value(ug)).strip('"\'')
             self.unique_group_names = [p for p in ug_str.split('|') if p]
@@ -245,16 +232,12 @@ class ADIOS2(Scraper):
           self.atom_types_flat = s.read('AtomTypesFlat')
 
           # Read fixed-size arrays
-          self.lattices = s.read('Lattice')  # Shape: (nconfigs, 3, 3)
+          self.lattices = s.read('Lattice')
 
-          if self.has_forces:
-            self.forces_flat = s.read('ForcesFlat')
-          if self.has_stress:
-            self.stresses = s.read('Stress')  # Shape: (nconfigs, 3, 3)
-          if self.has_charge:
-            self.charge = s.read('Charge')
-          if self.has_nbo_charges:
-            self.nbo_charges_flat = s.read('NBOChargesFlat')
+          if self.has_forces: self.forces_flat = s.read('ForcesFlat')
+          if self.has_stress: self.stresses = s.read('Stress')
+          if self.has_charge: self.charge = s.read('Charge')
+          if self.has_nbo_charges: self.nbo_charges_flat = s.read('NBOChargesFlat')
 
           break
 
@@ -267,11 +250,8 @@ class ADIOS2(Scraper):
         group_idx = int(self.group_indices[i])
         group_name = self.unique_group_names[group_idx]
         is_test = bool(self.test_bool[i])
-
-        if is_test:
-          self.group_table[group_name]['testing_size'] += 1
-        else:
-          self.group_table[group_name]['training_size'] += 1
+        if is_test: self.group_table[group_name]['testing_size'] += 1
+        else: self.group_table[group_name]['training_size'] += 1
 
       # Print summary
       sorted_group_names = sorted(self.unique_group_names)
@@ -296,15 +276,12 @@ class ADIOS2(Scraper):
     # Process configurations assigned to this rank: only charge==0 when Charge is present;
     # stop after max_configs_per_rank configs are successfully added.
     max_configs_per_rank = self.config.sections["SCRAPER"].max_configs_per_rank
-    if max_configs_per_rank is None:
-      max_configs_per_rank = len(self.my_config_indices)
+    if max_configs_per_rank is None: max_configs_per_rank = len(self.my_config_indices)
 
     added = 0
     for config_idx in self.my_config_indices:
-      if added >= max_configs_per_rank:
-        break
-      if self.has_charge and int(self.charge[config_idx]) != 0:
-        continue
+      if added >= max_configs_per_rank: break
+      if self.has_charge and int(self.charge[config_idx]) != 0: continue
       try:
         data_dict = self._extract_config(config_idx)
         if data_dict is not None:
@@ -329,10 +306,8 @@ class ADIOS2(Scraper):
 
     # Get position range
     pos_start = int(self.position_offsets[config_idx])
-    if config_idx == self.nconfigs - 1:
-      pos_end = len(self.atom_types_flat)
-    else:
-      pos_end = int(self.position_offsets[config_idx + 1])
+    if config_idx == self.nconfigs - 1: pos_end = len(self.atom_types_flat)
+    else: pos_end = int(self.position_offsets[config_idx + 1])
 
     # Extract positions
     positions = self.positions_flat[pos_start:pos_end]
