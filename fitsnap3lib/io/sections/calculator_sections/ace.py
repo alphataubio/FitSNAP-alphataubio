@@ -103,7 +103,7 @@ try:
                     count = rank_counts[rank]
                     print(f"  Rank {rank}: {count} functions ({count/len(self.nus)*100:.1f}%)", flush=True)
                 
-                print(f"  Total: {len(self.blist)} functions ({self.ncoeff} functions per atom)", flush=True)
+                print(f"  Total: {len(self.blist)} functions ({self.ncoeff} functions per element)", flush=True)
                                 
                 print("\n" + "="*80, flush=True)
                 print(flush=True)
@@ -195,8 +195,8 @@ try:
                 bondinds=range(len(self.types))
                 bonds = [b for b in itertools.product(bondinds,bondinds)]
                 bondstrs = ['[%d, %d]' % b for b in bonds]
-                assert len(self.rcutfac) == len(bondstrs), "must provide rc (radial cutoff) for each BOND type" 
-                assert len(self.lmbda) == len(bondstrs), "must provide lambda (radial decay parameter) for each BOND type" 
+                assert len(self.rcutfac) == len(bondstrs), f"must provide rc (radial cutoff) for each {len(bondstrs)} BOND types {bondstrs}"
+                assert len(self.lmbda) == len(bondstrs), "must provide lambda (radial decay parameter) for each BOND type"
                 assert len(self.rcinner) == len(bondstrs), "must provide rcinner for each BOND type" 
                 assert len(self.drcinner) == len(bondstrs), "must provide drcinner for each BOND type" 
                 if len(self.lmbda) == 1:
