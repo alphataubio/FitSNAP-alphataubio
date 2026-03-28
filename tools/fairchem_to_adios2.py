@@ -28,15 +28,13 @@ Usage:
     python fairchem_to_adios2.py --dataset scratch/omol25_4M --elements C H O --output omol25_CHO.bp
 """
 
-import os
-import sys
+import os, sys, argparse
 
 # Redirect stderr to devnull to suppress torch warnings
 _original_stderr = os.dup(2)
 _devnull = os.open(os.devnull, os.O_WRONLY)
 os.dup2(_devnull, 2)
 
-import argparse
 import numpy as np
 from pathlib import Path
 import multiprocessing as mp
@@ -93,10 +91,8 @@ os.dup2(_original_stderr, 2)
 os.close(_devnull)
 os.close(_original_stderr)
 
-
 # Global variables for worker processes
 _worker_dataset = None
-
 
 def _ensure_lattice_for_adios2(
     cell,
@@ -142,10 +138,8 @@ def _ensure_lattice_for_adios2(
         drefl = np.diag([1.0, 1.0, -1.0])
         cell = cell @ drefl
         pos[:, 2] *= -1.0
-        if frc is not None:
-            frc[:, 2] *= -1.0
-        if sig is not None:
-            sig = drefl @ sig @ drefl.T
+        if frc is not None: frc[:, 2] *= -1.0
+        if sig is not None: sig = drefl @ sig @ drefl.T
         det = float(np.linalg.det(cell))
 
     if not np.isfinite(det) or det <= 0:
@@ -178,11 +172,9 @@ def _process_chunk(args):
     filtered_count = 0
     
     for i in range(start_idx, end_idx):
-        try:
-            atoms = _worker_dataset.get_atoms(i)
-        except Exception as e:
-            continue
-        
+        try: atoms = _worker_dataset.get_atoms(i)
+        except Exception as e: continue
+
         # Get element symbols
         atom_types = atoms.get_chemical_symbols()
         
@@ -190,7 +182,6 @@ def _process_chunk(args):
         if not set(atom_types).issubset(allowed_elements):
             filtered_count += 1
             continue
-            
         
         # Extract data
         num_atoms = len(atoms)
@@ -200,19 +191,15 @@ def _process_chunk(args):
         # Energy
         energy = 0.0
         if atoms.calc is not None:
-            try:
-                energy = float(atoms.get_potential_energy())
-            except:
-                pass
-        
+            try: energy = float(atoms.get_potential_energy())
+            except: pass
+
         # Forces (if available)
         forces = None
         if atoms.calc is not None:
-            try:
-                forces = atoms.get_forces()
-            except:
-                pass
-        
+            try: forces = atoms.get_forces()
+            except: pass
+
         # Stress (if available)
         stress = None
         if atoms.calc is not None:
@@ -253,28 +240,25 @@ def _process_chunk(args):
             config['Spin'] = atoms.info.get('spin', '')
             config['Composition'] = atoms.info.get('composition', '')
 
-        # Per-atom NBO (NPA) charges from OMol25 ``atoms.info['nbo_charges']`` — not molecular ``charge``.
+        # Per-atom NBO (NPA) charges from OMol25
         if hasattr(atoms, 'info') and isinstance(atoms.info, dict):
-            nbo = atoms.info.get('nbo_charges')
-            if nbo is not None:
+            if (nbo := atoms.info.get('nbo_charges')) is not None:
                 nbo = np.asarray(nbo, dtype=np.float64).reshape(-1)
-                if nbo.size == num_atoms:
-                    config['nbo_charges'] = nbo
-        
+                if nbo.size == num_atoms: config['nbo_charges'] = nbo
+
         if forces is not None: config['Forces'] = forces
         if stress is not None: config['Stress'] = stress
 
-        if config.get('Spin', 1) == 1: configs.append(config)
+        if config.get('Spin', 1) == 1 and config['Group'] == "spice":
+            configs.append(config)
 
     return configs, filtered_count
 
 
 def _is_lmdb_dir(path: Path) -> bool:
     """True if path looks like an AseDB / LMDB root (data.mdb or *.aselmdb)."""
-    if not path.is_dir():
-        return False
-    if (path / "data.mdb").exists():
-        return True
+    if not path.is_dir(): return False
+    if (path / "data.mdb").exists(): return True
     return any(path.glob("*.aselmdb"))
 
 
@@ -286,16 +270,11 @@ def _discover_lmdb_roots(subset_dir: Path) -> list[tuple[Path, str]]:
     omol25: train/ and val/ are each a single LMDB directory; logical groups
     come from atoms.info['data_id'] (applied in _process_chunk).
     """
-    if not subset_dir.is_dir():
-        return []
-
-    if _is_lmdb_dir(subset_dir):
-        return [(subset_dir, subset_dir.name)]
-
+    if not subset_dir.is_dir(): return []
+    if _is_lmdb_dir(subset_dir): return [(subset_dir, subset_dir.name)]
     roots: list[tuple[Path, str]] = []
     for item in sorted(subset_dir.iterdir()):
-        if item.is_dir() and _is_lmdb_dir(item):
-            roots.append((item, item.name))
+        if item.is_dir() and _is_lmdb_dir(item): roots.append((item, item.name))
     return roots
 
 
@@ -325,9 +304,8 @@ def process_lmdb_dir(
     dataset = AseDBDataset({"src": str(lmdb_path)})
     dataset_size = len(dataset)
     
-    if num_workers is None:
-        num_workers = mp.cpu_count()
-    
+    if num_workers is None: num_workers = mp.cpu_count()
+
     # Split dataset into chunks
     chunk_size = max(1, dataset_size // num_workers)
     chunks = []
@@ -335,14 +313,7 @@ def process_lmdb_dir(
         start_idx = i
         end_idx = min(i + chunk_size, dataset_size)
         chunks.append(
-            (
-                start_idx,
-                end_idx,
-                group_name,
-                allowed_elements,
-                test_bool,
-                lattice_pad,
-                lattice_min_side,
+            ( start_idx, end_idx, group_name, allowed_elements, test_bool, lattice_pad, lattice_min_side,
             )
         )
     
@@ -525,8 +496,7 @@ def write_adios2_file(configs, output_path, allowed_elements):
 
         if has_charge: charge_array[i] = config['Charge']
         if has_spin: spin_array[i] = config['Spin']
-        if has_composition:
-            composition_strings.append(str(config.get("Composition", "")))
+        if has_composition: composition_strings.append(str(config.get("Composition", "")))
 
     nbo_charges_list = []
     if has_nbo_charges:
@@ -616,8 +586,7 @@ def write_adios2_file(configs, output_path, allowed_elements):
             composition_array = np.zeros((nconfigs, comp_max), dtype=np.uint8)
             for i, row in enumerate(byte_rows):
                 row = row[:comp_max]
-                if row:
-                    composition_array[i, : len(row)] = np.frombuffer(row, dtype=np.uint8)
+                if row: composition_array[i, : len(row)] = np.frombuffer(row, dtype=np.uint8)
             s.write_attribute("composition_max_len", comp_max)
             s.write("Composition", composition_array, count=[nconfigs, comp_max])
 
