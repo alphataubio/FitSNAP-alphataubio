@@ -466,9 +466,9 @@ def create_ctilde_basis(potential_config):
         bs.radbasename = spec.get('radbase', 'ChebExpCos')
         bs.radparameters = spec.get('radparameters', [])
         bs.rcut = spec.get('rcut', 5.0)
-        bs.dcut = spec.get('dcut', 0.0)
+        bs.dcut = spec.get('dcut', 0.01)
         bs.rcut_in = spec.get('rcut_in', 0.0)
-        bs.dcut_in = spec.get('dcut_in', 0.0)
+        bs.dcut_in = spec.get('dcut_in', 0.01)
         bs.inner_cutoff_type = spec.get('inner_cutoff_type', 'distance')
         
         nradmax = spec.get('nradmax', 1)
