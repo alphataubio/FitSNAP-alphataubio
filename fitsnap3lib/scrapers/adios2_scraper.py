@@ -3,7 +3,6 @@ import json
 import logging
 import time
 import numpy as np
-from itertools import islice
 
 try:
   from adios2 import Stream
@@ -59,6 +58,8 @@ class ADIOS2(Scraper):
      currently disabled in code).
   3. Converts Stress from eV/Å³ to bar when stress is used (see ``fairchem_to_adios2``).
   4. Handles correct lattice orientation (column-major ``QMLattice``).
+  5. Optional per-atom ``nbo_charges`` (OMol25) from ``NBOChargesFlat`` — separate from
+     molecular ``Charge``.
   """
 
   def __init__(self, name, pt, config):
@@ -92,6 +93,10 @@ class ADIOS2(Scraper):
     self.element_map = []
     self.has_forces = False
     self.has_stress = False
+    self.has_charge = False
+    self.has_nbo_charges = False
+    self.has_spin = False
+    self.has_composition = False
     self.unique_group_names = []
     self.eshifts = {}  # Will store auto-calculated atomic energies
 
@@ -106,6 +111,8 @@ class ADIOS2(Scraper):
     self.lattices = None  # Shape: (nconfigs, 3, 3)
     self.forces_flat = None
     self.stresses = None  # Shape: (nconfigs, 3, 3)
+    self.charge = None
+    self.nbo_charges_flat = None
 
     # My configurations
     self.my_config_indices = []
@@ -145,6 +152,12 @@ class ADIOS2(Scraper):
             hs = _find_attr(attrs, 'has_stress')
             if hs is not None:
               self.has_stress = bool(int(_attr_value(hs)))
+            hc = _find_attr(attrs, 'has_charge')
+            if hc is not None:
+              self.has_charge = bool(int(_attr_value(hc)))
+            hnbo = _find_attr(attrs, 'has_nbo_charges')
+            if hnbo is not None:
+              self.has_nbo_charges = bool(int(_attr_value(hnbo)))
 
             ug = _find_attr(attrs, 'unique_group_names')
             if ug is None:
@@ -153,27 +166,6 @@ class ADIOS2(Scraper):
             self.unique_group_names = [p for p in ug_str.split('|') if p]
             if not self.unique_group_names:
               raise ValueError('unique_group_names is empty after parsing')
-
-            # --- AUTO ESHIFT (disabled): regression on rank 0 ---
-            # all_energies = s.read('Energy')
-            # all_num_atoms = s.read('NumAtoms')
-            # all_atom_types = s.read('AtomTypesFlat')
-            # self.pt.single_print("ADIOS2: Calculating Auto-ESHIFT (Formation Energy)...")
-            # n_elems = len(self.element_map)
-            # X = np.zeros((self.nconfigs, n_elems))
-            # y = all_energies
-            # current_idx = 0
-            # for i in range(self.nconfigs):
-            #   n_in_config = int(all_num_atoms[i])
-            #   types_indices = all_atom_types[current_idx : current_idx + n_in_config]
-            #   current_idx += n_in_config
-            #   for t_idx in types_indices:
-            #     X[i, int(t_idx)] += 1
-            # coeffs, residuals, rank, s_vals = np.linalg.lstsq(X, y, rcond=None)
-            # self.eshifts = {self.element_map[i]: coeffs[i] for i in range(n_elems)}
-            # self.pt.single_print("ADIOS2: Calculated Atomic Baselines:")
-            # for elem, val in self.eshifts.items():
-            #   self.pt.single_print(f"    {elem} = {val:.6f} eV")
 
           break  # one collective step; all ranks leave together
 
@@ -194,6 +186,8 @@ class ADIOS2(Scraper):
       self.element_map = self.comm.bcast(self.element_map, root=0)
       self.has_forces = self.comm.bcast(self.has_forces, root=0)
       self.has_stress = self.comm.bcast(self.has_stress, root=0)
+      self.has_charge = self.comm.bcast(self.has_charge, root=0)
+      self.has_nbo_charges = self.comm.bcast(self.has_nbo_charges, root=0)
       self.unique_group_names = self.comm.bcast(self.unique_group_names, root=0)
       self.eshifts = self.comm.bcast(self.eshifts, root=0)
 
@@ -257,6 +251,10 @@ class ADIOS2(Scraper):
             self.forces_flat = s.read('ForcesFlat')
           if self.has_stress:
             self.stresses = s.read('Stress')  # Shape: (nconfigs, 3, 3)
+          if self.has_charge:
+            self.charge = s.read('Charge')
+          if self.has_nbo_charges:
+            self.nbo_charges_flat = s.read('NBOChargesFlat')
 
           break
 
@@ -295,16 +293,23 @@ class ADIOS2(Scraper):
     if self.pt.stubs == 0:
       self.group_table = self.comm.bcast(self.group_table, root=0)
 
-    # Process configurations assigned to this rank
+    # Process configurations assigned to this rank: only charge==0 when Charge is present;
+    # stop after max_configs_per_rank configs are successfully added.
     max_configs_per_rank = self.config.sections["SCRAPER"].max_configs_per_rank
     if max_configs_per_rank is None:
       max_configs_per_rank = len(self.my_config_indices)
-    for config_idx in islice(self.my_config_indices, max_configs_per_rank):
+
+    added = 0
+    for config_idx in self.my_config_indices:
+      if added >= max_configs_per_rank:
+        break
+      if self.has_charge and int(self.charge[config_idx]) != 0:
+        continue
       try:
         data_dict = self._extract_config(config_idx)
         if data_dict is not None:
-          # self.pt.all_print(f"*** {data_dict}")
           self.data.append(data_dict)
+          added += 1
       except Exception as e:
         logging.warning(f"Failed to extract config {config_idx}: {e}")
         continue
@@ -356,19 +361,16 @@ class ADIOS2(Scraper):
       forces = self.forces_flat[pos_start:pos_end]
       data_dict['Forces'] = forces.copy()
 
+    if self.has_nbo_charges:
+      nbo = self.nbo_charges_flat[pos_start:pos_end]
+      data_dict['nbo_charges'] = np.asarray(nbo, dtype=np.float64).copy()
+
     # Extract stress
     if self.has_stress and self.use_stress:
       stress = self.stresses[config_idx].reshape((3, 3))
       # CRITICAL FIX: Convert eV/A^3 to Bar
       data_dict['Stress'] = stress.copy() * 1602176.6208
 
-    # --- AUTOMATIC ESHIFT APPLICATION ---
-    # Subtract the calculated atomic energy baselines to get formation energy
-    # FitSNAP expects to fit small numbers (formation energy), not large totals.
-    if self.eshifts:
-      for atom in atom_types:
-        data_dict['Energy'] -= self.eshifts[atom]
-    # ------------------------------------
 
     # Apply weights from config file using parent class method.
     # If _rotate_coords / _weighting raise, we must restore self.data or the scraper
