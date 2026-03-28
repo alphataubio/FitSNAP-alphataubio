@@ -552,6 +552,9 @@ def write_adios2_file(configs, output_path, allowed_elements):
         s.write_attribute('element_map', ','.join(element_list))
         s.write_attribute('has_forces', 1 if has_forces else 0)
         s.write_attribute('has_stress', 1 if has_stress else 0)
+        s.write_attribute('has_charge', 1 if has_charge else 0)
+        s.write_attribute('has_spin', 1 if has_spin else 0)
+        s.write_attribute('has_composition', 1 if has_composition else 0)
         
         # Write per-config arrays
         s.write('NumAtoms', num_atoms_array, count=[nconfigs])
