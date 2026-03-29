@@ -1,35 +1,12 @@
 from fitsnap3lib.scrapers.scrape import Scraper
-import json
-import logging
-import time
+import json, logging, time
 import numpy as np
 
 try:
-  from adios2 import Stream
+  from adios2 import FileReader
   HAS_ADIOS2 = True
 except ImportError:
   HAS_ADIOS2 = False
-
-
-def _find_attr(attrs, name):
-  """Resolve attribute; BP5 may use plain keys or path-like names."""
-  if name in attrs: return attrs[name]
-  for k in attrs:
-    if k.endswith('/' + name) or k.rpartition('/')[-1] == name: return attrs[k]
-  return None
-
-
-def _attr_value(entry):
-  """Scalar from an available_attributes() entry (bytes, str, int, or small array)."""
-  if not entry or 'Value' not in entry: return None
-  v = entry['Value']
-  if isinstance(v, bytes): return v.decode('utf-8')
-  if isinstance(v, str): return v
-  if isinstance(v, (np.ndarray, list, tuple)) and len(v) > 0:
-    x = np.asarray(v).reshape(-1)[0]
-    if isinstance(x, bytes): return x.decode('utf-8')
-    return x.item() if hasattr(x, 'item') else x
-  return v
 
 
 # -----------------------------------------------------------------------------
@@ -92,7 +69,6 @@ class ADIOS2(Scraper):
     self.has_spin = False
     self.has_composition = False
     self.unique_group_names = []
-    self.eshifts = {}  # Will store auto-calculated atomic energies
 
     # Data arrays
     self.num_atoms = None
@@ -116,57 +92,35 @@ class ADIOS2(Scraper):
     Read metadata, calculate ESHIFT, and determine configuration distribution.
     """
 
-    # Serial ADIOS2 per process (comm=None) avoids collective BeginStep on fairchem .bp files.
-    stream_comm = None
-
     try:
-      with Stream(self.dataPath, 'r', stream_comm) as s:
+      if self.rank == 0:
+        with FileReader(self.dataPath, self.comm) as s:
 
-        for step in s.steps():
+          self.nconfigs = s.read_attribute('nconfigs')
+          element_map_str = s.read_attribute('element_map')
+          self.element_map = [x.strip('"\' ') for x in element_map_str.split(',') if x.strip()]
+          if not self.element_map: raise ValueError('element_map is empty after parsing')
 
-          if self.rank == 0:
-            attrs = s.available_attributes()
+          self.has_forces = bool(s.read_attribute('has_forces'))
+          self.has_stress = bool(s.read_attribute('has_stress'))
+          self.has_charge = bool(s.read_attribute('has_charge'))
+          self.has_nbo_charges = bool(s.read_attribute('has_nbo_charges'))
 
-            nc = _find_attr(attrs, 'nconfigs')
-            if nc is None: raise KeyError('nconfigs attribute not found')
-            self.nconfigs = int(_attr_value(nc))
+          ug_str = s.read_attribute('unique_group_names').strip('"\'')
+          self.unique_group_names = [p for p in ug_str.split('|') if p]
+          if not self.unique_group_names:
+            raise ValueError('unique_group_names is empty after parsing')
 
-            em = _find_attr(attrs, 'element_map')
-            if em is None: raise KeyError('element_map attribute not found')
-            element_map_str = str(_attr_value(em)).strip('"\' ')
-            self.element_map = [x.strip('"\' ') for x in element_map_str.split(',') if x.strip()]
-            if not self.element_map: raise ValueError('element_map is empty after parsing')
-
-            if (hf := _find_attr(attrs, 'has_forces')) is not None:
-              self.has_forces = bool(int(_attr_value(hf)))
-            if (hs := _find_attr(attrs, 'has_stress')) is not None:
-              self.has_stress = bool(int(_attr_value(hs)))
-            if (hc := _find_attr(attrs, 'has_charge')) is not None:
-              self.has_charge = bool(int(_attr_value(hc)))
-            if (hnbo := _find_attr(attrs, 'has_nbo_charges')) is not None:
-              self.has_nbo_charges = bool(int(_attr_value(hnbo)))
-
-
-            if (ug := _find_attr(attrs, 'unique_group_names')) is None:
-              raise KeyError('unique_group_names attribute not found')
-            ug_str = str(_attr_value(ug)).strip('"\'')
-            self.unique_group_names = [p for p in ug_str.split('|') if p]
-            if not self.unique_group_names:
-              raise ValueError('unique_group_names is empty after parsing')
-
-          break  # one collective step; all ranks leave together
-
-        if self.rank == 0:
-          self.pt.single_print(
-            f"ADIOS2 scraper: {self.dataPath}, {self.nconfigs} configurations with "
-            f"[{' '.join(self.element_map)}], "
-            f"forces {self.has_forces}, stress {self.has_stress}"
-          )
+        self.pt.single_print(
+          f"ADIOS2 scraper: {self.dataPath}, {self.nconfigs} configurations with "
+          f"[{' '.join(self.element_map)}], "
+          f"forces {self.has_forces}, stress {self.has_stress}"
+        )
 
     except Exception as e:
       raise RuntimeError(f"Failed to read ADIOS2 file metadata: {e}")
 
-    # Broadcast metadata AND ESHIFTS to all ranks (collective)
+    # Broadcast metadata to all ranks (collective)
     if self.pt.stubs == 0:
       self.nconfigs = self.comm.bcast(self.nconfigs, root=0)
       self.pt.add_2_fitsnap("nconfigs", self.nconfigs)
@@ -176,7 +130,6 @@ class ADIOS2(Scraper):
       self.has_charge = self.comm.bcast(self.has_charge, root=0)
       self.has_nbo_charges = self.comm.bcast(self.has_nbo_charges, root=0)
       self.unique_group_names = self.comm.bcast(self.unique_group_names, root=0)
-      self.eshifts = self.comm.bcast(self.eshifts, root=0)
 
     # Build group_table from config file [GROUPS] section
     group_dict = {k: self.config.sections["GROUPS"].group_types[i]
@@ -186,21 +139,20 @@ class ADIOS2(Scraper):
     # Initialize training/testing sizes to 0 for all groups
     for group_name in self.unique_group_names:
       if group_name not in self.group_table:
-        self.group_table[group_name] = {
-          'eweight': 1.0,
-          'fweight': 1.0,
-          'vweight': 1.0,
-        }
+        self.group_table[group_name] = { 'eweight': 1.0, 'fweight': 100.0, 'vweight': 1e-12 }
       self.group_table[group_name]['training_size'] = 0
       self.group_table[group_name]['testing_size'] = 0
 
     # Determine which configurations this rank will process
-    configs_per_rank = self.nconfigs // self.size
-    remainder = self.nconfigs % self.size
+    if (max_configs_per_rank := self.config.sections["SCRAPER"].max_configs_per_rank) is None:
+      configs_per_rank = self.nconfigs // self.size
+      remainder = self.nconfigs % self.size
+    else:
+      configs_per_rank = max_configs_per_rank
+      remainder = 0
 
     start_idx = self.rank * configs_per_rank + min(self.rank, remainder)
     end_idx = start_idx + configs_per_rank + (1 if self.rank < remainder else 0)
-
     self.my_config_indices = list(range(start_idx, end_idx))
 
   def divvy_up_configs(self):
@@ -215,31 +167,30 @@ class ADIOS2(Scraper):
     """
     self.data = []
 
-    # Serial read per rank (same as scrape_groups)
-    stream_comm = None
     try:
-      with Stream(self.dataPath, 'r', stream_comm) as s:
-        for step in s.steps():
-          # Read per-config arrays
-          self.num_atoms = s.read('NumAtoms')
-          self.energy = s.read('Energy')
-          self.test_bool = s.read('test_bool')
-          self.group_indices = s.read('GroupIndices')
+      with FileReader(self.dataPath, self.comm) as s:
 
-          # Read variable-length arrays
-          self.position_offsets = s.read('PositionOffsets')
-          self.positions_flat = s.read('PositionsFlat')
-          self.atom_types_flat = s.read('AtomTypesFlat')
+        kwargs = {
+          "step_selection": [0, 1]
+        }
+        # Read per-config arrays
+        self.num_atoms = s.read('NumAtoms', **kwargs)
+        self.energy = s.read('Energy', **kwargs)
+        self.test_bool = s.read('test_bool', **kwargs)
+        self.group_indices = s.read('GroupIndices', **kwargs)
 
-          # Read fixed-size arrays
-          self.lattices = s.read('Lattice')
+        # Read variable-length arrays
+        self.position_offsets = s.read('PositionOffsets', **kwargs)
+        self.positions_flat = s.read('PositionsFlat', **kwargs)
+        self.atom_types_flat = s.read('AtomTypesFlat', **kwargs)
 
-          if self.has_forces: self.forces_flat = s.read('ForcesFlat')
-          if self.has_stress: self.stresses = s.read('Stress')
-          if self.has_charge: self.charge = s.read('Charge')
-          if self.has_nbo_charges: self.nbo_charges_flat = s.read('NBOChargesFlat')
+        # Read fixed-size arrays
+        self.lattices = s.read('Lattice', **kwargs)
 
-          break
+        if self.has_forces: self.forces_flat = s.read('ForcesFlat', **kwargs)
+        if self.has_stress: self.stresses = s.read('Stress', **kwargs)
+        if self.has_charge: self.charge = s.read('Charge', **kwargs)
+        if self.has_nbo_charges: self.nbo_charges_flat = s.read('NBOChargesFlat', **kwargs)
 
     except Exception as e:
       raise RuntimeError(f"Failed to read ADIOS2 data arrays: {e}")
@@ -273,10 +224,6 @@ class ADIOS2(Scraper):
     if self.pt.stubs == 0:
       self.group_table = self.comm.bcast(self.group_table, root=0)
 
-    # Process configurations assigned to this rank: only charge==0 when Charge is present;
-    # stop after max_configs_per_rank configs are successfully added.
-    max_configs_per_rank = self.config.sections["SCRAPER"].max_configs_per_rank
-    if max_configs_per_rank is None: max_configs_per_rank = len(self.my_config_indices)
 
     added = 0
     for config_idx in self.my_config_indices:
