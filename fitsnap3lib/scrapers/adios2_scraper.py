@@ -338,7 +338,7 @@ class ADIOS2(Scraper):
 
     if self.has_nbo_charges:
       nbo = self.nbo_charges_flat[pos_start:pos_end]
-      data_dict['nbo_charges'] = np.asarray(nbo, dtype=np.float64).copy()
+      data_dict['Charges'] = np.asarray(nbo, dtype=np.float64).copy()
 
     # Extract stress
     if self.has_stress and self.use_stress:
