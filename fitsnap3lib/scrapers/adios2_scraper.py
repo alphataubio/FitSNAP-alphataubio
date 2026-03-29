@@ -89,7 +89,7 @@ class ADIOS2(Scraper):
 
   def scrape_groups(self, group_names=None):
     """
-    Read metadata, calculate ESHIFT, and determine configuration distribution.
+    Read metadata and determine configuration distribution.
     """
 
     try:
@@ -120,6 +120,18 @@ class ADIOS2(Scraper):
     except Exception as e:
       raise RuntimeError(f"Failed to read ADIOS2 file metadata: {e}")
 
+    # Determine which configurations this rank will process
+    if (max_configs_per_rank := self.config.sections["SCRAPER"].max_configs_per_rank) is None:
+      configs_per_rank = self.nconfigs // self.size
+      remainder = self.nconfigs % self.size
+    else:
+      configs_per_rank = max_configs_per_rank
+      remainder = 0
+
+    start_idx = self.rank * configs_per_rank + min(self.rank, remainder)
+    end_idx = start_idx + configs_per_rank + (1 if self.rank < remainder else 0)
+    self.my_config_indices = list(range(start_idx, end_idx))
+
     # Broadcast metadata to all ranks (collective)
     if self.pt.stubs == 0:
       self.nconfigs = self.comm.bcast(self.nconfigs, root=0)
@@ -143,17 +155,7 @@ class ADIOS2(Scraper):
       self.group_table[group_name]['training_size'] = 0
       self.group_table[group_name]['testing_size'] = 0
 
-    # Determine which configurations this rank will process
-    if (max_configs_per_rank := self.config.sections["SCRAPER"].max_configs_per_rank) is None:
-      configs_per_rank = self.nconfigs // self.size
-      remainder = self.nconfigs % self.size
-    else:
-      configs_per_rank = max_configs_per_rank
-      remainder = 0
 
-    start_idx = self.rank * configs_per_rank + min(self.rank, remainder)
-    end_idx = start_idx + configs_per_rank + (1 if self.rank < remainder else 0)
-    self.my_config_indices = list(range(start_idx, end_idx))
 
   def divvy_up_configs(self):
     """
@@ -171,6 +173,8 @@ class ADIOS2(Scraper):
       with FileReader(self.dataPath, self.comm) as s:
 
         kwargs = {
+          "start":
+          "count":
           "step_selection": [0, 1]
         }
         # Read per-config arrays
