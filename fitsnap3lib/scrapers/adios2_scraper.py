@@ -1,12 +1,38 @@
 from fitsnap3lib.scrapers.scrape import Scraper
-import json, logging, time
+import logging
 import numpy as np
 
 try:
-  from adios2 import FileReader
+  from adios2 import Adios, FileReader
   HAS_ADIOS2 = True
 except ImportError:
   HAS_ADIOS2 = False
+  Adios = FileReader = None
+
+
+def _read_rra(s, name, start, count, dtype):
+  """
+  Read a subset in ReadRandomAccess mode using ``read_in_buffer`` (fixed buffer size).
+
+  Avoids ``Stream.read`` / ``_read_var`` which can infer a wrong step extent and allocate
+  the full first dimension for large variables (e.g. ``PositionsFlat``).
+  """
+  v = s.inquire_variable(name)
+  if not v:
+    raise KeyError(f"Variable {name!r} not found in ADIOS2 file")
+  ss = int(v.steps_start())
+  nst = int(v.steps())
+  if nst < 1:
+    raise RuntimeError(f"ADIOS2 variable {name!r} reports steps()={nst}")
+  use = min(1, nst)
+  start = [int(x) for x in start]
+  count = [int(x) for x in count]
+  if not start or not count:
+    raise ValueError(f"{name!r}: non-empty start and count required for subset read")
+  shape = tuple(count)
+  buf = np.empty(shape, dtype=np.dtype(dtype))
+  s.read_in_buffer(name, buf, start=start, count=count, step_selection=[ss, use])
+  return buf
 
 
 # -----------------------------------------------------------------------------
@@ -14,14 +40,20 @@ except ImportError:
 class ADIOS2(Scraper):
   """
   ADIOS2 scraper for reading .bp files created by fairchem_to_adios2.py.
-  Designed for scalable MPI-parallel reading of FAIRChem datasets.
+
+  MPI distribution uses the usual contiguous split of global config indices
+  ``[0, nconfigs)``. ``[SCRAPER] max_configs_per_rank`` caps how many configs each rank
+  **loads** from disk (arrays and ``self.data`` stay sized to that cap).
+
+  Array I/O uses explicit ``start`` / ``count`` subsets—never whole-file reads of
+  million-row variables.
 
   File attributes include ``element_map``: comma-separated symbols (e.g. ``H,C,N,O``) whose
   order defines integer indices stored in ``AtomTypesFlat`` for each atom.
 
-  FAIRChem OMOL-style datasets may use left-handed unit cells (uncommon in older OMAT24-style
-  data); the scraper reflects z consistently on lattice, positions, forces, and stress so
-  FitSNAP's LAMMPS path sees a right-handed ``QMLattice``.
+  FAIRChem OMOL-style datasets may use left-handed unit cells; the scraper reflects z
+  consistently on lattice, positions, forces, and stress so FitSNAP's LAMMPS path sees a
+  right-handed ``QMLattice``.
 
   Includes:
   1. Applies ``[SCRAPER]`` energy unit conversion to ``Energy`` (same as VASP/JSON scrapers).
@@ -40,13 +72,11 @@ class ADIOS2(Scraper):
     super().__init__(name, pt, config)
     self.data = []
 
-    # Get the .bp file path from PATH section
     if not hasattr(self.config.sections["PATH"], 'datapath'):
       raise ValueError("ADIOS2 scraper requires 'dataPath' parameter in [PATH] section")
 
     self.dataPath = self.config.sections["PATH"].datapath
 
-    # MPI setup
     if self.pt.stubs == 0:
       self.comm = pt._comm
       self.rank = pt.get_rank()
@@ -55,11 +85,9 @@ class ADIOS2(Scraper):
       self.rank = 0
       self.size = 1
 
-    # Configuration options
     self.use_stress = self.config.sections["CALCULATOR"].stress if hasattr(self.config.sections["CALCULATOR"], 'stress') else False
     self.use_forces = self.config.sections["CALCULATOR"].force if hasattr(self.config.sections["CALCULATOR"], 'force') else True
 
-    # Metadata to be loaded
     self.nconfigs = 0
     self.element_map = []
     self.has_forces = False
@@ -70,7 +98,6 @@ class ADIOS2(Scraper):
     self.has_composition = False
     self.unique_group_names = []
 
-    # Data arrays
     self.num_atoms = None
     self.energy = None
     self.test_bool = None
@@ -78,35 +105,47 @@ class ADIOS2(Scraper):
     self.position_offsets = None
     self.positions_flat = None
     self.atom_types_flat = None
-    self.lattices = None  # Shape: (nconfigs, 3, 3)
+    self.lattices = None
     self.forces_flat = None
-    self.stresses = None  # Shape: (nconfigs, 3, 3)
+    self.stresses = None
     self.charge = None
     self.nbo_charges_flat = None
 
-    # My configurations
     self.my_config_indices = []
+    self._cfg_start = 0
+    self._cfg_end = 0
+    self._n_load = 0
+    self._po_base = 0
+    self._flat_lo = 0
+    self._total_atoms_file = 0
+
+  def _open_rra_collective(self):
+    """MPI-aware RRA open (``FileReader(io, path, comm)`` passes ``comm`` into ``IO.open``)."""
+    if self.pt.stubs == 0:
+      adios = Adios(self.comm)
+      io = adios.declare_io("fitsnap_adios2_rra")
+      return FileReader(io, self.dataPath, self.comm)
+    return FileReader(self.dataPath, None)
 
   def scrape_groups(self, group_names=None):
-    """
-    Read metadata and determine configuration distribution.
-    """
+    """Read global metadata on rank 0 and broadcast; set per-rank config index range and I/O cap."""
 
     try:
       if self.rank == 0:
-        with FileReader(self.dataPath, self.comm) as s:
-
-          self.nconfigs = s.read_attribute('nconfigs')
+        with FileReader(self.dataPath, None) as s:
+          raw_nc = s.read_attribute('nconfigs')
+          self.nconfigs = int(np.asarray(raw_nc).reshape(-1)[0])
           element_map_str = s.read_attribute('element_map')
-          self.element_map = [x.strip('"\' ') for x in element_map_str.split(',') if x.strip()]
-          if not self.element_map: raise ValueError('element_map is empty after parsing')
+          self.element_map = [x.strip('"\' ') for x in str(element_map_str).split(',') if x.strip()]
+          if not self.element_map:
+            raise ValueError('element_map is empty after parsing')
 
-          self.has_forces = bool(s.read_attribute('has_forces'))
-          self.has_stress = bool(s.read_attribute('has_stress'))
-          self.has_charge = bool(s.read_attribute('has_charge'))
-          self.has_nbo_charges = bool(s.read_attribute('has_nbo_charges'))
+          self.has_forces = bool(int(np.asarray(s.read_attribute('has_forces')).reshape(-1)[0]))
+          self.has_stress = bool(int(np.asarray(s.read_attribute('has_stress')).reshape(-1)[0]))
+          self.has_charge = bool(int(np.asarray(s.read_attribute('has_charge')).reshape(-1)[0]))
+          self.has_nbo_charges = bool(int(np.asarray(s.read_attribute('has_nbo_charges')).reshape(-1)[0]))
 
-          ug_str = s.read_attribute('unique_group_names').strip('"\'')
+          ug_str = str(s.read_attribute('unique_group_names')).strip('"\'')
           self.unique_group_names = [p for p in ug_str.split('|') if p]
           if not self.unique_group_names:
             raise ValueError('unique_group_names is empty after parsing')
@@ -120,22 +159,8 @@ class ADIOS2(Scraper):
     except Exception as e:
       raise RuntimeError(f"Failed to read ADIOS2 file metadata: {e}")
 
-    # Determine which configurations this rank will process
-    if (max_configs_per_rank := self.config.sections["SCRAPER"].max_configs_per_rank) is None:
-      configs_per_rank = self.nconfigs // self.size
-      remainder = self.nconfigs % self.size
-    else:
-      configs_per_rank = max_configs_per_rank
-      remainder = 0
-
-    start_idx = self.rank * configs_per_rank + min(self.rank, remainder)
-    end_idx = start_idx + configs_per_rank + (1 if self.rank < remainder else 0)
-    self.my_config_indices = list(range(start_idx, end_idx))
-
-    # Broadcast metadata to all ranks (collective)
     if self.pt.stubs == 0:
       self.nconfigs = self.comm.bcast(self.nconfigs, root=0)
-      self.pt.add_2_fitsnap("nconfigs", self.nconfigs)
       self.element_map = self.comm.bcast(self.element_map, root=0)
       self.has_forces = self.comm.bcast(self.has_forces, root=0)
       self.has_stress = self.comm.bcast(self.has_stress, root=0)
@@ -143,79 +168,149 @@ class ADIOS2(Scraper):
       self.has_nbo_charges = self.comm.bcast(self.has_nbo_charges, root=0)
       self.unique_group_names = self.comm.bcast(self.unique_group_names, root=0)
 
-    # Build group_table from config file [GROUPS] section
+    nc = int(self.nconfigs)
+    q, r = nc // self.size, nc % self.size
+    self._cfg_start = self.rank * q + min(self.rank, r)
+    self._cfg_end = self._cfg_start + q + (1 if self.rank < r else 0)
+    n_local = max(0, self._cfg_end - self._cfg_start)
+
+    max_cap = self.config.sections["SCRAPER"].max_configs_per_rank
+    if max_cap is not None:
+      self._n_load = min(n_local, int(max_cap))
+    else:
+      self._n_load = n_local
+
+    self.my_config_indices = list(range(self._cfg_start, self._cfg_end))
+
     group_dict = {k: self.config.sections["GROUPS"].group_types[i]
                   for i, k in enumerate(self.config.sections["GROUPS"].group_sections)}
     self.group_table = self.config.sections["GROUPS"].group_table
 
-    # Initialize training/testing sizes to 0 for all groups
     for group_name in self.unique_group_names:
       if group_name not in self.group_table:
-        self.group_table[group_name] = { 'eweight': 1.0, 'fweight': 100.0, 'vweight': 1e-12 }
+        self.group_table[group_name] = {'eweight': 1.0, 'fweight': 100.0, 'vweight': 1e-12}
       self.group_table[group_name]['training_size'] = 0
       self.group_table[group_name]['testing_size'] = 0
 
-
-
   def divvy_up_configs(self):
-    """
-    Configuration distribution is already done in scrape_groups.
-    """
     self.my_configs = self.my_config_indices
 
+  def _merge_group_train_test_counts(self, gi_local, tb_local):
+    """Reconstruct global train/test counts per group from this rank's ``GroupIndices`` slice."""
+    n_g = len(self.unique_group_names)
+    train_ct = np.zeros(n_g, dtype=np.int64)
+    test_ct = np.zeros(n_g, dtype=np.int64)
+    for i in range(len(gi_local)):
+      g = int(gi_local[i])
+      if g < 0 or g >= n_g:
+        continue
+      if int(tb_local[i]) != 0:
+        test_ct[g] += 1
+      else:
+        train_ct[g] += 1
+    if self.pt.stubs == 0:
+      from mpi4py import MPI
+      train_ct = self.comm.allreduce(train_ct, op=MPI.SUM)
+      test_ct = self.comm.allreduce(test_ct, op=MPI.SUM)
+    for gi, gname in enumerate(self.unique_group_names):
+      if gname not in self.group_table:
+        self.group_table[gname] = {'eweight': 1.0, 'fweight': 100.0, 'vweight': 1e-12}
+      self.group_table[gname]['training_size'] = int(train_ct[gi])
+      self.group_table[gname]['testing_size'] = int(test_ct[gi])
+
   def scrape_configs(self):
-    """
-    Read ADIOS2 data and extract configurations for this rank.
-    """
+    """Read only this rank's config subset (``start``/``count``); build ``self.data``."""
     self.data = []
 
+    c0 = self._cfg_start
+    n_load = self._n_load
+    c1 = c0 + n_load
+    n_local = max(0, self._cfg_end - self._cfg_start)
+    nc = int(self.nconfigs)
+
     try:
-      with FileReader(self.dataPath, self.comm) as s:
+      with self._open_rra_collective() as s:
 
-        kwargs = {
-          "start":
-          "count":
-          "step_selection": [0, 1]
-        }
-        # Read per-config arrays
-        self.num_atoms = s.read('NumAtoms', **kwargs)
-        self.energy = s.read('Energy', **kwargs)
-        self.test_bool = s.read('test_bool', **kwargs)
-        self.group_indices = s.read('GroupIndices', **kwargs)
+        if nc > 0:
+          po_last = _read_rra(s, 'PositionOffsets', [nc - 1], [1], np.int64)
+          na_last = _read_rra(s, 'NumAtoms', [nc - 1], [1], np.uint16)
+          self._total_atoms_file = int(po_last[0]) + int(na_last[0])
+        else:
+          self._total_atoms_file = 0
 
-        # Read variable-length arrays
-        self.position_offsets = s.read('PositionOffsets', **kwargs)
-        self.positions_flat = s.read('PositionsFlat', **kwargs)
-        self.atom_types_flat = s.read('AtomTypesFlat', **kwargs)
+        if n_local > 0:
+          gi_hist = _read_rra(s, 'GroupIndices', [c0], [n_local], np.int32)
+          tb_hist = _read_rra(s, 'test_bool', [c0], [n_local], np.int32)
+        else:
+          gi_hist = np.array([], dtype=np.int32)
+          tb_hist = np.array([], dtype=np.int32)
 
-        # Read fixed-size arrays
-        self.lattices = s.read('Lattice', **kwargs)
+        self._merge_group_train_test_counts(gi_hist, tb_hist)
 
-        if self.has_forces: self.forces_flat = s.read('ForcesFlat', **kwargs)
-        if self.has_stress: self.stresses = s.read('Stress', **kwargs)
-        if self.has_charge: self.charge = s.read('Charge', **kwargs)
-        if self.has_nbo_charges: self.nbo_charges_flat = s.read('NBOChargesFlat', **kwargs)
+        if n_load == 0:
+          self.position_offsets = np.array([], dtype=np.int64)
+          self._po_base = c0
+          self.group_indices = np.array([], dtype=np.int32)
+          self.test_bool = np.array([], dtype=bool)
+          self.num_atoms = np.array([], dtype=np.int64)
+          self.energy = np.array([], dtype=np.float64)
+          self.positions_flat = np.zeros((0, 3), dtype=np.float64)
+          self.atom_types_flat = np.array([], dtype=np.int32)
+          self.lattices = np.zeros((0, 3, 3), dtype=np.float64)
+          self.forces_flat = np.zeros((0, 3), dtype=np.float64) if self.has_forces else None
+          self.stresses = np.zeros((0, 3, 3), dtype=np.float64) if self.has_stress else None
+          self.charge = np.array([], dtype=np.int64) if self.has_charge else None
+          self.nbo_charges_flat = np.array([], dtype=np.float64) if self.has_nbo_charges else None
+          self._flat_lo = 0
+        else:
+          self.group_indices = np.asarray(gi_hist[:n_load], dtype=np.int32, order='C')
+          self.test_bool = np.asarray(tb_hist[:n_load], dtype=bool)
+
+          po_count = (n_load + 1) if c1 < nc else n_load
+          self.position_offsets = _read_rra(s, 'PositionOffsets', [c0], [po_count], np.int64)
+          self._po_base = c0
+
+          self._flat_lo = int(self.position_offsets[0])
+          if c1 < nc:
+            flat_hi = int(self.position_offsets[n_load])
+          else:
+            flat_hi = self._total_atoms_file
+          n_atom_rows = flat_hi - self._flat_lo
+          if n_atom_rows < 0:
+            raise RuntimeError("Invalid PositionOffsets slice (flat_hi < flat_lo)")
+
+          self.num_atoms = _read_rra(s, 'NumAtoms', [c0], [n_load], np.uint16)
+          self.energy = _read_rra(s, 'Energy', [c0], [n_load], np.float64)
+          self.lattices = _read_rra(s, 'Lattice', [c0, 0, 0], [n_load, 3, 3], np.float64)
+
+          self.positions_flat = _read_rra(
+            s, 'PositionsFlat', [self._flat_lo, 0], [n_atom_rows, 3], np.float64
+          )
+          self.atom_types_flat = _read_rra(s, 'AtomTypesFlat', [self._flat_lo], [n_atom_rows], np.int32)
+
+          if self.has_forces:
+            self.forces_flat = _read_rra(
+              s, 'ForcesFlat', [self._flat_lo, 0], [n_atom_rows, 3], np.float64
+            )
+          if self.has_stress:
+            self.stresses = _read_rra(s, 'Stress', [c0, 0, 0], [n_load, 3, 3], np.float64)
+          if self.has_charge:
+            self.charge = _read_rra(s, 'Charge', [c0], [n_load], np.int8)
+          if self.has_nbo_charges:
+            self.nbo_charges_flat = _read_rra(
+              s, 'NBOChargesFlat', [self._flat_lo], [n_atom_rows], np.float64
+            )
 
     except Exception as e:
       raise RuntimeError(f"Failed to read ADIOS2 data arrays: {e}")
 
-    # Count training/testing sizes per group (only rank 0)
+    sorted_group_names = sorted(self.unique_group_names)
+    self.pt.add_2_fitsnap("sorted_group_names", sorted_group_names)
+
     if self.rank == 0:
-      for i in range(self.nconfigs):
-        group_idx = int(self.group_indices[i])
-        group_name = self.unique_group_names[group_idx]
-        is_test = bool(self.test_bool[i])
-        if is_test: self.group_table[group_name]['testing_size'] += 1
-        else: self.group_table[group_name]['training_size'] += 1
-
-      # Print summary
-      sorted_group_names = sorted(self.unique_group_names)
-      self.pt.add_2_fitsnap("sorted_group_names", sorted_group_names)
-
       max_len = max(len(s) for s in sorted_group_names)
       total_train = total_test = 0
       self.pt.single_print(f"    {'GROUP':<{max_len}}  TRAINING  VALIDATION")
-
       for group_name in sorted_group_names:
         train_size = self.group_table[group_name]['training_size']
         test_size = self.group_table[group_name]['testing_size']
@@ -224,53 +319,52 @@ class ADIOS2(Scraper):
         self.pt.single_print(f"    {group_name:<{max_len}}  {train_size:>8}    {test_size:>8}")
       self.pt.single_print(f"    {'TOTAL':<{max_len}}  {total_train:>8}    {total_test:>8}")
 
-    # Broadcast group_table to all ranks
-    if self.pt.stubs == 0:
-      self.group_table = self.comm.bcast(self.group_table, root=0)
-
-
-    added = 0
-    for config_idx in self.my_config_indices:
-      if added >= max_configs_per_rank: break
-      if self.has_charge and int(self.charge[config_idx]) != 0: continue
+    for config_idx in range(c0, c1):
+      if self.has_charge:
+        lk = config_idx - c0
+        if int(self.charge[lk]) != 0:
+          continue
       try:
         data_dict = self._extract_config(config_idx)
         if data_dict is not None:
           self.data.append(data_dict)
-          added += 1
       except Exception as e:
         logging.warning(f"Failed to extract config {config_idx}: {e}")
         continue
 
+    n_loc = len(self.data)
+    if self.pt.stubs == 0:
+      from mpi4py import MPI
+      n_tot = int(self.comm.allreduce(n_loc, op=MPI.SUM))
+    else:
+      n_tot = n_loc
+    self.pt.add_2_fitsnap("nconfigs", n_tot)
+
     return self.data
 
   def _extract_config(self, config_idx):
-    """
-    Extract a single configuration from the flattened arrays.
-    """
-    # Get group name from indices
-    group_idx = int(self.group_indices[config_idx])
+    """Extract one config; arrays on ``self`` are the rank-local ``n_load`` slice."""
+    local_k = config_idx - self._po_base
+    if local_k < 0 or local_k >= len(self.group_indices):
+      raise IndexError(f"config_idx {config_idx} outside loaded slice [{self._po_base}, {self._po_base + len(self.group_indices)})")
+
+    group_idx = int(self.group_indices[local_k])
     group_name = self.unique_group_names[group_idx]
+    natoms = int(self.num_atoms[local_k])
 
-    # Get number of atoms
-    natoms = int(self.num_atoms[config_idx])
+    pos_start = int(self.position_offsets[local_k])
+    if config_idx == self.nconfigs - 1:
+      pos_end = self._total_atoms_file
+    else:
+      pos_end = int(self.position_offsets[local_k + 1])
 
-    # Get position range
-    pos_start = int(self.position_offsets[config_idx])
-    if config_idx == self.nconfigs - 1: pos_end = len(self.atom_types_flat)
-    else: pos_end = int(self.position_offsets[config_idx + 1])
-
-    # Extract positions
-    positions = self.positions_flat[pos_start:pos_end]
-
-    # Extract atom types
-    atom_type_indices = self.atom_types_flat[pos_start:pos_end]
+    lo = self._flat_lo
+    positions = self.positions_flat[pos_start - lo : pos_end - lo]
+    atom_type_indices = self.atom_types_flat[pos_start - lo : pos_end - lo]
     atom_types = [self.element_map[int(idx)] for idx in atom_type_indices]
 
-    # Extract lattice (3x3 matrix)
-    lattice = self.lattices[config_idx].reshape((3, 3))
+    lattice = self.lattices[local_k].reshape((3, 3))
 
-    # Create data dictionary ([SCRAPER] property_array energy: ... -> conversions, same as VASP/JSON)
     data_dict = {
       'Group': group_name,
       'File': f"{group_name}/{config_idx}",
@@ -278,29 +372,22 @@ class ADIOS2(Scraper):
       'AtomTypes': atom_types,
       'NumAtoms': natoms,
       'QMLattice': lattice.T.copy(),
-      'Energy': float(self.energy[config_idx]) * self.default_conversions['Energy'],
-      'test_bool': bool(self.test_bool[config_idx]),
+      'Energy': float(self.energy[local_k]) * self.default_conversions['Energy'],
+      'test_bool': bool(self.test_bool[local_k]),
     }
 
-    # Extract forces
     if self.has_forces and self.use_forces:
-      forces = self.forces_flat[pos_start:pos_end]
+      forces = self.forces_flat[pos_start - lo : pos_end - lo]
       data_dict['Forces'] = forces.copy()
 
     if self.has_nbo_charges:
-      nbo = self.nbo_charges_flat[pos_start:pos_end]
+      nbo = self.nbo_charges_flat[pos_start - lo : pos_end - lo]
       data_dict['Charges'] = np.asarray(nbo, dtype=np.float64).copy()
 
-    # Extract stress
     if self.has_stress and self.use_stress:
-      stress = self.stresses[config_idx].reshape((3, 3))
-      # CRITICAL FIX: Convert eV/A^3 to Bar
+      stress = self.stresses[local_k].reshape((3, 3))
       data_dict['Stress'] = stress.copy() * 1602176.6208
 
-
-    # Apply weights from config file using parent class method.
-    # If _rotate_coords / _weighting raise, we must restore self.data or the scraper
-    # stays a dict and scrape_configs can return a broken structure (dict keys look like configs).
     old_data = self.data
     old_conversions = self.conversions
     self.data = data_dict
