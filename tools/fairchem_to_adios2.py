@@ -26,6 +26,7 @@ path — any stored stress would refer to the original DFT cell, not the padded 
 Usage:
     python fairchem_to_adios2.py --dataset scratch/omat24 --elements Al Ni --output omat24_AlNi.bp
     python fairchem_to_adios2.py --dataset scratch/omol25_4M --elements C H O --output omol25_CHO.bp
+    python fairchem_to_adios2.py --dataset scratch/omol25_4M --elements C H O --groups spice --output omol25_spice_only.bp
 """
 
 import os, sys, argparse
@@ -94,6 +95,25 @@ os.close(_original_stderr)
 # Global variables for worker processes
 _worker_dataset = None
 
+
+ATOMIC_NUMBERS = {
+    'H': 1, 'He': 2, 'Li': 3, 'Be': 4, 'B': 5, 'C': 6, 'N': 7, 'O': 8, 'F': 9, 'Ne': 10,
+    'Na': 11, 'Mg': 12, 'Al': 13, 'Si': 14, 'P': 15, 'S': 16, 'Cl': 17, 'Ar': 18,
+    'K': 19, 'Ca': 20, 'Sc': 21, 'Ti': 22, 'V': 23, 'Cr': 24, 'Mn': 25, 'Fe': 26, 'Co': 27, 'Ni': 28, 'Cu': 29, 'Zn': 30,
+    'Ga': 31, 'Ge': 32, 'As': 33, 'Se': 34, 'Br': 35, 'Kr': 36,
+    'Rb': 37, 'Sr': 38, 'Y': 39, 'Zr': 40, 'Nb': 41, 'Mo': 42, 'Tc': 43, 'Ru': 44, 'Rh': 45, 'Pd': 46, 'Ag': 47, 'Cd': 48,
+    'In': 49, 'Sn': 50, 'Sb': 51, 'Te': 52, 'I': 53, 'Xe': 54,
+    'Cs': 55, 'Ba': 56, 'La': 57, 'Ce': 58, 'Pr': 59, 'Nd': 60, 'Pm': 61, 'Sm': 62, 'Eu': 63, 'Gd': 64, 'Tb': 65, 'Dy': 66, 'Ho': 67, 'Er': 68, 'Tm': 69, 'Yb': 70, 'Lu': 71,
+    'Hf': 72, 'Ta': 73, 'W': 74, 'Re': 75, 'Os': 76, 'Ir': 77, 'Pt': 78, 'Au': 79, 'Hg': 80,
+    'Tl': 81, 'Pb': 82, 'Bi': 83, 'Po': 84, 'At': 85, 'Rn': 86,
+    'Fr': 87, 'Ra': 88, 'Ac': 89, 'Th': 90, 'Pa': 91, 'U': 92, 'Np': 93, 'Pu': 94, 'Am': 95, 'Cm': 96, 'Bk': 97, 'Cf': 98, 'Es': 99, 'Fm': 100
+}
+
+def sort_by_atomic_number(elements_list):
+    """Sorts a list of element symbols by atomic number."""
+    return sorted(elements_list, key=lambda x: ATOMIC_NUMBERS.get(x, 999))
+
+
 def _ensure_lattice_for_adios2(
     cell,
     positions,
@@ -161,12 +181,21 @@ def _process_chunk(args):
     
     Args:
         args: Tuple of (start_idx, end_idx, group_name, allowed_elements, test_bool,
-            lattice_pad, lattice_min_side)
+            lattice_pad, lattice_min_side, allowed_groups). allowed_groups None means no group filter.
     
     Returns:
         Tuple of (list of configs, number filtered)
     """
-    start_idx, end_idx, group_name, allowed_elements, test_bool, lattice_pad, lattice_min_side = args
+    (
+        start_idx,
+        end_idx,
+        group_name,
+        allowed_elements,
+        test_bool,
+        lattice_pad,
+        lattice_min_side,
+        allowed_groups,
+    ) = args
     
     configs = []
     filtered_count = 0
@@ -249,7 +278,8 @@ def _process_chunk(args):
         if forces is not None: config['Forces'] = forces
         if stress is not None: config['Stress'] = stress
 
-        if config.get('Spin', 1) == 1 and config['Group'] == "spice":
+        group_ok = allowed_groups is None or config['Group'] in allowed_groups
+        if config.get('Spin', 1) == 1 and group_ok:
             configs.append(config)
 
     return configs, filtered_count
@@ -286,6 +316,7 @@ def process_lmdb_dir(
     num_workers=None,
     lattice_pad=10.0,
     lattice_min_side=8.0,
+    allowed_groups=None,
 ):
     """
     Process a single LMDB database directory using fairchem's AseDBDataset with multiprocessing.
@@ -296,6 +327,7 @@ def process_lmdb_dir(
         allowed_elements: Set of allowed element symbols
         test_bool: Boolean indicating if this is validation data
         num_workers: Number of parallel workers (default: cpu_count)
+        allowed_groups: None = all groups; else set of Group / data_id to keep (singlet spin only)
     
     Returns:
         Tuple of (list of configs, number filtered)
@@ -313,7 +345,15 @@ def process_lmdb_dir(
         start_idx = i
         end_idx = min(i + chunk_size, dataset_size)
         chunks.append(
-            ( start_idx, end_idx, group_name, allowed_elements, test_bool, lattice_pad, lattice_min_side,
+            (
+                start_idx,
+                end_idx,
+                group_name,
+                allowed_elements,
+                test_bool,
+                lattice_pad,
+                lattice_min_side,
+                allowed_groups,
             )
         )
     
@@ -338,6 +378,7 @@ def process_dataset_path(
     num_workers=None,
     lattice_pad=10.0,
     lattice_min_side=8.0,
+    allowed_groups=None,
 ):
     """
     Process train or val directory containing LMDB database directories.
@@ -347,7 +388,8 @@ def process_dataset_path(
         subset_type: Either 'train' or 'val'
         allowed_elements: Set of allowed element symbols
         num_workers: Number of parallel workers (default: cpu_count)
-    
+        allowed_groups: None = all groups; else restrict by Group / data_id (see --groups)
+
     Returns:
         List of configuration dictionaries
     """
@@ -380,6 +422,7 @@ def process_dataset_path(
                 num_workers,
                 lattice_pad=lattice_pad,
                 lattice_min_side=lattice_min_side,
+                allowed_groups=allowed_groups,
             )
             all_configs.extend(configs)
             tqdm.write(f"    {group_name}: kept {len(configs)}, filtered {filtered}")
@@ -430,7 +473,7 @@ def write_adios2_file(configs, output_path, allowed_elements):
     print(f"\nWriting {nconfigs} configurations to {output_path}", file=sys.stderr)
     
     # Create element mapping
-    element_list = sorted(allowed_elements)
+    element_list = sort_by_atomic_number(allowed_elements)
     element_to_idx = {elem: idx for idx, elem in enumerate(element_list)}
     
     # Prepare arrays
@@ -602,6 +645,7 @@ def main():
         epilog="""
 Example:
     python fairchem_to_adios2.py --dataset scratch/omat24 --elements Al Ni --output omat24_AlNi.bp
+    python fairchem_to_adios2.py --dataset scratch/omol25_4M --elements C H O --groups spice --output spice_only.bp
     
 Expected directory structures:
 
@@ -643,6 +687,17 @@ Expected directory structures:
         metavar='ANG',
         help='Minimum orthorhombic edge (Å) when synthesizing a cell from positions',
     )
+    parser.add_argument(
+        '--groups',
+        nargs='+',
+        default=None,
+        metavar='NAME',
+        help=(
+            "Only keep configs whose Group matches one of these names (after OMOL "
+            "atoms.info['data_id'] is applied). Singlet spin only. "
+            "Default: no group filter (all groups)."
+        ),
+    )
 
     args = parser.parse_args()
     
@@ -653,7 +708,15 @@ Expected directory structures:
         sys.exit(1)
     
     allowed_elements = set(args.elements)
-    print(f"Allowed elements: {', '.join(sorted(allowed_elements))}", file=sys.stderr)
+    allowed_groups = frozenset(args.groups) if args.groups is not None else None
+    print(f"Allowed elements: {', '.join(sort_by_atomic_number(allowed_elements))}", file=sys.stderr)
+    if allowed_groups is None:
+        print("Allowed groups (data_id / Group): all", file=sys.stderr)
+    else:
+        print(
+            f"Allowed groups (data_id / Group): {', '.join(sorted(allowed_groups))}",
+            file=sys.stderr,
+        )
     print(
         f"Synthetic LAMMPS box (when cell missing/singular): pad={args.lattice_pad} Å, "
         f"min edge={args.lattice_min_side} Å",
@@ -675,6 +738,7 @@ Expected directory structures:
         args.workers,
         lattice_pad=args.lattice_pad,
         lattice_min_side=args.lattice_min_side,
+        allowed_groups=allowed_groups,
     )
     all_configs.extend(train_configs)
     print(f"\nCollected {len(train_configs)} training configurations", file=sys.stderr)
@@ -686,6 +750,7 @@ Expected directory structures:
         args.workers,
         lattice_pad=args.lattice_pad,
         lattice_min_side=args.lattice_min_side,
+        allowed_groups=allowed_groups,
     )
     all_configs.extend(val_configs)
     print(f"Collected {len(val_configs)} validation configurations", file=sys.stderr)
