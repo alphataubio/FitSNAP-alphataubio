@@ -376,6 +376,10 @@ class ADIOS2(Scraper):
       'test_bool': bool(self.test_bool[local_k]),
     }
 
+    if hasattr(self.config.sections["ESHIFT"], 'eshift'):
+      for atom in data_dict["AtomTypes"]:
+        data_dict["Energy"] += self.config.sections["ESHIFT"].eshift[atom]
+
     if self.has_forces and self.use_forces:
       forces = self.forces_flat[pos_start - lo : pos_end - lo]
       data_dict['Forces'] = forces.copy()
