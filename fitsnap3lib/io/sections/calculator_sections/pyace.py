@@ -57,7 +57,9 @@ class PyAce(Section):
             'elements': self.elements,
             'embeddings': self.embeddings,
             'bonds': self.bonds,
-            'functions': self.functions
+            'functions': self.functions,
+            # Must match PYACE / LammpsPyace column layout (get_width, one-hot concat)
+            'bzeroflag': int(self.bzeroflag),
         }
         
         self._create_basis()
