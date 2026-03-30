@@ -17,7 +17,7 @@ class Slate(Section):
         self.method = self.get_value("SLATE", "method", "RIDGE", "str")
 
         # alpha for RIDGE
-        self.alpha = self.get_value("SLATE", "alpha", "1e-6", "float")
+        self.alpha = self.get_value("SLATE", "alpha", "1e-8", "float")
 
         # ARD parameters - matching legacy ARD section
         # Maximum number of iterations
