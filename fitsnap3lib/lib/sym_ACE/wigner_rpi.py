@@ -62,7 +62,7 @@ class MolienWeylIntegration:
         thetas, dt = np.linspace(0, np.pi, integration_points, retstep=True)
         haar_measure = (1.0 / np.pi) * (1.0 - np.cos(thetas))
         chis = np.array([MolienWeylIntegration.get_total_character(lin, nin, t) for t in thetas])
-        integral = np.trapz(chis * haar_measure, dx=dt)
+        integral = np.trapezoid(chis * haar_measure, dx=dt)
         return int(round(integral))
 
 # =========================================================
