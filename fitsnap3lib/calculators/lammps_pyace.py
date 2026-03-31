@@ -4,6 +4,9 @@ from fitsnap3lib.calculators.lammps_base import LammpsBase, _extract_compute_np
 from fitsnap3lib.calculators.lammps_pace import LammpsPace
 import lammps
 
+# LAMMPS ``units real`` uses kcal/mol (and kcal/mol/Å for forces); OMOL/JSON/VASP training uses eV.
+_KCAL_MOL_PER_EV = 23.060549
+
 # ------------------------------------------------------------------------------------------------
 
 class LammpsPyace(LammpsPace):
@@ -31,6 +34,20 @@ class LammpsPyace(LammpsPace):
         else:
             return self._ncoeff + self._numtypes
         
+
+    # --------------------------------------------------------------------------------------------
+    def _set_box(self):
+        self._lmp.command("boundary s s s")
+        ((ax, bx, cx),
+         (ay, by, cy),
+         (az, bz, cz)) = self._data["Lattice"]
+
+        assert all(abs(c) < 1e-10 for c in (ay, az, bz)), \
+            "Cell not normalized for lammps!\nGroup and configuration: {} {}".format(self._data["Group"], self._data["File"])
+        region_command = \
+            f"region pybox prism 0 {ax:20.20g} 0 {by:20.20g} 0 {cz:20.20g} {bx:20.20g} {cx:20.20g} {cy:20.20g}"
+        self._lmp.command(region_command)
+        self._lmp.command(f"create_box {self._numtypes} pybox")
 
     # --------------------------------------------------------------------------------------------
     # everything is handled by LAMMPS compute pace (similar format as compute snap)
@@ -86,15 +103,30 @@ class LammpsPyace(LammpsPace):
         if (np.isinf(lmp_pace)).any() or (np.isnan(lmp_pace)).any():
             raise ValueError('NaN in computed data of file {} in group {}'.format(self._data["File"], self._data["Group"]))
 
+        units_real = self.config.sections["REFERENCE"].units.lower() == "real"
+        # ``compute pace`` reports the reference column and energy/force-related rows in LAMMPS
+        # native energy units (kcal/mol, kcal/mol/Å for real). Training energies and forces are eV.
+        if units_real:
+            ev_per_kcal_mol = 1.0 / _KCAL_MOL_PER_EV
+            r0, r1 = 0, nrows_energy
+            lmp_pace[r0:r1, :] *= ev_per_kcal_mol
+            r0, r1 = nrows_energy, nrows_energy + nrows_force
+            lmp_pace[r0:r1, :] *= ev_per_kcal_mol
+            if self.config.sections["CALCULATOR"].stress:
+                if not getattr(self.pt, "_pyace_real_stress_units_warned", False):
+                    if self.pt.stubs == 0 and self.pt.get_rank() == 0:
+                        self.pt.single_print(
+                            "! WARNING LAMMPSPYACE: [REFERENCE] units=real — energy and force rows of "
+                            "compute pace were converted kcal/mol → eV to match training data; stress "
+                            "rows are not converted (PACE virial vs QM stress may be inconsistent). "
+                            "Prefer units metal for combined energy/force/stress fits."
+                        )
+                    self.pt._pyace_real_stress_units_warned = True
+
         irow = 0
         bik_rows = 1
         icolref = ncols_descriptors
-        
-        if self.config.sections["REFERENCE"].units == "real":
-            factor = 23.060549   # eV -> kcal/mol
-        else:
-            factor = 1.0
-            
+
         # -------------------------------- ENERGY --------------------------------
 
         if self.config.sections["CALCULATOR"].energy:
@@ -113,7 +145,9 @@ class LammpsPyace(LammpsPace):
                 
             self.pt.shared_arrays['a'].array[index] = b_sum_temp
             ref_energy = lmp_pace[irow, icolref]
-            self.pt.shared_arrays['b'].array[index] = factor*(energy - ref_energy) / num_atoms
+            # A, ref, and b are eV / (eV/Å) after optional real→eV conversion above. SLATE scales
+            # Energy/Force metrics to kcal for [REFERENCE] units = real (see slate_common).
+            self.pt.shared_arrays['b'].array[index] = (energy - ref_energy) / num_atoms
             self.pt.shared_arrays['w'].array[index] = self._data["eweight"]
             self.pt.fitsnap_dict['Row_Type'][dindex:dindex + bik_rows] = ['Energy'] * nrows_energy
             self.pt.fitsnap_dict['Atom_I'][dindex:dindex + bik_rows] = [int(i) for i in range(nrows_energy)]
@@ -135,7 +169,7 @@ class LammpsPyace(LammpsPace):
                 
             self.pt.shared_arrays['a'].array[s] = db_atom_temp
             ref_forces = lmp_pace[irow:irow + nrows_force, icolref]
-            self.pt.shared_arrays['b'].array[s] = factor*(self._data["Forces"].ravel() - ref_forces)
+            self.pt.shared_arrays['b'].array[s] = self._data["Forces"].ravel() - ref_forces
             self.pt.shared_arrays['w'].array[s] = self._data["fweight"]
             self.pt.fitsnap_dict['Row_Type'][dindex:dindex + nrows_force] = ['Force'] * nrows_force
             self.pt.fitsnap_dict['Atom_I'][dindex:dindex + nrows_force] = [int(np.floor(i/3)) for i in range(nrows_force)]
