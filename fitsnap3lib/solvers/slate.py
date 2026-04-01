@@ -21,32 +21,27 @@ except ImportError:
 SIGUSR1_signal_received = False
 
 def handle_SIGUSR1(signum, frame):
-    global SIGUSR1_signal_received
-    SIGUSR1_signal_received = True
+  global SIGUSR1_signal_received
+  SIGUSR1_signal_received = True
 
 signal.signal(signal.SIGUSR1, handle_SIGUSR1)
 
 def get_slurm_time_left():
-    try:
-        end = int(os.environ.get("SLURM_JOB_END_TIME", 0))
-        now = int(time.time())
-        if end and now:
-            return end - now
-    except Exception:
-        pass
-    return float("inf")
+  try:
+    end = int(os.environ.get("SLURM_JOB_END_TIME", 0))
+    now = int(time.time())
+    if end and now: return end - now
+  except Exception:
+    pass
+  return float("inf")
 
 def mixed_relative_change(coef_old, coef_new, rtol=1e-3, atol=1e-6):
-    if coef_old is None:
-        return False, False, None, None
-    abs_change = np.linalg.norm(coef_new - coef_old)
-    rel_change = abs_change / (np.linalg.norm(coef_old) + atol)
-    if rel_change < rtol:
-        return True, False, rel_change, abs_change
-    elif abs_change < atol:
-        return False, True, rel_change, abs_change
-    else:
-        return False, False, rel_change, abs_change
+  if coef_old is None: return False, False, None, None
+  abs_change = np.linalg.norm(coef_new - coef_old)
+  rel_change = abs_change / (np.linalg.norm(coef_old) + atol)
+  if rel_change < rtol: return True, False, rel_change, abs_change
+  elif abs_change < atol: return False, True, rel_change, abs_change
+  else: return False, False, rel_change, abs_change
 
 
 # --------------------------------------------------------------------------------------------
@@ -101,8 +96,7 @@ class SLATE(SlateValidation):
             testing_mask = pt.fitsnap_dict['Testing'][local_slice]
             local_m_training = np.sum(~np.array(testing_mask, dtype=bool))
             for i in range(a_end_idx-a_start_idx+1):
-                if testing_mask[i]:
-                    local_w[i] = 0.0
+                if testing_mask[i]: local_w[i] = 0.0
         else:
             local_m_training = a_end_idx - a_start_idx + 1
             
@@ -131,23 +125,20 @@ class SLATE(SlateValidation):
         
         if self.directmethod:
             self.alpha_1 = self.alphabig
-            self.alpha_2 = self.alphabig
-            self.lambda_1 = self.lambdasmall
+            self.alpha_2 = self.alphasmall
+            self.lambda_1 = self.lambdabig
             self.lambda_2 = self.lambdasmall
-            if self.threshold_lambda_config > 0:
-                self.threshold_lambda = self.threshold_lambda_config
-            else:
-                self.threshold_lambda = 10**(int(np.abs(np.log10(ap))) + self.logcut)
+            if self.threshold_lambda_config > 0: self.threshold_lambda = self.threshold_lambda_config
+            else: self.threshold_lambda = 10**(int(np.abs(np.log10(ap))) + self.logcut)
             pt.single_print(f"ARD directmethod: alpha_1={self.alpha_1:.2e}, lambda_1={self.lambda_1:.2e}, threshold_lambda={self.threshold_lambda:.2e}")
+            pt.single_print(f"SLATE ARD: m {m} n {n} ap {ap:.2g} alpha_1 {self.alpha_1:.2g} alpha_2 {self.alpha_2:.2g} lambda_1 {self.lambda_1:.2g} lambda_2 {self.lambda_2:.2g}")
         else:
             self.alpha_1 = self.scap * ap
             self.alpha_2 = self.scap * ap
             self.lambda_1 = self.scai * ap
             self.lambda_2 = self.scai * ap
-            if self.threshold_lambda_config > 0:
-                self.threshold_lambda = self.threshold_lambda_config
-            else:
-                self.threshold_lambda = 10**(int(np.abs(np.log10(ap))) + self.logcut)
+            if self.threshold_lambda_config > 0: self.threshold_lambda = self.threshold_lambda_config
+            else: self.threshold_lambda = 10**(int(np.abs(np.log10(ap))) + self.logcut)
             pt.debug_single_print(f"automated threshold_lambda will be 10**({self.logcut:.6f} + {np.abs(np.log10(ap)):.3f})={self.threshold_lambda:.2g}")
             pt.single_print(f"SLATE ARD: m {m} n {n} scap {self.scap:.2g} scai {self.scai:.2g} ap {ap:.2g} alpha_1 {self.alpha_1:.2g} alpha_2 {self.alpha_2:.2g} lambda_1 {self.lambda_1:.2g} lambda_2 {self.lambda_2:.2g}")
         
@@ -195,11 +186,9 @@ class SLATE(SlateValidation):
             if pt._sub_rank == 0:
                 
                 # Determine Communicator (Single vs Multi-Node)
-                if pt._number_of_nodes > 1:
-                    comm = pt._head_group_comm
-                else:
-                    comm = pt.MPI.COMM_SELF
-                
+                if pt._number_of_nodes > 1: comm = pt._head_group_comm
+                else: comm = pt.MPI.COMM_SELF
+
                 # Call C++ Wrapper
                 s_d, c_a, cn = slate_ard_update_cython(
                     aw, bw, lambda_active, alpha_, 
@@ -282,7 +271,7 @@ class SLATE(SlateValidation):
             coef_change_str = " " if coef_old_ is None else f" coef_rel_change {coef_rel_change:.2g} coef_abs_change {coef_abs_change:.2g}"
             coef_old_ = np.copy(coef_)
 
-            pt.single_print(f"SLATE ARD #{iteration} ({elapsed_iteration/60:.1f}m): alpha {alpha_:.3g} sse {sse_:.3g} cond_number {cond_number:.1g} threshold_lambda {np.log10(self.threshold_lambda):.2f} gamma_sum {gamma_active.sum():.1f} n_active {n_active}{coef_change_str}{slurm_time_left_str}")
+            pt.single_print(f"SLATE ARD #{iteration} ({elapsed_iteration/60:.1f}m): alpha {alpha_:.3g} sse {sse_:.3g} cond_number {cond_number:.1g} alpha {alpha_:.4f} gamma_sum {gamma_active.sum():.1f} n_active {n_active}{coef_change_str}{slurm_time_left_str}")
             
             iteration += 1
             
@@ -309,10 +298,8 @@ class SLATE(SlateValidation):
         # Store final solution
         if "PYACE" in self.config.sections:
             pyace_section = self.config.sections["PYACE"]
-            if pyace_section.bzeroflag:
-                pyace_section.lambda_mask = lambda_mask
-            else:
-                pyace_section.lambda_mask = lambda_mask[pyace_section.numtypes:]
+            if pyace_section.bzeroflag: pyace_section.lambda_mask = lambda_mask
+            else: pyace_section.lambda_mask = lambda_mask[pyace_section.numtypes:]
 
         self.fit = coef_
         

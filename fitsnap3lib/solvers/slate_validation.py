@@ -338,13 +338,13 @@ class SlateValidation(SlateCommon):
                     scatter_factor = 1.0
                     if row_type == 'Energy':
                         if reference_section.units == "metal":
-                            scatter_factor = 1000.0
+                            scatter_factor = 1.0
                             units = reference_section.error_energy_units
                         else:
                             units = reference_section.energy_units
                     elif row_type == 'Force':
                         if reference_section.units == "metal":
-                            scatter_factor = 1000.0
+                            scatter_factor = 1.0
                             units = reference_section.error_force_units
                         else:
                             units = reference_section.force_units
@@ -641,7 +641,7 @@ class SlateValidation(SlateCommon):
             lambda_finite = lambda_at_iter[np.isfinite(lambda_at_iter)]
 
             if len(lambda_finite) > 0:
-                counts, edges, patches = ax_lambda.hist(lambda_finite, bins=80, edgecolor='black', alpha=.99)
+                counts, edges, patches = ax_lambda.hist(lambda_finite, bins=20, edgecolor='black', alpha=.99)
                 ax_lambda.set_xlabel('Log10(Lambda)', fontsize=11)
                 ax_lambda.set_ylabel('Number of Features', fontsize=11)
                 ax_lambda.set_title(f'Iteration {iter_idx}: Lambda Distribution', fontsize=12, fontweight='bold')
