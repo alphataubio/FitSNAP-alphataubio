@@ -88,7 +88,7 @@ class ADIOS2(Scraper):
     self.use_stress = self.config.sections["CALCULATOR"].stress if hasattr(self.config.sections["CALCULATOR"], 'stress') else False
     self.use_forces = self.config.sections["CALCULATOR"].force if hasattr(self.config.sections["CALCULATOR"], 'force') else True
 
-    self.nconfigs = 0
+    self.all_nconfigs = 0
     self.element_map = []
     self.has_forces = False
     self.has_stress = False
@@ -119,6 +119,8 @@ class ADIOS2(Scraper):
     self._flat_lo = 0
     self._total_atoms_file = 0
 
+  # --------------------------------------------------------------------------------------------
+
   def _open_rra_collective(self):
     """MPI-aware RRA open (``FileReader(io, path, comm)`` passes ``comm`` into ``IO.open``)."""
     if self.pt.stubs == 0:
@@ -127,6 +129,8 @@ class ADIOS2(Scraper):
       return FileReader(io, self.dataPath, self.comm)
     return FileReader(self.dataPath, None)
 
+  # --------------------------------------------------------------------------------------------
+
   def scrape_groups(self, group_names=None):
     """Read global metadata on rank 0 and broadcast; set per-rank config index range and I/O cap."""
 
@@ -134,7 +138,7 @@ class ADIOS2(Scraper):
       if self.rank == 0:
         with FileReader(self.dataPath, None) as s:
           raw_nc = s.read_attribute('nconfigs')
-          self.nconfigs = int(np.asarray(raw_nc).reshape(-1)[0])
+          self.all_nconfigs = int(np.asarray(raw_nc).reshape(-1)[0])
           element_map_str = s.read_attribute('element_map')
           self.element_map = [x.strip('"\' ') for x in str(element_map_str).split(',') if x.strip()]
           if not self.element_map:
@@ -151,16 +155,17 @@ class ADIOS2(Scraper):
             raise ValueError('unique_group_names is empty after parsing')
 
         self.pt.single_print(
-          f"ADIOS2 scraper: {self.dataPath}, {self.nconfigs} configurations with "
-          f"[{' '.join(self.element_map)}], "
-          f"forces {self.has_forces}, stress {self.has_stress}"
+          f"----------------------------------------------------------------\n"
+          f"  ADIOS2 scraper\n    {self.dataPath}\n"
+          f"    {self.all_nconfigs} configurations with [{' '.join(self.element_map)}]\n"
+          f"    forces {self.has_forces}, stress {self.has_stress}, charge {self.has_charge}"
         )
 
     except Exception as e:
       raise RuntimeError(f"Failed to read ADIOS2 file metadata: {e}")
 
     if self.pt.stubs == 0:
-      self.nconfigs = self.comm.bcast(self.nconfigs, root=0)
+      self.all_nconfigs = self.comm.bcast(self.all_nconfigs, root=0)
       self.element_map = self.comm.bcast(self.element_map, root=0)
       self.has_forces = self.comm.bcast(self.has_forces, root=0)
       self.has_stress = self.comm.bcast(self.has_stress, root=0)
@@ -168,18 +173,14 @@ class ADIOS2(Scraper):
       self.has_nbo_charges = self.comm.bcast(self.has_nbo_charges, root=0)
       self.unique_group_names = self.comm.bcast(self.unique_group_names, root=0)
 
-    nc = int(self.nconfigs)
-    q, r = nc // self.size, nc % self.size
+    q, r = self.all_nconfigs // self.size, self.all_nconfigs % self.size
     self._cfg_start = self.rank * q + min(self.rank, r)
     self._cfg_end = self._cfg_start + q + (1 if self.rank < r else 0)
     n_local = max(0, self._cfg_end - self._cfg_start)
 
     max_cap = self.config.sections["SCRAPER"].max_configs_per_rank
-    if max_cap is not None:
-      self._n_load = min(n_local, int(max_cap))
-    else:
-      self._n_load = n_local
-
+    if max_cap is not None: self._n_load = min(n_local, int(max_cap))
+    else: self._n_load = n_local
     self.my_config_indices = list(range(self._cfg_start, self._cfg_end))
 
     group_dict = {k: self.config.sections["GROUPS"].group_types[i]
@@ -192,8 +193,12 @@ class ADIOS2(Scraper):
       self.group_table[group_name]['training_size'] = 0
       self.group_table[group_name]['testing_size'] = 0
 
+  # --------------------------------------------------------------------------------------------
+
   def divvy_up_configs(self):
     self.my_configs = self.my_config_indices
+
+  # --------------------------------------------------------------------------------------------
 
   def _merge_group_train_test_counts(self, gi_local, tb_local):
     """Reconstruct global train/test counts per group from this rank's ``GroupIndices`` slice."""
@@ -202,12 +207,9 @@ class ADIOS2(Scraper):
     test_ct = np.zeros(n_g, dtype=np.int64)
     for i in range(len(gi_local)):
       g = int(gi_local[i])
-      if g < 0 or g >= n_g:
-        continue
-      if int(tb_local[i]) != 0:
-        test_ct[g] += 1
-      else:
-        train_ct[g] += 1
+      if g < 0 or g >= n_g: continue
+      if int(tb_local[i]) != 0: test_ct[g] += 1
+      else: train_ct[g] += 1
     if self.pt.stubs == 0:
       from mpi4py import MPI
       train_ct = self.comm.allreduce(train_ct, op=MPI.SUM)
@@ -217,6 +219,8 @@ class ADIOS2(Scraper):
         self.group_table[gname] = {'eweight': 1.0, 'fweight': 100.0, 'vweight': 1e-12}
       self.group_table[gname]['training_size'] = int(train_ct[gi])
       self.group_table[gname]['testing_size'] = int(test_ct[gi])
+
+  # --------------------------------------------------------------------------------------------
 
   def scrape_configs(self):
     """Read only this rank's config subset (``start``/``count``); build ``self.data``."""
@@ -231,7 +235,7 @@ class ADIOS2(Scraper):
     n_load = self._n_load
     c1 = c0 + n_load
     n_local = max(0, self._cfg_end - self._cfg_start)
-    nc = int(self.nconfigs)
+    nc = int(self.all_nconfigs)
 
     try:
       with self._open_rra_collective() as s:
@@ -315,24 +319,22 @@ class ADIOS2(Scraper):
     if self.rank == 0:
       max_len = max(len(s) for s in sorted_group_names)
       total_train = total_test = 0
-      self.pt.single_print(f"    {'GROUP':<{max_len}}  TRAINING  VALIDATION")
+      self.pt.single_print(f"\n      {'GROUP':<{max_len}}  TRAINING  VALIDATION")
       for group_name in sorted_group_names:
         train_size = self.group_table[group_name]['training_size']
         test_size = self.group_table[group_name]['testing_size']
         total_train += train_size
         total_test += test_size
-        self.pt.single_print(f"    {group_name:<{max_len}}  {train_size:>8}    {test_size:>8}")
-      self.pt.single_print(f"    {'TOTAL':<{max_len}}  {total_train:>8}    {total_test:>8}")
+        self.pt.single_print(f"      {group_name:<{max_len}}  {train_size:>8}    {test_size:>8}")
+      self.pt.single_print(f"      {'TOTAL':<{max_len}}  {total_train:>8}    {total_test:>8}\n")
 
     for config_idx in range(c0, c1):
       if self.has_charge:
         lk = config_idx - c0
-        if int(self.charge[lk]) != 0:
-          continue
+        if int(self.charge[lk]) != 0: continue
       try:
         data_dict = self._extract_config(config_idx)
-        if data_dict is not None:
-          self.data.append(data_dict)
+        if data_dict is not None and np.any(data_dict.get('Charges', 1)): self.data.append(data_dict)
       except Exception as e:
         logging.warning(f"Failed to extract config {config_idx}: {e}")
         continue
@@ -348,11 +350,8 @@ class ADIOS2(Scraper):
       
       for config in self.data:
         counts = np.zeros(num_elements, dtype=np.float64)
-        for atom in config['AtomTypes']:
-          counts[element_to_idx[atom]] += 1.0
-        
+        for atom in config['AtomTypes']: counts[element_to_idx[atom]] += 1.0
         energy = config['Energy']
-        
         # Accumulate AtA and Atb locally
         AtA_local += np.outer(counts, counts)
         Atb_local += counts * energy
@@ -383,8 +382,7 @@ class ADIOS2(Scraper):
       if self.rank == 0:
         self.pt.single_print("\n" + "-"*60)
         self.pt.single_print("Computed Exact Auto-ESHIFTS via Global Reduction (eV):")
-        for el, shift in self.eshift_dict.items():
-          self.pt.single_print(f"  {el}: {shift:.6f}")
+        for el, shift in self.eshift_dict.items(): self.pt.single_print(f"  {el}: {shift:.6f}")
         self.pt.single_print("-" * 60 + "\n")
         
       # Apply exact shifts to local configurations
@@ -394,14 +392,15 @@ class ADIOS2(Scraper):
     # -----------------------------------------------
 
     n_loc = len(self.data)
-    if self.pt.stubs == 0:
-      from mpi4py import MPI
-      n_tot = int(self.comm.allreduce(n_loc, op=MPI.SUM))
-    else:
-      n_tot = n_loc
+    if self.pt.stubs == 0: n_tot = int(self.comm.allreduce(n_loc, op=MPI.SUM))
+    else: n_tot = n_loc
     self.pt.add_2_fitsnap("nconfigs", n_tot)
 
+    self.pt.single_print(f"----------------------------------------------------------------\n")
+
     return self.data
+
+  # --------------------------------------------------------------------------------------------
 
   def _extract_config(self, config_idx):
     """Extract one config; arrays on ``self`` are the rank-local ``n_load`` slice."""
@@ -414,10 +413,8 @@ class ADIOS2(Scraper):
     natoms = int(self.num_atoms[local_k])
 
     pos_start = int(self.position_offsets[local_k])
-    if config_idx == self.nconfigs - 1:
-      pos_end = self._total_atoms_file
-    else:
-      pos_end = int(self.position_offsets[local_k + 1])
+    if config_idx == self.all_nconfigs - 1: pos_end = self._total_atoms_file
+    else: pos_end = int(self.position_offsets[local_k + 1])
 
     lo = self._flat_lo
     positions = self.positions_flat[pos_start - lo : pos_end - lo]
@@ -448,6 +445,7 @@ class ADIOS2(Scraper):
     if self.has_nbo_charges:
       nbo = self.nbo_charges_flat[pos_start - lo : pos_end - lo]
       data_dict['Charges'] = np.asarray(nbo, dtype=np.float64).copy()
+      #self.pt.all_print(f"*** {data_dict['File']} {data_dict['Charges']}\n")
 
     if self.has_stress and self.use_stress:
       stress = self.stresses[local_k].reshape((3, 3))
@@ -465,3 +463,5 @@ class ADIOS2(Scraper):
     finally:
       self.data = old_data
       self.conversions = old_conversions
+
+  # --------------------------------------------------------------------------------------------
