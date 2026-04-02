@@ -6,6 +6,7 @@ from fitsnap3lib.calculators.lammps_pyace import LammpsPyace
 from fitsnap3lib.calculators.lammps_snap import LammpsSnap
 #from fitsnap3lib.calculators.basic_calculator import Basic
 from fitsnap3lib.calculators.lammps_custom import LammpsCustom
+from fitsnap3lib.calculators.lammps_uf3 import LammpsUf3
 
 
 #pt = ParallelTools()

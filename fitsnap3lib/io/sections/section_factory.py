@@ -5,6 +5,7 @@ from fitsnap3lib.io.sections.calculator_sections.bispectrum import Bispectrum
 from fitsnap3lib.io.sections.calculator_sections.calculator import Calculator
 from fitsnap3lib.io.sections.calculator_sections.ace import Ace
 from fitsnap3lib.io.sections.calculator_sections.pyace import PyAce
+from fitsnap3lib.io.sections.calculator_sections.uf3 import Uf3
 from fitsnap3lib.io.sections.calculator_sections.basic_calculator import Basic
 from fitsnap3lib.io.sections.calculator_sections.custom import Custom
 from fitsnap3lib.io.sections.eshift import Eshift
