@@ -24,7 +24,7 @@ class PyAce(Section):
     # Define allowed keys for PYACE section
     allowedkeys = [
       # Basic settings
-      'elements', 'cutoff', 'delta_spline_bins',
+      'elements', 'cutoff', 'deltaSplineBins',
             
       # JSON format
       'embeddings', 'bonds', 'functions',
@@ -51,7 +51,7 @@ class PyAce(Section):
     # Store for later use by calculator
     self.ace_config = {
       'cutoff': self.cutoff,
-      'deltaSplineBins': self.delta_spline_bins,
+      'deltaSplineBins': self.deltaSplineBins,
       'elements': self.elements,
       'embeddings': self.embeddings,
       'bonds': self.bonds,
@@ -101,7 +101,7 @@ class PyAce(Section):
         self.cutoff = 10.0  # Default
         
     # Delta spline bins
-    self.delta_spline_bins = self.get_value("PYACE", "delta_spline_bins", "0.001", "float")
+    self.deltaSplineBins = self.get_value("PYACE", "deltaSplineBins", "0.001", "float")
         
     # ACE backwards compatibility parameters
     self.bikflag = self.get_value("PYACE", "bikflag", "0", "bool")
