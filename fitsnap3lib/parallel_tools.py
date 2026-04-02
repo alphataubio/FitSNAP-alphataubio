@@ -256,10 +256,10 @@ class ParallelTools():
         self._micro_comm = self._comm.Split(self._rank)
         
         is_multinode_testing = " [multinode_testing]" if self.multinode_testing else ""
-        self.single_print("--------\n"
+        self.single_print("----------------------------------------------------------------\n"
             f"ParallelTools{is_multinode_testing}: {self._size} ranks, "
             f"{self._number_of_nodes} node(s), {self._sub_size} ranks/node\n"
-            "--------\n"
+            "----------------------------------------------------------------\n"
         )
 
     
