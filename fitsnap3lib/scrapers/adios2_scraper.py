@@ -319,14 +319,14 @@ class ADIOS2(Scraper):
     if self.rank == 0:
       max_len = max(len(s) for s in sorted_group_names)
       total_train = total_test = 0
-      self.pt.single_print(f"\n      {'GROUP':<{max_len}}  TRAINING  VALIDATION")
+      self.pt.single_print(f"    {'GROUP':<{max_len}}  TRAINING  VALIDATION")
       for group_name in sorted_group_names:
         train_size = self.group_table[group_name]['training_size']
         test_size = self.group_table[group_name]['testing_size']
         total_train += train_size
         total_test += test_size
-        self.pt.single_print(f"      {group_name:<{max_len}}  {train_size:>8}    {test_size:>8}")
-      self.pt.single_print(f"      {'TOTAL':<{max_len}}  {total_train:>8}    {total_test:>8}\n")
+        self.pt.single_print(f"    {group_name:<{max_len}}  {train_size:>8}    {test_size:>8}")
+      self.pt.single_print(f"    {'TOTAL':<{max_len}}  {total_train:>8}    {total_test:>8}")
 
     for config_idx in range(c0, c1):
       if self.has_charge:
@@ -380,16 +380,13 @@ class ADIOS2(Scraper):
       
       # Print globally exact shifts from Rank 0
       if self.rank == 0:
-        self.pt.single_print("\n" + "-"*60)
-        self.pt.single_print("Computed Exact Auto-ESHIFTS via Global Reduction (eV):")
-        for el, shift in self.eshift_dict.items(): self.pt.single_print(f"  {el}: {shift:.6f}")
-        self.pt.single_print("-" * 60 + "\n")
-        
+        self.pt.single_print("    AUTO_ESHIFT")
+        for el, shift in self.eshift_dict.items(): self.pt.single_print(f"    {el:4s} {shift:>.6f} eV")
+
       # Apply exact shifts to local configurations
       for config in self.data:
         shift_sum = sum(self.eshift_dict[atom] for atom in config['AtomTypes'])
         config['Energy'] -= shift_sum
-    # -----------------------------------------------
 
     n_loc = len(self.data)
     if self.pt.stubs == 0: n_tot = int(self.comm.allreduce(n_loc, op=MPI.SUM))
