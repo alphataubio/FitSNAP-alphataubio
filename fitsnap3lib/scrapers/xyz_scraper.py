@@ -391,6 +391,10 @@ class XYZ(Scraper):
                 testing_size = max(1, int(abs(testing_size) * nconfigs + 0.5))
             training_size = self._float_to_int(training_size)
             testing_size = self._float_to_int(testing_size)
+            # Fractional sizes are rounded independently; e.g. half + half with odd nconfigs
+            # can sum to nconfigs + 1. Cap so train + test fits the file.
+            training_size = min(training_size, nconfigs)
+            testing_size = min(testing_size, max(0, nconfigs - training_size))
             if nconfigs - testing_size - training_size < 0:
                 raise ValueError("training size: {} + testing size: {} is greater than files in folder: {}".format(
                     training_size, testing_size, nconfigs))
