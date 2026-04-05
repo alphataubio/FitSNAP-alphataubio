@@ -616,8 +616,8 @@ class ParallelTools():
             except:
                 pass
                 
-    def initialize_lammps(self, lammpslog=0, printlammps=0):
-        cmds = ["-screen", "none"]
+    def initialize_lammps(self, lammpslog=0, printlammps=0, cmds=["-screen", "none"]):
+
         if not lammpslog:
             cmds.append("-log")
             cmds.append("none")
