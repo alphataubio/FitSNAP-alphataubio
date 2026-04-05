@@ -194,6 +194,11 @@ class FitSnap:
     
     def __del__(self):
         """Override deletion statement to free shared arrays owned by this instance."""
+        try:
+            if getattr(self, "config", None) is not None and "OUTFILE" in self.config.sections:
+                self.config.sections["OUTFILE"].close_adios2_stream()
+        except Exception:
+            pass
         self.pt.free()
         del self
 
@@ -320,6 +325,8 @@ class FitSnap:
         fit_gather()
         error_analysis()
         validation_notebook()
+        if "OUTFILE" in self.config.sections:
+            self.config.sections["OUTFILE"].close_adios2_stream()
 
     def write_output(self):
         @self.pt.single_timeit

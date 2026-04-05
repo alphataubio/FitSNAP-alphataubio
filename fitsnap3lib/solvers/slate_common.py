@@ -363,6 +363,7 @@ class SlateCommon(Solver):
                     
                     stream.end_step()
                     stream.close()
+                    outfile_section.adios2_stream = None
 
         
         # Add metadata columns for local slice

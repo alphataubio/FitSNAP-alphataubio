@@ -60,6 +60,11 @@ def main():
         else:
             # If fs was never created, just raise the exception
             raise e
+    finally:
+        if fs is not None and getattr(fs, "config", None) is not None:
+            outfile = fs.config.sections.get("OUTFILE")
+            if outfile is not None:
+                outfile.close_adios2_stream()
 
 
 if __name__ == "__main__":

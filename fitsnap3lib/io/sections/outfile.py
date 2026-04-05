@@ -27,7 +27,8 @@ class Outfile(Section):
         self.metric_file = self.check_path(self.get_value("OUTFILE", "metrics", "fitsnap_metrics"))
         self.potential_name = self.check_path(self.get_value("OUTFILE", "potential", "fitsnap_potential"))
         self.validation = self.get_value("OUTFILE", "validation", 1)
-        
+
+        self.adios2_stream = None
         if self.validation and self.pt._rank == 0:
             from adios2 import Stream
             output_prefix = self.metric_file.replace('.md', '')
@@ -37,3 +38,14 @@ class Outfile(Section):
         self.metrics = self.metric_file
         self.potential = self.potential_name
         return
+
+    def close_adios2_stream(self):
+        """Close validation BP writer if open (safe if already closed or never opened)."""
+        stream = getattr(self, "adios2_stream", None)
+        if stream is None:
+            return
+        try:
+            stream.close()
+        except Exception:
+            pass
+        self.adios2_stream = None
