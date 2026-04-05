@@ -146,8 +146,15 @@ class ADIOS2(Scraper):
 
           self.has_forces = bool(int(np.asarray(s.read_attribute('has_forces')).reshape(-1)[0]))
           self.has_stress = bool(int(np.asarray(s.read_attribute('has_stress')).reshape(-1)[0]))
-          self.has_charge = bool(int(np.asarray(s.read_attribute('has_charge')).reshape(-1)[0]))
-          self.has_nbo_charges = bool(int(np.asarray(s.read_attribute('has_nbo_charges')).reshape(-1)[0]))
+          available_attributes = s.available_attributes()
+          if 'has_charge' in available_attributes:
+            self.has_charge = bool(int(np.asarray(s.read_attribute('has_charge')).reshape(-1)[0]))
+          else:
+            self.has_charge = False
+          if 'has_nbo_charges' in available_attributes:
+            self.has_nbo_charges = bool(int(np.asarray(s.read_attribute('has_nbo_charges')).reshape(-1)[0]))
+          else:
+            self.has_nbo_charges = False
 
           ug_str = str(s.read_attribute('unique_group_names')).strip('"\'')
           self.unique_group_names = [p for p in ug_str.split('|') if p]
@@ -389,7 +396,9 @@ class ADIOS2(Scraper):
         config['Energy'] -= shift_sum
 
     n_loc = len(self.data)
-    if self.pt.stubs == 0: n_tot = int(self.comm.allreduce(n_loc, op=MPI.SUM))
+    if self.pt.stubs == 0:
+      from mpi4py import MPI
+      n_tot = int(self.comm.allreduce(n_loc, op=MPI.SUM))
     else: n_tot = n_loc
     self.pt.add_2_fitsnap("nconfigs", n_tot)
 
