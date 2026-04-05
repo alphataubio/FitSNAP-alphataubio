@@ -5,7 +5,7 @@ from fitsnap3lib.io.sections.sections import Section
 
 class LammpsUf3(LammpsBase):
   """
-  LAMMPS Kokkos ``compute ... uf3/kk/host`` descriptors for UF3 linear ridge fitting.
+  LAMMPS ``compute ... uf3`` descriptors for UF3 linear ridge fitting.
   """
 
   def __init__(self, name, pt, config):
@@ -21,20 +21,28 @@ class LammpsUf3(LammpsBase):
     self._bzeroflag = uf3.bzeroflag
     self._template_path = uf3.template_uf3_path
     self._elem_args = uf3.potential_element_args
+    self._lammps_nbody = uf3.lammps_nbody
     self.pt.check_lammps()
 
   def get_width(self):
-    if self._bzeroflag:
-      return self._ncoeff
+    if self._bzeroflag: return self._ncoeff
     return self._ncoeff + self._numtypes
 
+  def _pre_box_kokkos_setup2(self):
+    self._lmp.command("newton off")
+    self._lmp.command("package kokkos neigh full newton off")
+
+  def _initialize_lammps(self, printlammps=0):
+    #cmds=["-screen", "none", "-k", "on", "t", "1", "-sf", "kk"]
+    cmds=["-screen", "none"]
+    self._lmp = self.pt.initialize_lammps(self.config.args.lammpslog, printlammps=0, cmds=cmds)
+
   def _set_box(self):
-    super()._set_box()
-    self._lmp.command("kspace_style pppm 1e-4")
+    self._set_box_helper(numtypes=self._numtypes)
+    #self._lmp.command("kspace_style pppm 1e-4")
 
   def _prepare_lammps(self):
     self._set_structure()
-    self._lmp.command("package kokkos neigh full")
     for line in self.config.sections["REFERENCE"].lmp_pairdecl:
       if "pair_coeff" in line:
         lower = " ".join([word.lower() for word in line.split()[:4]])
@@ -45,14 +53,36 @@ class LammpsUf3(LammpsBase):
     self._set_computes()
     self._set_neighbor_list()
 
+  def _set_neighbor_list(self):
+    self._lmp.command("mass * 1.0e-20")
+    #self._lmp.command("neighbor 1.0e-20 nsq")
+    self._lmp.command("neigh_modify one 10000")
+
+  def _create_atoms(self):
+    for i, (a_t, (a_x, a_y, a_z)) in enumerate(zip(self._data["AtomTypes"], self._data["Positions"])):
+      a_t = self._type_mapping[a_t]
+      self._lmp.command(f"create_atoms {a_t} single {a_x:20.20g} {a_y:20.20g} {a_z:20.20g} remap yes")
+    n_atoms = int(self._lmp.get_natoms())
+    assert i + 1 == n_atoms, "Atom counts don't match when creating atoms: {}, {}\nGroup and configuration: {} {}".format(i + 1, n_atoms, self._data["Group"],self._data["File"])
+
+  def _create_charge(self):
+    for i, q in enumerate(self._data["Charges"]): self._lmp.command(f"set atom {i + 1} charge {q:20.20g} ")
+    n_atoms = int(self._lmp.get_natoms())
+    assert i + 1 == n_atoms, "Atom counts don't match when assigning charge: {}, {}\nGroup and configuration: {} {}".format(i + 1, n_atoms, self._data["Group"],self._data["File"])
+
   def _set_computes(self):
     pot = self._template_path.replace("\\", "/")
     elems = self._elem_args
-    self._lmp.command("compute thermo_pe all pe")
-    self._lmp.command(f'compute uf3 all uf3/kk/host "{pot}" {elems}')
+    self._lmp.command(f"compute uf3 all uf3 {self._lammps_nbody} '{pot}' {elems}")
 
   def _collect_lammps(self):
     num_atoms = self._data["NumAtoms"]
+    n_lmp = int(self._lmp.get_natoms())
+    if n_lmp != num_atoms:
+      raise ValueError(
+        f"UF3: LAMMPS natoms ({n_lmp}) != data NumAtoms ({num_atoms}) for "
+        f"{self._data['Group']} {self._data['File']}"
+      )
     energy = self._data["Energy"]
     lmp_atom_ids = self._extract_atom_ids(num_atoms)
     lmp_volume = self._lmp.get_thermo("vol")
@@ -63,10 +93,8 @@ class LammpsUf3(LammpsBase):
     )
 
     nrows_energy = 1
-    ndim_force = 3
-    nrows_force = ndim_force * num_atoms
-    ndim_virial = 6
-    nrows_virial = ndim_virial
+    nrows_force = 3 * num_atoms
+    nrows_virial = 6
     nrows_uf3 = nrows_energy + nrows_force + nrows_virial
     ncols_descriptors = self._ncoeff
     ncols_reference = 1
@@ -74,10 +102,29 @@ class LammpsUf3(LammpsBase):
 
     index = self.shared_index
     dindex = self.distributed_index
-    lmp_uf3 = _extract_compute_np(self._lmp, "uf3", 0, 2, (nrows_uf3, ncols_uf3))
+    # Use numpy_wrapper path (array_shape=None); avoids mis-sized manual ctypes views.
+    raw = _extract_compute_np(self._lmp, "uf3", 0, 2, None)
+    lmp_uf3 = np.array(raw, dtype=float, copy=True, order="C")
+    if lmp_uf3.ndim == 1:
+      lmp_uf3 = lmp_uf3.reshape(nrows_uf3, ncols_uf3)
+    if lmp_uf3.shape != (nrows_uf3, ncols_uf3):
+      raise ValueError(
+        f"UF3 compute shape {lmp_uf3.shape} != expected ({nrows_uf3}, {ncols_uf3}). "
+        "Regenerate the template with [UF3] / [OUTFILE], rebuild LAMMPS, and match "
+        f"[UF3] ncoeff ({self._ncoeff}) to compute columns (2-body; plus 3-body if degree=3 "
+        f"and compute uses nbody 3)."
+      )
+
 
     if (np.isinf(lmp_uf3)).any() or (np.isnan(lmp_uf3)).any():
-      self.pt.single_print("! WARNING! applying np.nan_to_num()")
+      if not getattr(self, "_uf3_logged_nan_sanitize", False):
+        self.pt.single_print(
+          "[UF3] Non-finite values in compute uf3 array (first: "
+          f"{self._data['Group']} {self._data['File']}); nan_to_num applied. "
+          "Further configs: same issue, no repeat message. "
+          "Often: duplicate/overlapping atoms (r→0), or degenerate B-spline knots in .uf3."
+        )
+        self._uf3_logged_nan_sanitize = True
       lmp_uf3 = np.nan_to_num(lmp_uf3)
     if (np.isinf(lmp_uf3)).any() or (np.isnan(lmp_uf3)).any():
       raise ValueError(f"NaN in file {self._data['File']} of group {self._data['Group']}")
@@ -95,8 +142,7 @@ class LammpsUf3(LammpsBase):
       b_sum_temp = lmp_uf3[irow, :ncols_descriptors] / num_atoms
       if not self._bzeroflag:
         onehot_atoms = np.zeros(self._numtypes)
-        for atom in self._data["AtomTypes"]:
-          onehot_atoms[self._type_mapping[atom] - 1] += 1
+        for atom in self._data["AtomTypes"]: onehot_atoms[self._type_mapping[atom] - 1] += 1
         onehot_atoms /= len(self._data["AtomTypes"])
         b_sum_temp = np.concatenate((onehot_atoms, b_sum_temp), axis=0)
       self.pt.shared_arrays['a'].array[index] = b_sum_temp

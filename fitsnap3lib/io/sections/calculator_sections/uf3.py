@@ -1,31 +1,17 @@
 import json
-import os
-import importlib.util
 import numpy as np
 
 from fitsnap3lib.io.sections.sections import Section
-
-
-def _load_write_uf3_lammps_pot_files():
-  """Load write_uf3_lammps_pot_files from the uf3 package (pip or source tree)."""
-  try:
-    import uf3.representation.bspline as bsp
-    root = os.path.dirname(os.path.dirname(bsp.__file__))
-    path = os.path.abspath(os.path.join(root, "..", "lammps_plugin", "scripts", "generate_uf3_lammps_pots.py"))
-    if not os.path.isfile(path):
-      return None
-    spec = importlib.util.spec_from_file_location("_uf3_gen_uf3pots", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.write_uf3_lammps_pot_files
-  except Exception:
-    return None
+from fitsnap3lib.lib.uf3.generate_uf3_lammps_pots import write_uf3_lammps_pot_files
 
 
 class Uf3(Section):
   """
-  UF3 B-spline basis: builds ``BSplineBasis``, ``ncoeff``, type mapping, and writes
-  ``{OUTFILE.potential_name}.uf3`` (template) for LAMMPS ``compute ... uf3/kk/host``.
+  UF3 B-spline basis: builds ``BSplineBasis``, ``ncoeff``, type mapping, and (on first
+  access to ``template_uf3_path``) writes ``{OUTFILE potential}.uf3`` for LAMMPS
+  ``compute ... uf3``. Section order in the input file does not matter:
+  ``[OUTFILE]`` / ``[REFERENCE]`` are read from the parsed config, not from
+  ``Section.sections``.
   """
 
   def __init__(self, name, config, pt, infile, args):
@@ -53,18 +39,33 @@ class Uf3(Section):
       if key not in allowedkeys:
         raise RuntimeError(f"Unmatched variable in {sec} section of input: {key}")
 
-    from uf3.data.composition import ChemicalSystem
-    from uf3.representation.bspline import BSplineBasis
-    from uf3.util import json_io
+    from fitsnap3lib.lib.uf3.data.composition import ChemicalSystem
+    from fitsnap3lib.lib.uf3.representation.bspline import BSplineBasis
+    from fitsnap3lib.lib.uf3.util import json_io
 
     elements_str = self.get_value(sec, "elements", "Al Ni")
-    self.elements = elements_str.split()
-    self.numtypes = len(self.elements)
+    user_elements = elements_str.split()
     self.degree = self.get_value(sec, "degree", "2", "int")
-    if self.degree != 2:
-      raise RuntimeError("FitSNAP UF3 with compute uf3/kk supports degree = 2 only (2-body .uf3).")
+    if self.degree not in (2, 3):
+      raise RuntimeError(
+        "FitSNAP UF3: degree must be 2 (2-body .uf3 only) or 3 (2- and 3-body). "
+        f"Got degree = {self.degree}."
+      )
+    # LAMMPS ``pair_style uf3`` / ``compute uf3`` nbody: 2 or 3
+    self.lammps_nbody = 3 if self.degree > 2 else 2
 
-    self.chemical_system = ChemicalSystem(element_list=self.elements, degree=self.degree)
+    # ChemicalSystem sorts symbols (electronegativity / Z). LAMMPS ``compute uf3 E1 E2 ...`` maps
+    # type 1 -> first symbol, etc., and column order follows nested type loops (1,1)..(1,nt)..(nt,nt).
+    # BSpline partitions use the same sorted ``element_list``. Using the raw input order here
+    # desynchronizes A-matrix columns from BSpline 1-body / 2-body layout and destroys the fit.
+    self.chemical_system = ChemicalSystem(element_list=user_elements, degree=self.degree)
+    self.elements = list(self.chemical_system.element_list)
+    self.numtypes = len(self.elements)
+    if user_elements != self.elements:
+      self.pt.single_print(
+        "[UF3] Using canonical element order for LAMMPS types and BSpline partitions: "
+        + f"{' '.join(self.elements)} (input was: {' '.join(user_elements)})\n"
+      )
 
     fit_offsets = self.get_value(sec, "fit_offsets", "0", "bool")
     knot_strategy = self.get_value(sec, "knot_strategy", "linear")
@@ -109,18 +110,25 @@ class Uf3(Section):
       knots_map=knots_map,
     )
 
-    self.ncoeff = int(np.sum(self.bspline_basis.get_feature_partition_sizes()))
+    # get_feature_partition_sizes() = [1]*numtypes (composition / 1-body) then 2-body blocks
+    # (then 3-body if degree>2). LAMMPS ``compute uf3`` exposes 2-body columns, then 3-body
+    # (same total count as these spline blocks when nbody=3 and the template includes 3B).
+    _sizes = self.bspline_basis.get_feature_partition_sizes()
+    self.nfeats = int(np.sum(_sizes))
+    self.ncoeff = int(np.sum(_sizes[self.numtypes :]))
     self.fit_offsets = int(fit_offsets)
     self.bzeroflag = self.get_value(sec, "bzeroflag", "1", "bool")
     self.type_mapping = {el: i + 1 for i, el in enumerate(self.elements)}
+    self.potential_element_args = " ".join(self.elements)
+    self._uf3_template_abs_path = None
 
     self.pt.single_print(
       f"----------------------------------------------------------------\n"
-      f"  UF3 B-spline basis\n    elements {' '.join(self.elements)}  degree {self.degree}  ncoeff {self.ncoeff}\n"
+      f"  UF3 B-spline basis\n    elements {' '.join(self.elements)}  degree {self.degree}  "
+      f"LAMMPS nbody {self.lammps_nbody}  ncoeff {self.ncoeff} (descriptor cols); "
+      f"full_features {self.nfeats}\n"
       f"----------------------------------------------------------------\n"
     )
-
-    self._write_template_potential()
 
   @staticmethod
   def _parse_trim(val):
@@ -128,22 +136,31 @@ class Uf3(Section):
       return json.loads(val.replace("'", '"'))
     return int(val)
 
-  def _write_template_potential(self):
-    from uf3.regression.least_squares import WeightedLinearModel
+  @property
+  def template_uf3_path(self):
+    """Absolute path to the zero-coeff template ``.uf3`` (created lazily)."""
+    self._ensure_uf3_template()
+    return self._uf3_template_abs_path
+
+  def _ensure_uf3_template(self):
     from os import path
 
-    writer = _load_write_uf3_lammps_pot_files()
-    if writer is None:
+    if self._uf3_template_abs_path is not None:
+      return
+
+    from fitsnap3lib.lib.uf3.regression.least_squares import WeightedLinearModel
+
+    raw_pot = self.get_value("OUTFILE", "potential", None)
+    if raw_pot is None or str(raw_pot).strip() == "":
       raise RuntimeError(
-        "Could not load write_uf3_lammps_pot_files from uf3 (pip install uf3 or use a full source tree)."
+        "[UF3] needs [OUTFILE] potential = <basename> in the same input (any section order)."
       )
 
-    potential_name = Section.sections["OUTFILE"].potential_name
-    if not potential_name:
-      raise RuntimeError("OUTFILE potential is required for UF3 template path")
+    potential_base = self.check_path(str(raw_pot))
+    lammps_units = str(self.get_value("REFERENCE", "units", "metal")).lower()
 
     pot_dir = Section.get_outfile_directory(self)
-    fname = f"{potential_name}.uf3"
+    fname = f"{potential_base}-fit.uf3"
     out_path = path.join(pot_dir, fname) if pot_dir else fname
 
     model = WeightedLinearModel(bspline_config=self.bspline_basis)
@@ -151,18 +168,17 @@ class Uf3(Section):
 
     @self.pt.rank_zero
     def _write():
-      writer(
+      write_uf3_lammps_pot_files(
         chemical_sys=model.bspline_config.chemical_system,
         model=model,
         knots_spacing_type="nk",
         pot_dir=pot_dir or ".",
         uf3_lammps_pot_name=fname,
         author="FitSNAP",
-        lammps_units=Section.sections["REFERENCE"].units,
+        lammps_units=lammps_units,
       )
 
     _write()
     self.pt.all_barrier()
 
-    self.template_uf3_path = path.abspath(out_path)
-    self.potential_element_args = " ".join(self.elements)
+    self._uf3_template_abs_path = path.abspath(out_path)

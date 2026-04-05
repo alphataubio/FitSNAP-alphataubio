@@ -3,26 +3,16 @@ import numpy as np
 
 from fitsnap3lib.io.outputs.outputs import Output, optional_open
 from fitsnap3lib.io.sections.sections import Section
-
-
-def _load_write_uf3_lammps_pot_files():
-  try:
-    import importlib.util
-    import uf3.representation.bspline as bsp
-    root = os.path.dirname(os.path.dirname(bsp.__file__))
-    path = os.path.abspath(os.path.join(root, "..", "lammps_plugin", "scripts", "generate_uf3_lammps_pots.py"))
-    if not os.path.isfile(path):
-      return None
-    spec = importlib.util.spec_from_file_location("_uf3_gen_uf3pots_out", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.write_uf3_lammps_pot_files
-  except Exception:
-    return None
+from fitsnap3lib.lib.uf3.generate_uf3_lammps_pots import write_uf3_lammps_pot_files
 
 
 class Uf3(Output):
-  """Write UF3 ``model.json`` (via ``WeightedLinearModel.to_json``) and fitted ``.uf3``."""
+  """
+  Write UF3 ``model.json`` (via ``WeightedLinearModel.to_json``) and fitted ``.uf3``.
+
+  Supports ``[UF3] bzeroflag = 0`` (composition + 2-body columns in ``A``) and ``1``
+  (2-body columns only; 1-body slots in the exported vector are set to zero).
+  """
 
   def __init__(self, name, pt, config):
     super().__init__(name, pt, config)
@@ -47,25 +37,39 @@ class Uf3(Output):
     decorated_write()
 
   def write_lammps(self, coeffs):
-    from uf3.regression.least_squares import WeightedLinearModel
+    from fitsnap3lib.lib.uf3.regression.least_squares import WeightedLinearModel
 
     calc = self.config.sections["CALCULATOR"].calculator.upper()
     if calc != "LAMMPSUF3":
       raise TypeError("UF3 output style requires calculator LAMMPSUF3")
 
     uf3s = Section.sections["UF3"]
-    if not uf3s.bzeroflag:
-      raise NotImplementedError("UF3 output currently requires [UF3] bzeroflag = 1")
-
-    writer = _load_write_uf3_lammps_pot_files()
-    if writer is None:
-      raise RuntimeError("Could not load write_uf3_lammps_pot_files from the uf3 package.")
-
     model = WeightedLinearModel(bspline_config=uf3s.bspline_basis)
-    c = np.asarray(coeffs).ravel()
-    if c.size < model.n_feats:
-      raise ValueError(f"Expected at least {model.n_feats} coefficients, got {c.size}")
-    model.coefficients = c[: model.n_feats]
+    c = np.asarray(coeffs, dtype=float).ravel()
+    nt = uf3s.numtypes
+    n2 = uf3s.ncoeff
+    ntot = uf3s.nfeats
+    if ntot != nt + n2:
+      raise RuntimeError(f"UF3 nfeats ({ntot}) != numtypes ({nt}) + ncoeff ({n2})")
+
+    if uf3s.bzeroflag:
+      # Design matrix has only LAMMPS spline columns (2-body; plus 3-body if degree>2); 1-body implicit.
+      if c.size < n2:
+        raise ValueError(
+          f"UF3 bzeroflag=1: expected at least {n2} fitted spline coefficients, got {c.size}"
+        )
+      full = np.zeros(ntot, dtype=float)
+      full[nt:] = c[:n2]
+      model.coefficients = full
+    else:
+      # Design matrix is [composition, spline columns] — same order as BSplineBasis partition_sizes
+      # (1 per element, then 2-body blocks, then 3-body if degree>2).
+      if c.size < ntot:
+        raise ValueError(
+          f"UF3 bzeroflag=0: expected at least {ntot} coefficients "
+          f"({nt} composition + {n2} 2-body), got {c.size}"
+        )
+      model.coefficients = c[:ntot].copy()
 
     outsec = Section.sections["OUTFILE"]
     potential_name = outsec.potential_name
@@ -75,7 +79,7 @@ class Uf3(Output):
     json_path = os.path.join(odir, f"{potential_name}_model.json")
     model.to_json(json_path)
 
-    writer(
+    write_uf3_lammps_pot_files(
       chemical_sys=model.bspline_config.chemical_system,
       model=model,
       knots_spacing_type="nk",
@@ -87,6 +91,9 @@ class Uf3(Output):
 
     coeff_path = os.path.join(odir, f"{potential_name}.uf3coeff")
     with optional_open(coeff_path, "wt") as fp:
-      fp.write(f"# FitSNAP UF3 linear fit coefficients (flattened, length {model.n_feats})\n")
-      for i, v in enumerate(model.coefficients):
+      fp.write(
+        f"# FitSNAP UF3 linear fit coefficients (flattened, length {model.n_feats}; "
+        f"bzeroflag={int(uf3s.bzeroflag)})\n"
+      )
+      for i, v in enumerate(np.asarray(model.coefficients).ravel()):
         fp.write(f"{v:.18g}\n")

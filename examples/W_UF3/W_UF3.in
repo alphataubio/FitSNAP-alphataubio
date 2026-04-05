@@ -1,0 +1,81 @@
+
+
+# -----------------------------------------------------------------------------
+[UF3]
+
+elements = W
+degree = 2
+knot_strategy = linear
+r_min = 1.0
+r_max = 5.5
+resolution = 8
+trailing_trim = 3
+fit_offsets = 0
+bzeroflag = 1
+
+
+# -----------------------------------------------------------------------------
+[CALCULATOR]
+calculator = LAMMPSUF3
+energy = 1
+force  = 1
+stress = 0
+
+
+# -----------------------------------------------------------------------------
+[SOLVER]
+solver = SLATE
+compute_testerrs = 1
+
+
+# -----------------------------------------------------------------------------
+[SLATE]
+method = RIDGE
+alpha = 1e-6
+
+
+# -----------------------------------------------------------------------------
+[SCRAPER]
+scraper = xyz
+
+[PATH]
+dataPath = XYZ
+
+
+# -----------------------------------------------------------------------------
+[REFERENCE]
+units = metal
+atom_style = atomic
+pair_style = zero 6.842222
+pair_coeff = * *
+
+
+# -----------------------------------------------------------------------------
+[OUTFILE]
+output_style = UF3
+metrics = W_UF3.md
+potential = W_UF3
+validation = 1
+
+# -----------------------------------------------------------------------------
+[GROUPS]
+
+# NOTE: training_size and testing_size are not specified since omat24 dataset
+# already provides training/validation split in separate train/val archives.
+# [https://huggingface.co/datasets/facebook/OMAT24]
+
+group_sections  = name training_size testing_size eweight fweight vweight
+group_types     = str  float         float        float   float   float
+smartweights    = 0
+random_sampling = 0
+W_14            =      0.5           0.5          0.8     0.2     1e-12
+
+
+# -----------------------------------------------------------------------------
+[EXTRAS]
+dump_descriptors = 0
+dump_truth = 0
+dump_weights = 0
+debug = 0
+
+# -----------------------------------------------------------------------------
