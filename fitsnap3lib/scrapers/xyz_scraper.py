@@ -431,6 +431,9 @@ class XYZ(Scraper):
 
         pt = self.pt
         config = self.config
+        max_configs_per_rank = self.config.sections["SCRAPER"].max_configs_per_rank
+        if max_configs_per_rank is not None: self.configs = self.configs[:max_configs_per_rank]
+
         for folder_num, folder in enumerate(self.files):
             filename = self.files[folder][0]
             with open(filename) as file:
