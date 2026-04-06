@@ -5,6 +5,10 @@ import json
 import numpy as np
 from datetime import datetime
 
+from fitsnap3lib.lib.uf3.data.composition import ChemicalSystem
+from fitsnap3lib.lib.uf3.regression import least_squares
+from fitsnap3lib.lib.uf3.representation.bspline import BSplineBasis
+from fitsnap3lib.lib.uf3.util import json_io
 
 class Uf3(Section):
   """
@@ -19,7 +23,7 @@ class Uf3(Section):
     super().__init__(name, config, pt, infile, args)
 
     allowedkeys = [
-      "elements",
+      "type",
       "degree",
       "knot_strategy",
       "r_min",
@@ -29,8 +33,6 @@ class Uf3(Section):
       "r_max_map_json",
       "resolution_map_json",
       "knots_map_json",
-      "leading_trim",
-      "trailing_trim",
       "bzeroflag",
     ]
 
@@ -39,11 +41,7 @@ class Uf3(Section):
       if key not in allowedkeys:
         raise RuntimeError(f"Unmatched variable in {sec} section of input: {key}")
 
-    from fitsnap3lib.lib.uf3.data.composition import ChemicalSystem
-    from fitsnap3lib.lib.uf3.representation.bspline import BSplineBasis
-    from fitsnap3lib.lib.uf3.util import json_io
-
-    elements_str = self.get_value(sec, "elements", "Al Ni")
+    elements_str = self.get_value(sec, "type", "Al Ni")
     user_elements = elements_str.split()
     self.degree = self.get_value(sec, "degree", "2", "int")
     if self.degree not in (2, 3):
@@ -59,12 +57,12 @@ class Uf3(Section):
     # BSpline partitions use the same sorted ``element_list``. Using the raw input order here
     # desynchronizes A-matrix columns from BSpline 1-body / 2-body layout and destroys the fit.
     self.chemical_system = ChemicalSystem(element_list=user_elements, degree=self.degree)
-    self.elements = list(self.chemical_system.element_list)
-    self.numtypes = len(self.elements)
-    if user_elements != self.elements:
+    self.type = list(self.chemical_system.element_list)
+    self.numtypes = len(self.type)
+    if user_elements != self.type:
       self.pt.single_print(
         "[UF3] Using canonical element order for LAMMPS types and BSpline partitions: "
-        + f"{' '.join(self.elements)} (input was: {' '.join(user_elements)})\n"
+        + f"{' '.join(self.type)} (input was: {' '.join(user_elements)})\n"
       )
 
     knot_strategy = self.get_value(sec, "knot_strategy", "linear")
@@ -89,13 +87,7 @@ class Uf3(Section):
       res = int(self._config.get(sec, "resolution"))
       resolution_map = {t: res for t in self.chemical_system.interactions_map[2]}
 
-    lt = tt = None
-    if self._config.has_option(sec, "leading_trim"):
-      lt = self._parse_trim(self._config.get(sec, "leading_trim"))
-    if self._config.has_option(sec, "trailing_trim"):
-      tt = self._parse_trim(self._config.get(sec, "trailing_trim"))
-    if tt is None:
-      tt = 3
+    self.bzeroflag = self.get_value(sec, "bzeroflag", "1", "bool")
 
     self.bspline_basis = BSplineBasis(
       self.chemical_system,
@@ -103,7 +95,7 @@ class Uf3(Section):
       r_max_map=r_max_map,
       resolution_map=resolution_map,
       knot_strategy=knot_strategy,
-      offset_1b=bool(not bzeroflag),
+      offset_1b=bool(not self.bzeroflag),
       leading_trim=0,
       trailing_trim=3,
       knots_map=knots_map,
@@ -115,16 +107,15 @@ class Uf3(Section):
     _sizes = self.bspline_basis.get_feature_partition_sizes()
     self.nfeats = int(np.sum(_sizes))
     self.ncoeff = int(np.sum(_sizes[self.numtypes :]))
-    self.bzeroflag = self.get_value(sec, "bzeroflag", "1", "bool")
-    self.type_mapping = {el: i + 1 for i, el in enumerate(self.elements)}
-    self.potential_element_args = " ".join(self.elements)
+    self.type_mapping = {el: i + 1 for i, el in enumerate(self.type)}
+    self.potential_element_args = " ".join(self.type)
     self._uf3_template_abs_path = None
 
     self.pt.single_print(
       f"----------------------------------------------------------------\n"
-      f"  UF3 B-spline basis\n    elements {' '.join(self.elements)}  degree {self.degree}  "
-      f"LAMMPS nbody {self.lammps_nbody}  ncoeff {self.ncoeff} (descriptor cols); "
-      f"full_features {self.nfeats}\n"
+      f"  UF3 B-spline basis                                            \n"
+      f"    elements {' '.join(self.type)} degree {self.degree}         \n"
+      f"    ncoeff {self.ncoeff} (descriptor cols) full_features {self.nfeats}\n"
       f"----------------------------------------------------------------\n"
     )
 
@@ -155,7 +146,6 @@ class Uf3(Section):
       )
 
     potential_base = self.check_path(str(raw_pot))
-    lammps_units = str(self.get_value("REFERENCE", "units", "metal")).lower()
 
     # check_path() is outfile_dir + basename; writer expects (directory, filename only).
     out_path = f"{potential_base}-fit.uf3"
@@ -167,21 +157,13 @@ class Uf3(Section):
 
     @self.pt.rank_zero
     def _write():
-      self.write_uf3_lammps_pot(
-        chemical_sys=model.bspline_config.chemical_system,
-        model=model,
-        knots_spacing_type="nk",
-        path=write_fname,
-        lammps_units=lammps_units,
-      )
+      self.write_uf3_lammps_pot(model.bspline_config.chemical_system, model, write_fname )
 
     _write()
     self.pt.all_barrier()
-
     self._uf3_template_abs_path = path.abspath(out_path)
 
-
-  def write_uf3_lammps_pot(self, chemical_sys, model, knots_spacing_type, path, lammps_units):
+  def write_uf3_lammps_pot(self, chemical_sys, model, path, knots_spacing_type="nk" ):
     """Returns list
 
     Creates and writes UF3 lammps potential files. Takes UF3 composition object,
@@ -194,10 +176,23 @@ class Uf3(Section):
     author = "FitSNAP"
     leading_trim = 0
     trailing_trim = 3
+    lammps_units = str(self.get_value("REFERENCE", "units", "metal")).lower()
+
+    self.basis_ranks = []
+    self.blist = []
 
     with open(path, "w") as pot:
 
       for interaction in chemical_sys.interactions_map[2]:
+
+        knots_2b = model.bspline_config.knots_map[interaction]
+        self.pt.all_print(f"*** bspline_config {model.bspline_config} interaction {interaction} knots_2b {knots_2b}")
+        length = model.bspline_config.get_interaction_partitions()[0][interaction]
+        start_idx = model.bspline_config.get_interaction_partitions()[1][interaction]
+        end_idx = start_idx + length
+        self.basis_ranks.extend([2] * length)
+        self.blist.extend([f"{interaction[0]} {interaction[1]} {knot}" for knot in knots_2b[start_idx:end_idx]])
+
         pot.write(f"#UF3 POT UNITS: {lammps_units} DATE: {current_datetime} AUTHOR: {author} CITATION:\n")
         pot.write(f"2B {interaction[0]} {interaction[1]} {leading_trim} {trailing_trim}")
         if knots_spacing_type == "uk": pot.write(" uk\n")
@@ -205,12 +200,10 @@ class Uf3(Section):
         else: raise ValueError(f"Knot spacing type {knots_spacing_type} not uk or nk")
         pot.write(f"{model.bspline_config.r_max_map[interaction]} ")
         pot.write(f"{len(model.bspline_config.knots_map[interaction])}\n")
-        pot.write(" ".join([f'{v:.17g}' for v in model.bspline_config.knots_map[interaction]]) + "\n")
+        pot.write(" ".join([f'{v:.17g}' for v in knots_2b]) + "\n")
         pot.write(f"{model.bspline_config.get_interaction_partitions()[0][interaction]}\n")
-        start_index = model.bspline_config.get_interaction_partitions()[1][interaction]
-        length = model.bspline_config.get_interaction_partitions()[0][interaction]
         #pot.write(" ".join([f'{v:.17g}' for v in model.coefficients[start_index:start_index + length]]) + "\n")
-        pot.write(" ".join([f'1' for v in model.coefficients[start_index:start_index + length]]) + "\n")
+        pot.write(" ".join([f'1' for v in model.coefficients[start_idx:end_idx]]) + "\n")
         pot.write("#\n")
 
       if 3 in model.bspline_config.interactions_map:
@@ -226,14 +219,14 @@ class Uf3(Section):
           pot.write(f"{len(model.bspline_config.knots_map[interaction][2])} ")
           pot.write(f"{len(model.bspline_config.knots_map[interaction][1])} ")
           pot.write(f"{len(model.bspline_config.knots_map[interaction][0])} \n")
-          pot.write(" ".join(['{v:.17g}' for v in model.bspline_config.knots_map[interaction][2]]) + "\n")
-          pot.write(" ".join(['{v:.17g}' for v in model.bspline_config.knots_map[interaction][1]]) + "\n")
-          pot.write(" ".join(['{v:.17g}' for v in model.bspline_config.knots_map[interaction][0]]) + "\n")
+          pot.write(" ".join([f'{v:.17g}' for v in model.bspline_config.knots_map[interaction][2]]) + "\n")
+          pot.write(" ".join([f'{v:.17g}' for v in model.bspline_config.knots_map[interaction][1]]) + "\n")
+          pot.write(" ".join([f'{v:.17g}' for v in model.bspline_config.knots_map[interaction][0]]) + "\n")
 
           solutions = least_squares.arrange_coefficients(model.coefficients, model.bspline_config)
           decompressed = model.bspline_config.decompress_3B( \
-            solutions[(interaction[0], interaction[1],interaction[2])], \
-            (interaction[0], interaction[1],interaction[2]))
+            solutions[(interaction[0], interaction[1], interaction[2])], \
+            (interaction[0], interaction[1], interaction[2]))
 
           pot.write(f"{decompressed.shape[0]} {decompressed.shape[1]} {decompressed.shape[2]}\n")
           for i in range(decompressed.shape[0]):
