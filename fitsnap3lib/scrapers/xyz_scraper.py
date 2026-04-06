@@ -282,6 +282,8 @@ class XYZ(Scraper):
         # Reset as empty dict in case running scrape twice.
         self.files = {}
         self.configs = {}
+        nconfigs = 0
+        group_names = []
 
         pt = self.pt
         config = self.config
@@ -309,6 +311,7 @@ class XYZ(Scraper):
         for key in self.group_table:
             bc_bool = False
             training_size = None
+            group_names.append(key)
             if 'size' in self.group_table[key]:
                 training_size = self.group_table[key]['size']
                 bc_bool = True
@@ -410,6 +413,13 @@ class XYZ(Scraper):
             self.group_table[key]['training_size'] = training_size
             self.group_table[key]['testing_size'] = testing_size
             # self.files[folder] = natsorted(self.files[folder])
+
+            nconfigs += training_size
+            nconfigs += testing_size
+
+        self.pt.add_2_fitsnap("nconfigs", nconfigs)
+        self.pt.add_2_fitsnap("sorted_group_names", sorted(group_names))
+
 
     def scrape_configs(self):
         """
