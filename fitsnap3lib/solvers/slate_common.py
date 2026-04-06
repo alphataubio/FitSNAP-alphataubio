@@ -113,11 +113,15 @@ class SlateCommon(Solver):
                     stream.write_attribute('basis_ranks', ctilde_basis.basis_ranks)
                     stream.write_attribute('blist', ctilde_basis.blist)
         
-        if self.method.upper() == "ARD":
-            self.perform_fit_ard()
-        else:
-            self.perform_fit_ridge()
-    
+            # Get rank information from PYACE basis if available
+            if "UF3" in self.config.sections:
+                uf3_section = self.config.sections["UF3"]
+                stream.write_attribute('basis_ranks', uf3_section.basis_ranks)
+                stream.write_attribute('blist', uf3_section.blist)
+        
+        if self.method.upper() == "ARD": self.perform_fit_ard()
+        else: self.perform_fit_ridge()
+
     # --------------------------------------------------------------------------------------------
 
     def perform_fit_ridge(self):
@@ -197,13 +201,6 @@ class SlateCommon(Solver):
         pt.sub_barrier() # make sure all sub ranks done filling local tiles
         m = aw.shape[0] * self.pt._number_of_nodes # global matrix total rows
         lld = aw.shape[0]  # local leading dimension column-major shared array
-        
-        if False:
-            for i in range(lld):
-                for j in range(n):
-                    aw[i,j] = (pt._node_index*lld + i)*10 + j
-                    if pt._node_index>0:
-                        aw[i,j] = -aw[i,j]
                     
         np.set_printoptions(precision=3, suppress=True, floatmode='fixed', linewidth=np.inf)
         if False and self.config.debug:
@@ -213,24 +210,16 @@ class SlateCommon(Solver):
                          f"--------------------------------\n")
                      
         # Determine debug flag from EXTRAS section
-        debug_flag = 0
-        if self.config.debug:
-            debug_flag = 1
-            
+        debug_flag = 1 if self.config.debug else 0
+
         # This rank is head of its node
         if pt._sub_rank == 0:
-        
             # Select the correct communicator (Single Node vs Multi-Node)
-            if pt._number_of_nodes > 1:
-                comm = pt._head_group_comm
-            else:
-                comm = pt.MPI.COMM_SELF
-
+            if pt._number_of_nodes > 1: comm = pt._head_group_comm
+            else: comm = pt.MPI.COMM_SELF
             # Thread count = Total Ranks on Node (since other ranks are sleeping)
             set_openmp_threads(pt._sub_size, self.config.debug)
-
             slate_ridge_augmented_qr_cython(aw, bw, m, lld, comm, debug_flag)
-
             # Broadcast solution from Node 0 to all nodes via head ranks
             pt._head_group_comm.Bcast(bw[:n], root=0)
         
@@ -267,26 +256,19 @@ class SlateCommon(Solver):
         """
 
         pt = self.pt
-        
-        if self.fit is None:
-            return
-            
+        if self.fit is None: return
         # a, b, w are unchanged from original data (only aw, bw were modified by SLATE)
         fs_dict = pt.fitsnap_dict
-        
         # Create DataFrame like the legacy solver does
         from pandas import DataFrame
-        
         # Use only local slice (excluding regularization rows) for error analysis
         start_idx, end_idx = pt.fitsnap_dict["sub_a_indices"]
         local_slice = slice(start_idx, end_idx+1)
         local_a = pt.shared_arrays['a'].array[local_slice]
         local_b = pt.shared_arrays['b'].array[local_slice]
         local_w = pt.shared_arrays['w'].array[local_slice]
-        
         df_local = DataFrame(local_a)
         df_local['truths'] = local_b.tolist()
-        
         # Check for numerical issues before prediction
         if np.any(np.isnan(local_a)) or np.any(np.isinf(local_a)):
             self.pt.single_print(f"WARNING: NaN or Inf found in descriptor matrix (local_a)")
@@ -351,14 +333,11 @@ class SlateCommon(Solver):
                                     # Get predictions and truths for this subset
                                     subset_preds = preds_flat[mask]
                                     subset_truths = truths_flat[mask]
-                                    
                                     # Stack into (n_points, 2) array: [predictions, truths]
                                     data_array = np.column_stack([subset_truths, subset_preds]).astype(np.float32)
-                                    
                                     # Variable name: energy_0_training, forces_1_testing, etc.
                                     testing_str = "testing" if testing_flag else "training"
                                     var_name = f"{row_type_lower}_{group_idx}_{testing_str}"
-                                    
                                     stream.write(var_name, data_array, count=data_array.shape)
                     
                     stream.end_step()
@@ -373,13 +352,10 @@ class SlateCommon(Solver):
                 df_local[key] = local_values
             else:
                 # Set defaults
-                if key == 'Groups':
-                    df_local[key] = ['*ALL'] * len(df_local)
-                elif key == 'Testing':
-                    df_local[key] = [False] * len(df_local)
-                elif key == 'Row_Type':
-                    df_local[key] = ['Energy'] * len(df_local)
-        
+                if key == 'Groups': df_local[key] = ['*ALL'] * len(df_local)
+                elif key == 'Testing': df_local[key] = [False] * len(df_local)
+                elif key == 'Row_Type': df_local[key] = ['Energy'] * len(df_local)
+
         # Compute local group sums
         local_group_data = self._compute_local_group_sums_from_df(df_local)
                 
@@ -389,10 +365,8 @@ class SlateCommon(Solver):
         if pt._rank == 0:
             # Merge all group data on rank 0
             global_group_data = self._merge_group_data(all_group_data)
-            
             # Add '*ALL' groups by aggregating
             global_group_data_with_all = self._add_all_groups_to_global_data(global_group_data)
-            
             # Broadcast merged data to all ranks for two-pass R² calculation
             global_group_data_with_all = pt._comm.bcast(global_group_data_with_all, root=0)
         else:
@@ -401,11 +375,9 @@ class SlateCommon(Solver):
         # Two-pass algorithm for exact R² calculation
         final_results = self._compute_final_metrics_twopass(global_group_data_with_all, df_local, pt._comm)
         
-        if pt._rank == 0:
-            self._format_results_as_dataframe(final_results)
-        else:
-            self.errors = []
-    
+        if pt._rank == 0: self._format_results_as_dataframe(final_results)
+        else: self.errors = []
+
     # --------------------------------------------------------------------------------------------
 
     def _merge_group_data(self, all_group_data):
@@ -451,25 +423,18 @@ class SlateCommon(Solver):
         
         for _, row in df_local.iterrows():
             group_key = (row['Groups'], row['Testing'], row['Row_Type'])
-            
-            if self.config.sections["REFERENCE"].units == "metal":
-                factor = 1000.0   # eV -> meV
-            else:
-                factor = 1.0
-            
+            if self.config.sections["REFERENCE"].units == "metal": factor = 1000.0   # eV -> meV
+            else: factor = 1.0
             weight = row['weights']
             truth = factor * row['truths']
             pred = factor * row['preds']
-            
             stats = local_group_data[group_key]
             stats['n'] += 1
-            
             # Weighted sums
             stats['sum_weights'] += weight
             stats['sum_truths_weighted'] += weight * truth
             stats['sum_ae'] += weight * abs(truth - pred)
             stats['sum_se'] += weight * (truth - pred)**2
-            
             # Unweighted sums (ignore weights entirely)
             stats['sum_truths_unweighted'] += truth
             stats['sum_ae_unweighted'] += abs(truth - pred)
@@ -501,10 +466,8 @@ class SlateCommon(Solver):
                 global_means_unweighted[group_key] = 0.0
         
         # Determine conversion factor (same as in _compute_local_group_sums_from_df)
-        if self.config.sections["REFERENCE"].units == "metal":
-            factor = 1000.0   # eV -> meV
-        else:
-            factor = 1.0
+        if self.config.sections["REFERENCE"].units == "metal": factor = 1000.0   # eV -> meV
+        else: factor = 1.0
         
         # Pass 2: Compute local SS_tot contributions using global means
         local_ss_tot_weighted = {}
@@ -519,14 +482,12 @@ class SlateCommon(Solver):
                 
                 # Weighted SS_tot for individual group
                 weighted_mean = global_means_weighted[group_key]
-                if group_key not in local_ss_tot_weighted:
-                    local_ss_tot_weighted[group_key] = 0.0
+                if group_key not in local_ss_tot_weighted: local_ss_tot_weighted[group_key] = 0.0
                 local_ss_tot_weighted[group_key] += weight * (truth - weighted_mean)**2
                 
                 # Unweighted SS_tot for individual group
                 unweighted_mean = global_means_unweighted[group_key]
-                if group_key not in local_ss_tot_unweighted:
-                    local_ss_tot_unweighted[group_key] = 0.0
+                if group_key not in local_ss_tot_unweighted: local_ss_tot_unweighted[group_key] = 0.0
                 local_ss_tot_unweighted[group_key] += (truth - unweighted_mean)**2
                 
                 # Also contribute to "*ALL" groups (but avoid double-counting when group_key is already '*ALL')
@@ -535,14 +496,12 @@ class SlateCommon(Solver):
                 if all_key in global_means_weighted and group_key != all_key:
                     # Weighted SS_tot for *ALL group
                     all_weighted_mean = global_means_weighted[all_key]
-                    if all_key not in local_ss_tot_weighted:
-                        local_ss_tot_weighted[all_key] = 0.0
+                    if all_key not in local_ss_tot_weighted: local_ss_tot_weighted[all_key] = 0.0
                     local_ss_tot_weighted[all_key] += weight * (truth - all_weighted_mean)**2
                     
                     # Unweighted SS_tot for *ALL group
                     all_unweighted_mean = global_means_unweighted[all_key]
-                    if all_key not in local_ss_tot_unweighted:
-                        local_ss_tot_unweighted[all_key] = 0.0
+                    if all_key not in local_ss_tot_unweighted: local_ss_tot_unweighted[all_key] = 0.0
                     local_ss_tot_unweighted[all_key] += (truth - all_unweighted_mean)**2
         
         # Gather local SS_tot to rank 0 and reduce
@@ -560,12 +519,10 @@ class SlateCommon(Solver):
                 print("\n=== DEBUG: SS_tot contributions ===")
                 for i, local_dict in enumerate(all_ss_tot_weighted):
                     for key, value in local_dict.items():
-                        if 'Stress' in str(key):
-                            print(f"Rank {i}, {key}: SS_tot_weighted = {value}")
+                        if 'Stress' in str(key): print(f"Rank {i}, {key}: SS_tot_weighted = {value}")
                 for i, local_dict in enumerate(all_ss_tot_unweighted):
                     for key, value in local_dict.items():
-                        if 'Stress' in str(key):
-                            print(f"Rank {i}, {key}: SS_tot_unweighted = {value}")
+                        if 'Stress' in str(key): print(f"Rank {i}, {key}: SS_tot_unweighted = {value}")
                 print("==================================\n")
             
             for local_dict in all_ss_tot_weighted:
@@ -636,7 +593,6 @@ class SlateCommon(Solver):
             unweighted_mae = result['unweighted_mae']
             unweighted_rmse = result['unweighted_rmse']
             unweighted_rsq = result['unweighted_rsq']
-            
             weighted_mae = result['weighted_mae']
             weighted_rmse = result['weighted_rmse']
             weighted_rsq = result['weighted_rsq']
@@ -644,35 +600,31 @@ class SlateCommon(Solver):
             # Add both versions with proper indexing
             testing_str = 'Testing' if group_key[1] else 'Training'
             
-            formatted_results.extend([
-                {
-                    'Groups': group_key[0],
-                    'Weighting': 'Unweighted', 
-                    'Testing': testing_str,
-                    'Row_Type': group_key[2],
-                    'ncount': result['ncount'],
-                    'mae': unweighted_mae,
-                    'rmse': unweighted_rmse,
-                    'rsq': unweighted_rsq
-                },
-                {
-                    'Groups': group_key[0],
-                    'Weighting': 'weighted',
-                    'Testing': testing_str, 
-                    'Row_Type': group_key[2],
-                    'ncount': result['ncount'],
-                    'mae': weighted_mae,
-                    'rmse': weighted_rmse,
-                    'rsq': weighted_rsq
-                }
-            ])
+            formatted_results.extend([{
+                'Groups': group_key[0],
+                'Weighting': 'Unweighted',
+                'Testing': testing_str,
+                'Row_Type': group_key[2],
+                'ncount': result['ncount'],
+                'mae': unweighted_mae,
+                'rmse': unweighted_rmse,
+                'rsq': unweighted_rsq
+              },{
+                'Groups': group_key[0],
+                'Weighting': 'weighted',
+                'Testing': testing_str,
+                'Row_Type': group_key[2],
+                'ncount': result['ncount'],
+                'mae': weighted_mae,
+                'rmse': weighted_rmse,
+                'rsq': weighted_rsq
+              }])
         
         # Convert to DataFrame with proper MultiIndex
         df = DataFrame(formatted_results)
         if not df.empty:
             df = df.set_index(['Groups', 'Weighting', 'Testing', 'Row_Type']).sort_index()
             df.index.rename(["Group", "Weighting", "Testing", "Subsystem"], inplace=True)
-        
         self.errors = df
   
     # --------------------------------------------------------------------------------------------
@@ -685,9 +637,8 @@ class SlateCommon(Solver):
         
         for group_key, stats in global_group_data.items():
             # Skip if already an '*ALL' group
-            if group_key[0] == '*ALL':
-                continue
-                
+            if group_key[0] == '*ALL': continue
+
             # Create aggregation key: replace Groups with '*ALL'
             agg_key = ('*ALL',) + group_key[1:]
             
