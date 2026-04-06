@@ -94,38 +94,21 @@ class LammpsUf3(LammpsBase):
 
     nrows_energy = 1
     nrows_force = 3 * num_atoms
-    nrows_virial = 6
+    nrows_virial = 6 if self.config.sections["CALCULATOR"].stress else 0
     nrows_uf3 = nrows_energy + nrows_force + nrows_virial
     ncols_descriptors = self._ncoeff
-    ncols_reference = 1
-    ncols_uf3 = ncols_descriptors + ncols_reference
-
+    ncols_uf3 = ncols_descriptors + 1
     index = self.shared_index
     dindex = self.distributed_index
-    # Use numpy_wrapper path (array_shape=None); avoids mis-sized manual ctypes views.
-    raw = _extract_compute_np(self._lmp, "uf3", 0, 2, None)
-    lmp_uf3 = np.array(raw, dtype=float, copy=True, order="C")
-    if lmp_uf3.ndim == 1:
-      lmp_uf3 = lmp_uf3.reshape(nrows_uf3, ncols_uf3)
-    if lmp_uf3.shape != (nrows_uf3, ncols_uf3):
-      raise ValueError(
-        f"UF3 compute shape {lmp_uf3.shape} != expected ({nrows_uf3}, {ncols_uf3}). "
-        "Regenerate the template with [UF3] / [OUTFILE], rebuild LAMMPS, and match "
-        f"[UF3] ncoeff ({self._ncoeff}) to compute columns (2-body; plus 3-body if degree=3 "
-        f"and compute uses nbody 3)."
-      )
 
+    lmp_uf3 = _extract_compute_np(self._lmp, "uf3", 0, 2, (nrows_uf3, ncols_uf3))
 
-    if (np.isinf(lmp_uf3)).any() or (np.isnan(lmp_uf3)).any():
-      if not getattr(self, "_uf3_logged_nan_sanitize", False):
-        self.pt.single_print(
-          "[UF3] Non-finite values in compute uf3 array (first: "
-          f"{self._data['Group']} {self._data['File']}); nan_to_num applied. "
-          "Further configs: same issue, no repeat message. "
-          "Often: duplicate/overlapping atoms (r→0), or degenerate B-spline knots in .uf3."
-        )
-        self._uf3_logged_nan_sanitize = True
-      lmp_uf3 = np.nan_to_num(lmp_uf3)
+    np.set_printoptions(
+        precision=4, suppress=False, floatmode='fixed', linewidth=np.inf,
+        formatter={'float': '{:.6f}'.format}, threshold = 800, edgeitems=50
+    )
+    self.pt.all_print(f"\n*** lmp_uf3 {lmp_uf3.shape}\n{lmp_uf3[:200]}\n");
+
     if (np.isinf(lmp_uf3)).any() or (np.isnan(lmp_uf3)).any():
       raise ValueError(f"NaN in file {self._data['File']} of group {self._data['Group']}")
 
@@ -157,9 +140,9 @@ class LammpsUf3(LammpsBase):
     irow += nrows_energy
 
     if self.config.sections["CALCULATOR"].force:
-      s = slice(index, index + num_atoms * ndim_force)
+      s = slice(index, index + 3*num_atoms)
       db_atom_temp = lmp_uf3[irow:irow + nrows_force, :ncols_descriptors]
-      db_atom_temp.shape = (num_atoms * ndim_force, self._ncoeff)
+      db_atom_temp.shape = (3*num_atoms, self._ncoeff)
       if not self._bzeroflag:
         onehot_atoms = np.zeros((db_atom_temp.shape[0], self._numtypes))
         db_atom_temp = np.concatenate([onehot_atoms, db_atom_temp], axis=1)
