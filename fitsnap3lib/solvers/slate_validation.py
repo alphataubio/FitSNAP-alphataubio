@@ -29,8 +29,9 @@ except ImportError:
     import sys
     import os
     slate_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'lib', 'slate_solver')
-    if slate_path not in sys.path: sys.path.insert(0, slate_path)
-  from slate_wrapper import slate_ridge_augmented_qr_cython, slate_ard_update_cython
+    if slate_path not in sys.path:
+      sys.path.insert(0, slate_path)
+    from slate_wrapper import slate_ridge_augmented_qr_cython, slate_ard_update_cython
   except ImportError as e:
     print(f"Warning: Could not import SLATE ARD functions: {e}")
     slate_ard_update_cython = None
@@ -264,18 +265,17 @@ class SlateValidation(SlateCommon):
                   html += f'      <td style="{fmt_right}">{format_value(row["rmse_test"])}</td>\n'
                   html += f'      <td style="{fmt_right}">{format_value(row["rsq_test"])}</td>\n'
                   html += '    </tr>\n'
-                              
-                  # Bottomrule
-                  html += '    <tr style="border-bottom: 2px solid black;"><td colspan="9"></td></tr>\n'
-                  html += '  </tbody>\n'
-                  html += '</table>\n\n'
 
-                  subsystem_lines.append(html)
-                  subsystem_lines.append("\n")
-                              
-            except KeyError:
-              # This weighting type doesn't exist
-              pass
+                html += '    <tr style="border-bottom: 2px solid black;"><td colspan="9"></td></tr>\n'
+                html += '  </tbody>\n'
+                html += '</table>\n\n'
+
+                subsystem_lines.append(html)
+                subsystem_lines.append("\n")
+
+              except KeyError:
+                # This weighting type doesn't exist
+                pass
 
           except KeyError:
             # This row type doesn't exist
@@ -289,14 +289,9 @@ class SlateValidation(SlateCommon):
     adios2_path = f"{output_prefix}.bp"
 
     try:
-      # Read sorted_group_names attribute
       with adios2.FileReader(adios2_path) as adios2_file:
         sorted_group_names = list(adios2_file.read_attribute("sorted_group_names"))
-                          
-        # Get available variables to determine which row types exist
         available_vars = adios2_file.available_variables()
-                              
-        # Determine unique row types from variable names
         unique_row_types = set()
         for var_name in available_vars.keys():
           if '_' in var_name:
@@ -304,423 +299,384 @@ class SlateValidation(SlateCommon):
             if len(parts) >= 3 and parts[-1] in ['training', 'testing']:
               row_type = parts[0].capitalize()
               unique_row_types.add(row_type)
-              
-            for row_type in sorted(unique_row_types):
-              if row_type not in ['Energy', 'Force', 'Stress']: continue
 
-            # Match slate_common.error_analysis: for metal, MAE/RMSE use ×1000 (meV-scale).
-            # Scatter raw .bp columns are in eV / (eV/Å); scale and label like the tables.
-            reference_section = self.config.sections["REFERENCE"]
-            scatter_factor = 1.0
-            if row_type == 'Energy':
-              if reference_section.units == "metal":
-                scatter_factor = 1.0
-                units = reference_section.error_energy_units
-              else:
-                units = reference_section.energy_units
-            elif row_type == 'Force':
-              if reference_section.units == "metal":
-                scatter_factor = 1.0
-                units = reference_section.error_force_units
-              else:
-                units = reference_section.force_units
-            elif row_type == 'Stress':
-              units = reference_section.stress_units
+        for row_type in sorted(unique_row_types):
+          if row_type not in ['Energy', 'Force', 'Stress']:
+            continue
+
+          reference_section = self.config.sections["REFERENCE"]
+          scatter_factor = 1.0
+          if row_type == 'Energy':
+            if reference_section.units == "metal":
+              scatter_factor = 1.0
+              units = reference_section.error_energy_units
             else:
-              units = ""
-                  
-            # Create figure
-            fig, ax = plt.subplots(figsize=(6, 6), layout='constrained')
-            tab20 = plt.cm.get_cmap('tab20')
-            all_preds, all_truths = [], []
+              units = reference_section.energy_units
+          elif row_type == 'Force':
+            if reference_section.units == "metal":
+              scatter_factor = 1.0
+              units = reference_section.error_force_units
+            else:
+              units = reference_section.force_units
+          elif row_type == 'Stress':
+            units = reference_section.stress_units
+          else:
+            units = ""
 
-            for group_idx, group_name in enumerate(sorted_group_names):
-              # Get color pair indices (0,1), (2,3), (4,5), etc.
-              color_idx_light = (group_idx * 2 + 1) % 20
-              color_idx_dark = (group_idx * 2) % 20
-                      
-              # Read training data
-              row_type_lower = row_type.lower()
-              var_name_train = f"{row_type_lower}_{group_idx}_training"
-              if var_name_train in available_vars:
-                data_train = adios2_file.read(var_name_train, step_selection=[0,1])
-                if len(data_train) > 0:
-                  truths_train = scatter_factor * data_train[:, 0]
-                  preds_train = scatter_factor * data_train[:, 1]
-                  all_preds.extend(preds_train)
-                  all_truths.extend(truths_train)
-                  if len(all_preds) > 1: size = 99/np.log10(len(all_preds))
-                  else: size = 1
-                  ax.scatter(truths_train, preds_train, zorder=8, c=[tab20(color_idx_light)], alpha=.8,
-                             s=size, edgecolors='none', label=f"{group_name} (train)")
+          fig, ax = plt.subplots(figsize=(6, 6), layout='constrained')
+          tab20 = plt.cm.get_cmap('tab20')
+          all_preds, all_truths = [], []
 
-                  # Read testing data
-                  var_name_test = f"{row_type_lower}_{group_idx}_testing"
-                  if var_name_test in available_vars:
-                    data_test = adios2_file.read(var_name_test, step_selection=[0,1])
-                    if len(data_test) > 0:
-                      truths_test = scatter_factor * data_test[:, 0]
-                      preds_test = scatter_factor * data_test[:, 1]
-                      all_preds.extend(preds_test)
-                      all_truths.extend(truths_test)
-                      ax.scatter(truths_test, preds_test, zorder=9, linewidths=0.5, c=[tab20(color_idx_dark)], edgecolors='black', alpha=.95,
-                                 s=99/np.log10(len(all_preds))*1.618, label=f"{group_name} (test)", marker='s' )
+          for group_idx, group_name in enumerate(sorted_group_names):
+            color_idx_light = (group_idx * 2 + 1) % 20
+            color_idx_dark = (group_idx * 2) % 20
 
-                  if len(all_preds) == 0: continue  # Skip if no data for this row type
+            row_type_lower = row_type.lower()
+            var_name_train = f"{row_type_lower}_{group_idx}_training"
+            if var_name_train in available_vars:
+              data_train = adios2_file.read(var_name_train, step_selection=[0, 1])
+              if len(data_train) > 0:
+                truths_train = scatter_factor * data_train[:, 0]
+                preds_train = scatter_factor * data_train[:, 1]
+                all_preds.extend(preds_train)
+                all_truths.extend(truths_train)
+                if len(all_preds) > 1:
+                  size = 99 / np.log10(len(all_preds))
+                else:
+                  size = 1
+                ax.scatter(
+                  truths_train, preds_train, zorder=8, c=[tab20(color_idx_light)], alpha=.8,
+                  s=size, edgecolors='none', label=f"{group_name} (train)"
+                )
 
-                # Plot perfect prediction line
-                all_preds = np.array(all_preds)
-                all_truths = np.array(all_truths)
-                lo = min(all_truths.min(), all_preds.min())
-                hi = max(all_truths.max(), all_preds.max())
-                pad  = 0.05 * (hi - lo)
-                lims = (lo - pad, hi + pad)
-                ax.plot(lims, lims, 'k--', alpha=0.618, lw=2, label='Perfect prediction')
-                ax.margins(0)
-                  
-                # Labels and styling
-                ax.set_xlabel(f'True {row_type} ({units})', fontsize=14, fontweight='bold')
-                ax.set_ylabel(f'Predicted {row_type} ({units})', fontsize=14, fontweight='bold')
-                ax.grid(True, alpha=0.3)
-                ax.set_aspect('equal', adjustable='box')
-                  
-                # --- FIXED LEGEND: Two Columns (Train Left, Test Right) ---
-                handles, labels = ax.get_legend_handles_labels()
-                hl_dict = dict(zip(labels, handles))
-                  
-                train_handles, train_labels, test_handles, test_labels = [], [], [], []
+            var_name_test = f"{row_type_lower}_{group_idx}_testing"
+            if var_name_test in available_vars:
+              data_test = adios2_file.read(var_name_test, step_selection=[0, 1])
+              if len(data_test) > 0:
+                truths_test = scatter_factor * data_test[:, 0]
+                preds_test = scatter_factor * data_test[:, 1]
+                all_preds.extend(preds_test)
+                all_truths.extend(truths_test)
+                npt = max(len(all_preds), 2)
+                ax.scatter(
+                  truths_test, preds_test, zorder=9, linewidths=0.5,
+                  c=[tab20(color_idx_dark)], edgecolors='black', alpha=.95,
+                  s=99 / np.log10(npt) * 1.618,
+                  label=f"{group_name} (test)", marker='s'
+                )
 
-                # Spacer for gaps
-                spacer = Rectangle((0,0), 1, 1, fill=False, edgecolor='none', visible=False)
-                  
-                # 1. Sort handles into Train vs Test lists
-                for g_name in sorted_group_names:
-                  t_key = f"{g_name} (train)"
-                  v_key = f"{g_name} (test)"
-                      
-                  # Add to Train List
-                  if t_key in hl_dict:
-                    train_handles.append(hl_dict[t_key])
-                    train_labels.append(t_key)
-                  else:
-                    train_handles.append(spacer)
-                    train_labels.append("")
-                          
-                  # Add to Test List
-                  if v_key in hl_dict:
-                    test_handles.append(hl_dict[v_key])
-                    test_labels.append(v_key)
-                  else:
-                    test_handles.append(spacer)
-                    test_labels.append("")
+          if len(all_preds) == 0:
+            plt.close()
+            continue
 
-                  # 2. Combine lists sequentially: [All Trains] + [All Tests]
-                  # Because Matplotlib with ncol=2 fills Column 1 first, then Column 2.
-                  final_handles = train_handles + test_handles
-                  final_labels = train_labels + test_labels
+          all_preds = np.array(all_preds)
+          all_truths = np.array(all_truths)
+          lo = min(all_truths.min(), all_preds.min())
+          hi = max(all_truths.max(), all_preds.max())
+          pad = 0.05 * (hi - lo)
+          lims = (lo - pad, hi + pad)
+          ax.plot(lims, lims, 'k--', alpha=0.618, lw=2, label='Perfect prediction')
+          ax.margins(0)
 
-                  # Add 'Perfect prediction' at bottom of both (spanning columns?)
-                  # Or just add to bottom of left column
-                  pp_key = 'Perfect prediction'
-                  if pp_key in hl_dict:
-                      final_handles.append(hl_dict[pp_key])
-                      final_labels.append(pp_key)
+          ax.set_xlabel(f'True {row_type} ({units})', fontsize=14, fontweight='bold')
+          ax.set_ylabel(f'Predicted {row_type} ({units})', fontsize=14, fontweight='bold')
+          ax.grid(True, alpha=0.3)
+          ax.set_aspect('equal', adjustable='box')
 
-                  # Legend
-                  leg = fig.legend(
-                      handles=final_handles,
-                      labels=final_labels,
-                      loc="upper left", 
-                      bbox_to_anchor=(1.05, 0.99), 
-                      ncol=2,
-                      borderpad=.618,
-                      title="GROUPS", 
-                      title_fontsize=12, 
-                      prop={"size": 12}
-                  )
-                  leg.get_title().set_fontweight("bold")
-                  
-                  notebook["cells"].append({
-                      "cell_type": "markdown",
-                      "metadata": {
-                          "collapsed": False,
-                          "jp-MarkdownHeadingCollapsed": False,
-                          "jupyter": {"outputs_hidden": False}
-                      },
-                      "source": [f"### {row_type} Scatterplot"]
-                  })
-                  
-                  buf = io.BytesIO()
-                  img_format = 'svg' if len(all_truths) < 10000 else 'png'
-                  plt.savefig(buf, format=img_format, bbox_inches='tight')
-                                      
-                  plt.close()
-                  buf.seek(0)
-                  img_bytes = buf.getvalue()
-                  buf.close()
-                  img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+          handles, labels = ax.get_legend_handles_labels()
+          hl_dict = dict(zip(labels, handles))
 
-                  mime = "image/svg+xml" if img_format == "svg" else "image/png"
+          train_handles, train_labels, test_handles, test_labels = [], [], [], []
+          spacer = Rectangle((0, 0), 1, 1, fill=False, edgecolor='none', visible=False)
 
-                  notebook["cells"].append({
-                      "cell_type": "markdown",
-                      "metadata": {},
-                      "source": [
-                          f'<div align="center"><img src="data:{mime};base64,{img_base64}" '
-                          'style="width:90%;height:auto;"></div>'
-                      ]
-                  })
-                  
-      except Exception as e:
-          # If reading fails, skip scatterplots
-          self.pt.single_print(f"Could not create scatterplots: {e}")
-          pass
+          for g_name in sorted_group_names:
+            t_key = f"{g_name} (train)"
+            v_key = f"{g_name} (test)"
+            if t_key in hl_dict:
+              train_handles.append(hl_dict[t_key])
+              train_labels.append(t_key)
+            else:
+              train_handles.append(spacer)
+              train_labels.append("")
 
+            if v_key in hl_dict:
+              test_handles.append(hl_dict[v_key])
+              test_labels.append(v_key)
+            else:
+              test_handles.append(spacer)
+              test_labels.append("")
 
-      if self.method == 'ARD':
-          self.validation_notebook_ard(notebook)
-          
-      # Write notebook to file
-      with open(notebook_file, 'w') as f:
-          json.dump(notebook, f, indent=2)
-      
-      self.pt.debug_single_print(f"Created validation notebook: {notebook_file}")
+          final_handles = train_handles + test_handles
+          final_labels = train_labels + test_labels
+
+          pp_key = 'Perfect prediction'
+          if pp_key in hl_dict:
+            final_handles.append(hl_dict[pp_key])
+            final_labels.append(pp_key)
+
+          leg = fig.legend(
+            handles=final_handles,
+            labels=final_labels,
+            loc="upper left",
+            bbox_to_anchor=(1.05, 0.99),
+            ncol=2,
+            borderpad=.618,
+            title="GROUPS",
+            title_fontsize=12,
+            prop={"size": 12}
+          )
+          leg.get_title().set_fontweight("bold")
+
+          notebook["cells"].append({
+            "cell_type": "markdown",
+            "metadata": {
+              "collapsed": False,
+              "jp-MarkdownHeadingCollapsed": False,
+              "jupyter": {"outputs_hidden": False}
+            },
+            "source": [f"### {row_type} Scatterplot"]
+          })
+
+          buf = io.BytesIO()
+          img_format = 'svg' if len(all_truths) < 10000 else 'png'
+          plt.savefig(buf, format=img_format, bbox_inches='tight')
+          plt.close()
+          buf.seek(0)
+          img_bytes = buf.getvalue()
+          buf.close()
+          img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+
+          mime = "image/svg+xml" if img_format == "svg" else "image/png"
+
+          notebook["cells"].append({
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+              f'<div align="center"><img src="data:{mime};base64,{img_base64}" '
+              'style="width:90%;height:auto;"></div>'
+            ]
+          })
+
+    except Exception as e:
+      self.pt.single_print(f"Could not create scatterplots: {e}")
+
+    if self.method == 'ARD':
+      self.validation_notebook_ard(notebook)
+
+    with open(notebook_file, 'w') as f:
+      json.dump(notebook, f, indent=2)
+
+    self.pt.debug_single_print(f"Created validation notebook: {notebook_file}")
 
 
   def validation_notebook_ard(self, notebook):
       
-      # Load data from adios2 to create plots
+    # Load data from adios2 to create plots
       
-      output_prefix = self.config.sections['OUTFILE'].metrics.replace('.md', '')
-      adios2_path = f"{output_prefix}.bp"
-      with adios2.FileReader(adios2_path) as adios2_file:
-          basis_ranks = adios2_file.read_attribute("basis_ranks")
-          blist = adios2_file.read_attribute("blist")
-          num_steps = adios2_file.num_steps()-1 # last step was preds/truths
-          gamma_history = adios2_file.read("gamma", step_selection=[0,num_steps])
-          lambda_history = adios2_file.read("lambda", step_selection=[0,num_steps])
-          gamma_array = gamma_history.reshape((num_steps,len(blist)))
-          lam = lambda_history.reshape((num_steps, len(blist)))
-          lambda_array = np.full_like(lam, np.nan, dtype=float)
-          pos = (lam > 0) & np.isfinite(lam)
-          lambda_array[pos] = np.log10(lam[pos])
+    output_prefix = self.config.sections['OUTFILE'].metrics.replace('.md', '')
+    adios2_path = f"{output_prefix}.bp"
+    with adios2.FileReader(adios2_path) as adios2_file:
+      basis_ranks = adios2_file.read_attribute("basis_ranks")
+      blist = adios2_file.read_attribute("blist")
+      num_steps = adios2_file.num_steps()-1 # last step was preds/truths
+      gamma_history = adios2_file.read("gamma", step_selection=[0,num_steps])
+      lambda_history = adios2_file.read("lambda", step_selection=[0,num_steps])
+      gamma_array = gamma_history.reshape((num_steps,len(blist)))
+      lam = lambda_history.reshape((num_steps, len(blist)))
+      lambda_array = np.full_like(lam, np.nan, dtype=float)
+      pos = (lam > 0) & np.isfinite(lam)
+      lambda_array[pos] = np.log10(lam[pos])
       
-      blist_rank = defaultdict(list)
-      rank_indices = defaultdict(list)
-      for i, (r, f) in enumerate(zip(basis_ranks, blist)):
-          blist_rank[r].append(re.split(r" ns \[|\] ls \[|\]| \[0\]$", f))
-          rank_indices[r].append(i)
-          
-      # Create and display lambda heatmaps
-      
-      notebook["cells"].append({
-          "cell_type": "markdown",
-          "metadata": {
-              "collapsed": False,
-              "jp-MarkdownHeadingCollapsed": False,
-              "jupyter": {"outputs_hidden": False}
-          },
-          "source": ["## Lambda Heatmaps\n"]})
-      
-      threshold = np.log10(self.threshold_lambda)
-          
-      for rank in range(int(basis_ranks.min()), int(basis_ranks.max())+1):
-          
-          if len(blist_rank[rank]) == 0:
-              continue
-              
-          img_base64 = plot_rank_n(
-              rank,
-              blist_rank,
-              rank_indices,
-              'Log10(Lambda)',
-              lambda_array.T,
-              threshold,
-              'max'
-          )
-              
-          notebook["cells"].append({
-              "cell_type": "markdown",
-              "metadata": {},
-              "source": [
-                  f'<div align="center"><img src="data:image/svg+xml;base64,{img_base64}"></div>'
-              ]
-          })
+    blist_rank = defaultdict(list)
+    rank_indices = defaultdict(list)
 
-      # Summary statistics with side-by-side gamma and lambda distributions
+    if "UF3" in self.config.sections: split_pattern = r"  "
+    else: split_pattern = r" ns \[|\] ls \[|\]| \[0\]$"
+
+    for i, (r, f) in enumerate(zip(basis_ranks, blist)):
+      blist_rank[r].append(re.split(split_pattern, f))
+      rank_indices[r].append(i)
+          
+    # Create and display lambda heatmaps
       
-      n_iterations, n_features = gamma_array.shape
-      # Create summary plots - (n_iterations) x 2 grid
-      # Select representative iterations to show
-      if n_iterations <= 10:
-          iter_indices = list(range(n_iterations))
+    notebook["cells"].append({
+      "cell_type": "markdown",
+      "metadata": {"collapsed": False, "jp-MarkdownHeadingCollapsed": False, "jupyter": {"outputs_hidden": False}},
+      "source": ["## Lambda Heatmaps\n"]
+    })
+
+    threshold = np.log10(self.threshold_lambda)
+          
+    for rank in range(int(basis_ranks.min()), int(basis_ranks.max())+1):
+      if len(blist_rank[rank]) == 0: continue
+      img_base64 = plot_rank_n(rank, blist_rank, rank_indices, 'Log10(Lambda)', lambda_array.T, threshold, 'max' )
+      notebook["cells"].append({
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [f'<div align="center"><img src="data:image/svg+xml;base64,{img_base64}"></div>']
+      })
+
+    # Summary statistics with side-by-side gamma and lambda distributions
+      
+    n_iterations, n_features = gamma_array.shape
+    # Create summary plots - (n_iterations) x 2 grid
+    # Select representative iterations to show
+    if n_iterations <= 10:
+      iter_indices = list(range(n_iterations))
+    else:
+      # Show first, last, and evenly spaced middle iterations
+      iter_indices = [0] + list(np.linspace(1, n_iterations-2, min(8, n_iterations-2), dtype=int)) + [n_iterations-1]
+      
+    n_rows = len(iter_indices)
+    fig, axes = plt.subplots(n_rows, 2, figsize=(14, 4*n_rows))
+      
+    cmap_gamma = plt.cm.turbo
+    cmap_lambda = plt.cm.turbo.reversed()
+      
+    # If only one row, axes won't be 2D
+    if n_rows == 1: axes = axes.reshape(1, -1)
+
+    for row_idx, iter_idx in enumerate(iter_indices):
+      # Left column: Gamma distribution
+      ax_gamma = axes[row_idx, 0]
+      gamma_at_iter = gamma_array[iter_idx, :]
+      gamma_nonzero = gamma_at_iter[gamma_at_iter > 0]
+          
+      if len(gamma_nonzero) > 0:
+        counts, edges, patches = ax_gamma.hist(gamma_nonzero, bins=20, edgecolor='black', alpha=.99)
+        ax_gamma.set_xlabel('Gamma Value', fontsize=11)
+        ax_gamma.set_ylabel('Number of Features', fontsize=11)
+        ax_gamma.set_title(f'Iteration {iter_idx}: Gamma Distribution', fontsize=12, fontweight='bold')
+        ax_gamma.grid(True, alpha=0.3, axis='y')
+
+        bin_centers = 0.5 * (edges[:-1] + edges[1:])
+        norm_centers = (bin_centers - bin_centers.min()) / (bin_centers.max() - bin_centers.min())
+        for c, p in zip(norm_centers, patches): p.set_facecolor(cmap_gamma(c))
+
+        # Add statistics text
+        stats_text = f'Range: [{gamma_at_iter.min():.3f}, {gamma_at_iter.max():.3f}] '
+        stats_text += f'Mean: {gamma_nonzero.mean():.3f}'
+        ax_gamma.text(0.98, 0.98, stats_text,
+              transform=ax_gamma.transAxes, fontsize=9, verticalalignment='top',
+              horizontalalignment='right',
+              bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
       else:
-          # Show first, last, and evenly spaced middle iterations
-          iter_indices = [0] + list(np.linspace(1, n_iterations-2, min(8, n_iterations-2), dtype=int)) + [n_iterations-1]
-      
-      n_rows = len(iter_indices)
-      fig, axes = plt.subplots(n_rows, 2, figsize=(14, 4*n_rows))
-      
-      cmap_gamma = plt.cm.turbo
-      cmap_lambda = plt.cm.turbo.reversed()
-      
-      # If only one row, axes won't be 2D
-      if n_rows == 1:
-          axes = axes.reshape(1, -1)
-      
-      for row_idx, iter_idx in enumerate(iter_indices):
-          # Left column: Gamma distribution
-          ax_gamma = axes[row_idx, 0]
-          gamma_at_iter = gamma_array[iter_idx, :]
-          gamma_nonzero = gamma_at_iter[gamma_at_iter > 0]
+        ax_gamma.text(0.5, 0.5, 'No active features', transform=ax_gamma.transAxes,
+              ha='center', va='center', fontsize=12)
+        ax_gamma.set_title(f'Iteration {iter_idx}: Gamma Distribution', fontsize=12, fontweight='bold')
           
-          if len(gamma_nonzero) > 0:
-              counts, edges, patches = ax_gamma.hist(gamma_nonzero, bins=20, edgecolor='black', alpha=.99)
-              ax_gamma.set_xlabel('Gamma Value', fontsize=11)
-              ax_gamma.set_ylabel('Number of Features', fontsize=11)
-              ax_gamma.set_title(f'Iteration {iter_idx}: Gamma Distribution', fontsize=12, fontweight='bold')
-              ax_gamma.grid(True, alpha=0.3, axis='y')
+      # Right column: Lambda distribution (log scale)
+      ax_lambda = axes[row_idx, 1]
+      lambda_at_iter = lambda_array[iter_idx, :]
+      lambda_finite = lambda_at_iter[np.isfinite(lambda_at_iter)]
 
-              bin_centers = 0.5 * (edges[:-1] + edges[1:])
-              norm_centers = (bin_centers - bin_centers.min()) / (bin_centers.max() - bin_centers.min())
-              for c, p in zip(norm_centers, patches):
-                  p.set_facecolor(cmap_gamma(c))
+      if len(lambda_finite) > 0:
+        counts, edges, patches = ax_lambda.hist(lambda_finite, bins=20, edgecolor='black', alpha=.99)
+        ax_lambda.set_xlabel('Log10(Lambda)', fontsize=11)
+        ax_lambda.set_ylabel('Number of Features', fontsize=11)
+        ax_lambda.set_title(f'Iteration {iter_idx}: Lambda Distribution', fontsize=12, fontweight='bold')
+        ax_lambda.grid(True, alpha=0.3, axis='y')
+
+        bin_centers = 0.5 * (edges[:-1] + edges[1:])
+        span = bin_centers.max() - bin_centers.min()
+        if span > 0: norm_centers = (bin_centers - bin_centers.min()) / span
+        else: norm_centers = np.zeros_like(bin_centers)
+        for c, p in zip(norm_centers, patches): p.set_facecolor(cmap_lambda(c))
+
+        stats_text = (
+          f'Log range: [{lambda_finite.min():.1f}, {lambda_finite.max():.1f}] '
+          f'Log mean: {lambda_finite.mean():.1f}'
+        )
+        if np.any(~np.isfinite(lambda_at_iter)): stats_text += ' (non-positive λ omitted from log plot)'
+        ax_lambda.text(0.98, 0.98, stats_text,
+              transform=ax_lambda.transAxes, fontsize=9, verticalalignment='top',
+              horizontalalignment='right',
+              bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+      else:
+        ax_lambda.text(0.5, 0.5, 'No positive finite λ (log undefined)',
+              transform=ax_lambda.transAxes, ha='center', va='center', fontsize=12)
+        ax_lambda.set_title(f'Iteration {iter_idx}: Lambda Distribution', fontsize=12, fontweight='bold')
               
-              # Add statistics text
-              stats_text = f'Range: [{gamma_at_iter.min():.3f}, {gamma_at_iter.max():.3f}] '
-              stats_text += f'Mean: {gamma_nonzero.mean():.3f}'
-              ax_gamma.text(0.98, 0.98, stats_text,
-                          transform=ax_gamma.transAxes, fontsize=9, verticalalignment='top',
-                          horizontalalignment='right',
-                          bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-          else:
-              ax_gamma.text(0.5, 0.5, 'No active features', transform=ax_gamma.transAxes,
-                          ha='center', va='center', fontsize=12)
-              ax_gamma.set_title(f'Iteration {iter_idx}: Gamma Distribution', fontsize=12, fontweight='bold')
-          
-          # Right column: Lambda distribution (log scale)
-          ax_lambda = axes[row_idx, 1]
-          lambda_at_iter = lambda_array[iter_idx, :]
-          lambda_finite = lambda_at_iter[np.isfinite(lambda_at_iter)]
-
-          if len(lambda_finite) > 0:
-              counts, edges, patches = ax_lambda.hist(lambda_finite, bins=20, edgecolor='black', alpha=.99)
-              ax_lambda.set_xlabel('Log10(Lambda)', fontsize=11)
-              ax_lambda.set_ylabel('Number of Features', fontsize=11)
-              ax_lambda.set_title(f'Iteration {iter_idx}: Lambda Distribution', fontsize=12, fontweight='bold')
-              ax_lambda.grid(True, alpha=0.3, axis='y')
-
-              bin_centers = 0.5 * (edges[:-1] + edges[1:])
-              span = bin_centers.max() - bin_centers.min()
-              if span > 0:
-                  norm_centers = (bin_centers - bin_centers.min()) / span
-              else:
-                  norm_centers = np.zeros_like(bin_centers)
-              for c, p in zip(norm_centers, patches):
-                  p.set_facecolor(cmap_lambda(c))
-
-              stats_text = (
-                  f'Log range: [{lambda_finite.min():.1f}, {lambda_finite.max():.1f}] '
-                  f'Log mean: {lambda_finite.mean():.1f}'
-              )
-              if np.any(~np.isfinite(lambda_at_iter)):
-                  stats_text += ' (non-positive λ omitted from log plot)'
-              ax_lambda.text(0.98, 0.98, stats_text,
-                          transform=ax_lambda.transAxes, fontsize=9, verticalalignment='top',
-                          horizontalalignment='right',
-                          bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-          else:
-              ax_lambda.text(0.5, 0.5, 'No positive finite λ (log undefined)',
-                          transform=ax_lambda.transAxes, ha='center', va='center', fontsize=12)
-              ax_lambda.set_title(f'Iteration {iter_idx}: Lambda Distribution', fontsize=12, fontweight='bold')
-              
-      notebook["cells"].append({
-          "cell_type": "markdown",
-          "metadata": {
-              "collapsed": False,
-              "jp-MarkdownHeadingCollapsed": False,
-              "jupyter": {"outputs_hidden": False}
-          },
-          "source": [f"## Gamma / Lambda Histograms (by iteration)"]
-      })
+    notebook["cells"].append({
+      "cell_type": "markdown",
+      "metadata": {"collapsed": False, "jp-MarkdownHeadingCollapsed": False, "jupyter": {"outputs_hidden": False}},
+      "source": [f"## Gamma / Lambda Histograms (by iteration)"]
+    })
       
-      buf = io.BytesIO()
-      img_format = 'png' #if len(all_truths) < 10000 else 'svg'
-      plt.savefig(buf, format=img_format, bbox_inches='tight')
-      plt.close()
-      buf.seek(0)
-      img_bytes = buf.getvalue()
-      buf.close()
-      img_base64 = base64.b64encode(img_bytes).decode('utf-8')
-      mime = "image/svg+xml" if img_format == "svg" else "image/png"
+    buf = io.BytesIO()
+    img_format = 'png' #if len(all_truths) < 10000 else 'svg'
+    plt.savefig(buf, format=img_format, bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    img_bytes = buf.getvalue()
+    buf.close()
+    img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+    mime = "image/svg+xml" if img_format == "svg" else "image/png"
 
-      notebook["cells"].append({
-          "cell_type": "markdown",
-          "metadata": {},
-          "source": [
-              f'<div align="center"><img src="data:{mime};base64,{img_base64}" '
-              'style="width:100%;height:auto;"></div>'
-          ]
-      })
+    notebook["cells"].append({
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        f'<div align="center"><img src="data:{mime};base64,{img_base64}" '
+        'style="width:100%;height:auto;"></div>'
+      ]
+    })
 
 
 def draw_labels(ax, y_positions, texts, x=-1):
   y_positions = np.array(y_positions)
-  for y, txt in zip(y_positions, texts):
-      ax.text(x, y, txt, ha="center", va="center", fontsize=8)
+  for y, txt in zip(y_positions, texts): ax.text(x, y, txt, ha="center", va="center", fontsize=8)
 
 def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=None, threshold_position='min'):
   
   n_features, n_iterations = history_array.shape
 
-  if (heatmap_rows := len(rank_indices[rank])) == 0:
-      return
+  if (heatmap_rows := len(rank_indices[rank])) == 0: return
 
   def sort_key(basis):
-      ns = basis[1].split(',')
-      ls = basis[2].split(',')
-      print(f"*** basis {basis} tuple {tuple(int(i) for i in ns)}")
-      return tuple(int(i) for i in ns) + tuple(int(j) for j in ls)
+    ns = basis[1].split(',')
+    ls = basis[2].split(',')
+    print(f"*** basis {basis} tuple {tuple(int(i) for i in ns)}")
+    return tuple(int(i) for i in ns) + tuple(int(j) for j in ls)
 
   def sort_kv(kv):
-      atoms, ns = kv[0].split('_')
-      return tuple([atoms]+[int(i) for i in ns.split(',')])
+    atoms, ns = kv[0].split('_')
+    return tuple([atoms]+[int(i) for i in ns.split(',')])
 
   # sorted_blist = sorted(blist_rank[rank], key=sort_key ) if rank>=1 else blist_rank[rank]
   
   sorted_blist = blist_rank[rank]
+  print(f"*** rank {rank} sorted_blist {sorted_blist}")
 
   label_spacing = .01*(6*rank-4)*n_iterations
   if rank == 0:
-      xlim, xticks_extra = -1.5, [-.5, -.5]
-      figsize = (8, heatmap_rows)
+    xlim, xticks_extra = -1.5, [-.5, -.5]
+    figsize = (8, heatmap_rows)
   else:
-      xlim, xticks_extra = -4*label_spacing-.5, [-2*label_spacing-.5, -label_spacing-.5]
-      figsize = (10, max(6, heatmap_rows*11/72))
+    xlim, xticks_extra = -4*label_spacing-.5, [-2*label_spacing-.5, -label_spacing-.5]
+    figsize = (10, max(6, heatmap_rows*11/72))
 
   finite = history_array[np.isfinite(history_array)]
-  if finite.size == 0:
-      dmin, dmax = 0.0, 1.0
-  else:
-      dmin, dmax = float(finite.min()), float(finite.max())
+  if finite.size == 0: dmin, dmax = 0.0, 1.0
+  else: dmin, dmax = float(finite.min()), float(finite.max())
 
   if threshold is None:
-      vmin, vmax = dmin, dmax
-      cbar_extend = 'neither'
-      cmap = plt.cm.turbo
+    vmin, vmax = dmin, dmax
+    cbar_extend = 'neither'
+    cmap = plt.cm.turbo
   elif threshold_position == 'min':
-      vmin, vmax = max(threshold, dmin), dmax
-      cbar_extend = 'min'
-      cmap = plt.cm.turbo
-      cmap.set_under('white')
+    vmin, vmax = max(threshold, dmin), dmax
+    cbar_extend = 'min'
+    cmap = plt.cm.turbo
+    cmap.set_under('white')
   else:
-      vmin, vmax = dmin, min(threshold, dmax)
-      cbar_extend = 'max'
-      cmap = plt.cm.turbo.reversed()
-      cmap.set_over('white')
+    vmin, vmax = dmin, min(threshold, dmax)
+    cbar_extend = 'max'
+    cmap = plt.cm.turbo.reversed()
+    cmap.set_over('white')
 
   if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin >= vmax:
-      vmin, vmax = dmin, max(dmax, np.nextafter(dmin, np.inf))
+    vmin, vmax = dmin, max(dmax, np.nextafter(dmin, np.inf))
 
   fig, ax = plt.subplots(figsize=figsize, layout="constrained")
   im_data = np.ma.masked_invalid(history_array[rank_indices[rank]])
@@ -730,27 +686,27 @@ def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=
   atoms = Counter([basis[0] for basis in sorted_blist])
   y, y_positions, texts = 0, [], []
   for k, v in atoms.items():
-      ax.add_patch(Rectangle((xlim, y - 0.5), xticks_extra[0]-xlim, v, fc='w', ec="k", zorder=9))
-      ax.text((xlim+xticks_extra[0])/2, (atom_y := y + v / 2 - 0.5), k,
-              ha="center", va="center", fontsize=10, fontweight="bold", zorder=10)
-      y += v
+    ax.add_patch(Rectangle((xlim, y - 0.5), xticks_extra[0]-xlim, v, fc='w', ec="k", zorder=9))
+    ax.text((xlim+xticks_extra[0])/2, (atom_y := y + v / 2 - 0.5), k,
+        ha="center", va="center", fontsize=10, fontweight="bold", zorder=10)
+    y += v
       
   if rank >= 1:
-      # --- ns labels ---
-      y, ns = 0, Counter([f"{basis[0]}_{basis[1]}" for basis in sorted_blist])
-      ax.text((ns_x:=(xticks_extra[0]+xticks_extra[1])/2), heatmap_rows, 'ns', ha="center", va="top", fontsize=10, fontweight="bold")
-      #for k, v in sorted(ns.items(), key=sort_kv):
-      for k, v in ns.items():
-          ax.add_patch(Rectangle((xticks_extra[0], y - 0.5), xticks_extra[1]-xticks_extra[0], v, fc='w', ec="k", zorder=9))
-          ax.text(ns_x, y + v / 2 - 0.5, k.split('_')[1], ha="center", va="center", fontsize=8, zorder=10)
-          for j in range(v):
-              y_positions.append(y + j)
-              texts.append(sorted_blist[y + j][2].replace(']', ''))
-          y += v
+    # --- ns labels ---
+    y, ns = 0, Counter([f"{basis[0]}_{basis[1]}" for basis in sorted_blist])
+    ax.text((ns_x:=(xticks_extra[0]+xticks_extra[1])/2), heatmap_rows, 'ns', ha="center", va="top", fontsize=10, fontweight="bold")
+    #for k, v in sorted(ns.items(), key=sort_kv):
+    for k, v in ns.items():
+      ax.add_patch(Rectangle((xticks_extra[0], y - 0.5), xticks_extra[1]-xticks_extra[0], v, fc='w', ec="k", zorder=9))
+      ax.text(ns_x, y + v / 2 - 0.5, k.split('_')[1], ha="center", va="center", fontsize=8, zorder=10)
+      for j in range(v):
+        y_positions.append(y + j)
+        texts.append(sorted_blist[y + j][2].replace(']', ''))
+      y += v
 
-      # --- ls labels ---
-      ax.text((ls_x:=(xticks_extra[1]-.5)/2), heatmap_rows, 'ls', ha="center", va="top", fontsize=10, fontweight="bold")
-      draw_labels(ax, y_positions, texts, x=ls_x)
+    # --- ls labels ---
+    ax.text((ls_x:=(xticks_extra[1]-.5)/2), heatmap_rows, 'ls', ha="center", va="top", fontsize=10, fontweight="bold")
+    draw_labels(ax, y_positions, texts, x=ls_x)
 
   tick_values = MaxNLocator(steps=[1, 5, 10],integer=True).tick_values(0, n_iterations)
   tick_positions = [t - .5 for t in tick_values]
@@ -768,21 +724,21 @@ def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=
   cbar = fig.colorbar(im, ax=ax, orientation='horizontal', pad=2*min(.1,1/heatmap_rows), shrink=.8, extend=cbar_extend)
   span = vmax - vmin
   if np.isfinite(span) and span > 0:
-      cbar_ticks = [vmin + span * f for f in [0, 0.25, 0.5, 0.75, 1.0]]
+    cbar_ticks = [vmin + span * f for f in [0, 0.25, 0.5, 0.75, 1.0]]
   else:
-      cbar_ticks = [vmin]
+    cbar_ticks = [vmin]
   cbar.set_ticks(cbar_ticks)
   cbar.ax.set_xticklabels([f'{t:.2g}' for t in cbar_ticks])
   title_extra = "" if threshold is None else " (white: removed features)"
   cbar.set_label(title + title_extra, fontsize=8, fontweight='bold')
 
   if threshold is not None:
-      cax_top = cbar.ax.twiny()
-      xl0, xl1 = cbar.ax.get_xlim()
-      if np.isfinite(xl0) and np.isfinite(xl1):
-          cax_top.set_xlim(xl0, xl1)
-          cax_top.set_xticks([threshold])
-          cax_top.xaxis.set_ticks_position('top')
+    cax_top = cbar.ax.twiny()
+    xl0, xl1 = cbar.ax.get_xlim()
+    if np.isfinite(xl0) and np.isfinite(xl1):
+      cax_top.set_xlim(xl0, xl1)
+      cax_top.set_xticks([threshold])
+      cax_top.xaxis.set_ticks_position('top')
   
   buf = io.BytesIO()
   plt.savefig(buf, format='svg', bbox_inches='tight')
