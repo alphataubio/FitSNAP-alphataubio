@@ -1,24 +1,25 @@
 
-
 # -----------------------------------------------------------------------------
 [UF3]
-
 elements = W
 degree = 2
 knot_strategy = linear
-r_min = 1.0
+r_min = 0.001
 r_max = 5.5
-resolution = 8
-trailing_trim = 3
-fit_offsets = 0
+resolution = 5
 bzeroflag = 1
+
+
+# -----------------------------------------------------------------------------
+[ESHIFT]
+W = 0.0
 
 
 # -----------------------------------------------------------------------------
 [CALCULATOR]
 calculator = LAMMPSUF3
 energy = 1
-force  = 1
+force  = 0
 stress = 0
 
 
@@ -46,7 +47,7 @@ dataPath = XYZ
 [REFERENCE]
 units = metal
 atom_style = atomic
-pair_style = zero 6.842222
+pair_style = zero 5.5
 pair_coeff = * *
 
 
@@ -56,6 +57,7 @@ output_style = UF3
 metrics = W_UF3.md
 potential = W_UF3
 validation = 1
+
 
 # -----------------------------------------------------------------------------
 [GROUPS]
@@ -77,5 +79,6 @@ dump_descriptors = 0
 dump_truth = 0
 dump_weights = 0
 debug = 0
+
 
 # -----------------------------------------------------------------------------
