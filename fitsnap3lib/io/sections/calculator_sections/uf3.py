@@ -190,8 +190,8 @@ class Uf3(Section):
         length = model.bspline_config.get_interaction_partitions()[0][interaction]
         start_idx = model.bspline_config.get_interaction_partitions()[1][interaction]
         end_idx = start_idx + length
-        self.basis_ranks.extend([2] * length)
-        self.blist.extend([f"{interaction[0]} {interaction[1]} {knot}" for knot in knots_2b[start_idx:end_idx]])
+        self.basis_ranks.extend([1] * length)
+        self.blist.extend([f"{interaction[0]} {interaction[1]}  .  {knot}" for knot in knots_2b[start_idx:end_idx]])
 
         pot.write(f"#UF3 POT UNITS: {lammps_units} DATE: {current_datetime} AUTHOR: {author} CITATION:\n")
         pot.write(f"2B {interaction[0]} {interaction[1]} {leading_trim} {trailing_trim}")

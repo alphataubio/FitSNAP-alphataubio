@@ -104,13 +104,13 @@ class LammpsUf3(LammpsBase):
     lmp_uf3 = _extract_compute_np(self._lmp, "uf3", 0, 2, (nrows_uf3, ncols_uf3))
 
     np.set_printoptions(
-        precision=4, suppress=False, floatmode='fixed', linewidth=np.inf,
-        formatter={'float': '{:.6f}'.format}, threshold = 800, edgeitems=50
+        precision=3, suppress=False, floatmode='fixed', linewidth=np.inf,
+        formatter={'float': '{: .3f}'.format}, threshold = 800, edgeitems=50
     )
-    self.pt.all_print(f"\n*** lmp_uf3 {lmp_uf3.shape}\n{lmp_uf3[:200]}\n");
+    #self.pt.all_print(f"\n*** lmp_uf3 {lmp_uf3.shape}\n{lmp_uf3}\n");
 
     if (np.isinf(lmp_uf3)).any() or (np.isnan(lmp_uf3)).any():
-      raise ValueError(f"NaN in file {self._data['File']} of group {self._data['Group']}")
+      raise ValueError(f"NaN in descriptors of {self._data['File']} from group {self._data['Group']}")
 
     units_real = self.config.sections["REFERENCE"].units.lower() == "real"
     if units_real:

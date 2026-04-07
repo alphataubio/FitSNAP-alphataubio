@@ -1,13 +1,13 @@
 
 # -----------------------------------------------------------------------------
 [UF3]
-elements = W
+type = W
 degree = 2
 knot_strategy = linear
-r_min = 0.001
-r_max = 5.5
-resolution = 5
-bzeroflag = 1
+r_min = 0
+r_max = 5
+resolution = 30
+bzeroflag = 0
 
 
 # -----------------------------------------------------------------------------
@@ -19,7 +19,7 @@ W = 0.0
 [CALCULATOR]
 calculator = LAMMPSUF3
 energy = 1
-force  = 0
+force  = 1
 stress = 0
 
 
@@ -31,13 +31,18 @@ compute_testerrs = 1
 
 # -----------------------------------------------------------------------------
 [SLATE]
+
 method = RIDGE
 alpha = 1e-6
+
+#method = ARD
+threshold_lambda = 1e99
 
 
 # -----------------------------------------------------------------------------
 [SCRAPER]
 scraper = xyz
+#max_configs_per_rank = 5
 
 [PATH]
 dataPath = XYZ
@@ -70,7 +75,7 @@ group_sections  = name training_size testing_size eweight fweight vweight
 group_types     = str  float         float        float   float   float
 smartweights    = 0
 random_sampling = 0
-W_14            =      0.5           0.5          0.8     0.2     1e-12
+W_14_full            =      0.8           0.2          1     10     1e-12
 
 
 # -----------------------------------------------------------------------------
