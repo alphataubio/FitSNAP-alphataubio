@@ -1,12 +1,13 @@
 
 from fitsnap3lib.io.sections.sections import Section
 
-import json
+import json, ast
 import numpy as np
 from datetime import datetime
 
 from fitsnap3lib.lib.uf3.data.composition import ChemicalSystem
 from fitsnap3lib.lib.uf3.regression import least_squares
+from fitsnap3lib.lib.uf3.regression.least_squares import WeightedLinearModel
 from fitsnap3lib.lib.uf3.representation.bspline import BSplineBasis
 from fitsnap3lib.lib.uf3.util import json_io
 
@@ -73,7 +74,7 @@ class Uf3(Section):
     if self._config.has_option(sec, "r_max_map_json"):
       r_max_map = json_io.load_interaction_map(self._config.get(sec, "r_max_map_json"))
     if self._config.has_option(sec, "resolution_map_json"):
-      resolution_map = json_io.load_interaction_map(self._config.get(sec, "resolution_map_json"))
+      resolution_map = ast.literal_eval(self._config.get(sec, "resolution_map_json"))
     if self._config.has_option(sec, "knots_map_json"):
       knots_map = json_io.load_interaction_map(self._config.get(sec, "knots_map_json"))["knots"]
 
@@ -104,18 +105,26 @@ class Uf3(Section):
     # get_feature_partition_sizes() = [1]*numtypes (composition / 1-body) then 2-body blocks
     # (then 3-body if degree>2). LAMMPS ``compute uf3`` exposes 2-body columns, then 3-body
     # (same total count as these spline blocks when nbody=3 and the template includes 3B).
-    _sizes = self.bspline_basis.get_feature_partition_sizes()
-    self.nfeats = int(np.sum(_sizes))
-    self.ncoeff = int(np.sum(_sizes[self.numtypes :]))
+    self.feature_partition_sizes = self.bspline_basis.get_feature_partition_sizes()
+    self.nfeats = int(np.sum(self.feature_partition_sizes))
+    self.ncoeff = int(np.sum(self.feature_partition_sizes[self.numtypes :]))
     self.type_mapping = {el: i + 1 for i, el in enumerate(self.type)}
     self.potential_element_args = " ".join(self.type)
-    self._uf3_template_abs_path = None
+
+    model = WeightedLinearModel(bspline_config=self.bspline_basis)
+    model.coefficients = list(range(model.n_feats))
+    @self.pt.rank_zero
+    def _write():
+      self.write_uf3_lammps_pot(model.bspline_config.chemical_system, model, "compressed_indices.uf3" )
+    _write()
+    self.pt.all_barrier()
 
     self.pt.single_print(
       f"----------------------------------------------------------------\n"
       f"  UF3 B-spline basis                                            \n"
       f"    elements {' '.join(self.type)} degree {self.degree}         \n"
       f"    ncoeff {self.ncoeff} (descriptor cols) full_features {self.nfeats}\n"
+      f"\n\n self.feature_partition_sizes {self.feature_partition_sizes}\n"
       f"----------------------------------------------------------------\n"
     )
 
@@ -124,44 +133,6 @@ class Uf3(Section):
     if isinstance(val, str) and val.strip().startswith("{"):
       return json.loads(val.replace("'", '"'))
     return int(val)
-
-  @property
-  def template_uf3_path(self):
-    """Absolute path to the zero-coeff template ``.uf3`` (created lazily)."""
-    self._ensure_uf3_template()
-    return self._uf3_template_abs_path
-
-  def _ensure_uf3_template(self):
-    from os import path
-
-    if self._uf3_template_abs_path is not None:
-      return
-
-    from fitsnap3lib.lib.uf3.regression.least_squares import WeightedLinearModel
-
-    raw_pot = self.get_value("OUTFILE", "potential", None)
-    if raw_pot is None or str(raw_pot).strip() == "":
-      raise RuntimeError(
-        "[UF3] needs [OUTFILE] potential = <basename> in the same input (any section order)."
-      )
-
-    potential_base = self.check_path(str(raw_pot))
-
-    # check_path() is outfile_dir + basename; writer expects (directory, filename only).
-    out_path = f"{potential_base}-fit.uf3"
-    write_pot_dir = path.dirname(out_path) or "."
-    write_fname = path.basename(out_path)
-
-    model = WeightedLinearModel(bspline_config=self.bspline_basis)
-    model.coefficients = np.zeros(model.n_feats)
-
-    @self.pt.rank_zero
-    def _write():
-      self.write_uf3_lammps_pot(model.bspline_config.chemical_system, model, write_fname )
-
-    _write()
-    self.pt.all_barrier()
-    self._uf3_template_abs_path = path.abspath(out_path)
 
   def write_uf3_lammps_pot(self, chemical_sys, model, path, knots_spacing_type="nk" ):
     """Returns list
@@ -180,6 +151,10 @@ class Uf3(Section):
 
     self.basis_ranks = []
     self.blist = []
+
+    coeff_idx = 0
+    self.pt.all_print(f"*** model.bspline_config.get_interaction_partitions() {model.bspline_config.get_interaction_partitions()}")
+
 
     with open(path, "w") as pot:
 
@@ -202,8 +177,7 @@ class Uf3(Section):
         pot.write(f"{len(model.bspline_config.knots_map[interaction])}\n")
         pot.write(" ".join([f'{v:.17g}' for v in knots_2b]) + "\n")
         pot.write(f"{model.bspline_config.get_interaction_partitions()[0][interaction]}\n")
-        #pot.write(" ".join([f'{v:.17g}' for v in model.coefficients[start_index:start_index + length]]) + "\n")
-        pot.write(" ".join([f'1' for v in model.coefficients[start_idx:end_idx]]) + "\n")
+        pot.write(" ".join([f'{v-1:.0f}' for v in range(start_idx,end_idx)]) + "\n")
         pot.write("#\n")
 
       if 3 in model.bspline_config.interactions_map:
@@ -223,15 +197,14 @@ class Uf3(Section):
           pot.write(" ".join([f'{v:.17g}' for v in model.bspline_config.knots_map[interaction][1]]) + "\n")
           pot.write(" ".join([f'{v:.17g}' for v in model.bspline_config.knots_map[interaction][0]]) + "\n")
 
-          solutions = least_squares.arrange_coefficients(model.coefficients, model.bspline_config)
-          decompressed = model.bspline_config.decompress_3B( \
-            solutions[(interaction[0], interaction[1], interaction[2])], \
-            (interaction[0], interaction[1], interaction[2]))
-
+          length = model.bspline_config.get_interaction_partitions()[0][interaction]
+          start_idx = model.bspline_config.get_interaction_partitions()[1][interaction]
+          indices = list(range(start_idx, start_idx + length))
+          decompressed = model.bspline_config.decompress_3B( indices, (interaction[0], interaction[1], interaction[2]))
           pot.write(f"{decompressed.shape[0]} {decompressed.shape[1]} {decompressed.shape[2]}\n")
           for i in range(decompressed.shape[0]):
             for j in range(decompressed.shape[1]):
-              pot.write(' '.join(map(str, decompressed[i,j])) + "\n")
+              pot.write(' '.join([f"{v-1:.0f}" for v in decompressed[i,j]]) + "\n")
 
           pot.write("#\n")
 
