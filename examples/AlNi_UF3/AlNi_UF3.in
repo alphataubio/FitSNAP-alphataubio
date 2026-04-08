@@ -39,6 +39,9 @@ max_configs_per_rank = 5
 
 
 # -----------------------------------------------------------------------------
+
+# python ~/github/FitSNAP-alphataubio/tools/fairchem_to_adios2.py --dataset omat24 --elements Al Ni --output omat24_AlNi.bp
+
 [PATH]
 dataPath = ../AlNi_PYACE_SLATE_ARD/omat24_AlNi.bp
 

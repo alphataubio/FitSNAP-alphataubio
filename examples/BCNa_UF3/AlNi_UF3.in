@@ -1,27 +1,23 @@
 
+
 # -----------------------------------------------------------------------------
 [UF3]
-type = W
+type = B C Na
 degree = 3
 knot_strategy = linear
-r_min = 0
-r_max = 5
-#resolution = 5
-resolution_map_json = {("W", "W"): 2, ("W", "W", "W"): [3,4,5]}
+r_min = 1.0
+r_max = 5.0
+resolution = 8
+trailing_trim = 3
 bzeroflag = 1
-
-
-# -----------------------------------------------------------------------------
-[ESHIFT]
-W = 0.0
 
 
 # -----------------------------------------------------------------------------
 [CALCULATOR]
 calculator = LAMMPSUF3
-energy = 1
-force  = 0
-stress = 0
+energy = 1    # goal < 1.64 meV/atom
+force  = 1    # goal < 28 meV/A
+stress = 0    # goal < 0.09 GPa
 
 
 # -----------------------------------------------------------------------------
@@ -32,36 +28,37 @@ compute_testerrs = 1
 
 # -----------------------------------------------------------------------------
 [SLATE]
-
 method = RIDGE
-alpha = 1e-8
-
-#method = ARD
-threshold_lambda = 1e99
+alpha = 1e-6
 
 
 # -----------------------------------------------------------------------------
 [SCRAPER]
-scraper = xyz
-max_configs_per_rank = 2
+scraper = ADIOS2
+max_configs_per_rank = 5
+
+
+# -----------------------------------------------------------------------------
+
+# python ~/github/FitSNAP-alphataubio/tools/fairchem_to_adios2.py --dataset omat24 --elements B C Na --output omat24_BCNa.bp
 
 [PATH]
-dataPath = XYZ
+dataPath = omat24_BCNa.bp
 
 
 # -----------------------------------------------------------------------------
 [REFERENCE]
 units = metal
 atom_style = atomic
-pair_style = zero 5.5
+pair_style = zero 5.0
 pair_coeff = * *
 
 
 # -----------------------------------------------------------------------------
 [OUTFILE]
 output_style = UF3
-metrics = W_UF3.md
-potential = W_UF3
+metrics = BCNa.md
+potential = BCNa
 validation = 1
 
 
@@ -72,12 +69,17 @@ validation = 1
 # already provides training/validation split in separate train/val archives.
 # [https://huggingface.co/datasets/facebook/OMAT24]
 
-group_sections  = name training_size testing_size eweight fweight vweight
-group_types     = str  float         float        float   float   float
-smartweights    = 0
-random_sampling = 0
-#W_14_full            =      0.8           0.2          1     100     1e-12
-W_14            =      0.8           0.2          1     100     1e-12
+group_sections = name                     eweight fweight vweight
+group_types =    str                      float   float   float
+smartweights = 1
+rattled-300            = 1.0     100.0   10.0
+rattled-500            = 1.0     100.0   10.0
+rattled-1000           = 1.0     100.0   10.0
+rattled-relax          = 1.0     100.0   10.0
+aimd-from-PBE-1000-npt = 1.0     100.0   10.0
+aimd-from-PBE-1000-nvt = 1.0     100.0   10.0
+aimd-from-PBE-3000-npt = 1.0     100.0   10.0
+aimd-from-PBE-3000-nvt = 1.0     100.0   10.0
 
 
 # -----------------------------------------------------------------------------
