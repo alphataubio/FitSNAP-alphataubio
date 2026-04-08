@@ -19,7 +19,6 @@ class LammpsUf3(LammpsBase):
     self._numtypes = uf3.numtypes
     self._type_mapping = uf3.type_mapping
     self._bzeroflag = uf3.bzeroflag
-    self._template_path = uf3.template_uf3_path
     self._elem_args = uf3.potential_element_args
     self._lammps_nbody = uf3.lammps_nbody
     self.pt.check_lammps()
@@ -71,9 +70,8 @@ class LammpsUf3(LammpsBase):
     assert i + 1 == n_atoms, "Atom counts don't match when assigning charge: {}, {}\nGroup and configuration: {} {}".format(i + 1, n_atoms, self._data["Group"],self._data["File"])
 
   def _set_computes(self):
-    pot = self._template_path.replace("\\", "/")
     elems = self._elem_args
-    self._lmp.command(f"compute uf3 all uf3 {self._lammps_nbody} '{pot}' {elems}")
+    self._lmp.command(f"compute uf3 all uf3 {self._lammps_nbody} descriptors.uf3 {elems}")
 
   def _collect_lammps(self):
     num_atoms = self._data["NumAtoms"]
@@ -107,7 +105,7 @@ class LammpsUf3(LammpsBase):
         precision=3, suppress=False, floatmode='fixed', linewidth=np.inf,
         formatter={'float': '{: .3f}'.format}, threshold = 800, edgeitems=50
     )
-    #self.pt.all_print(f"\n*** lmp_uf3 {lmp_uf3.shape}\n{lmp_uf3}\n");
+    self.pt.all_print(f"\n*** lmp_uf3 {lmp_uf3.shape}\n{lmp_uf3[:8]}\n");
 
     if (np.isinf(lmp_uf3)).any() or (np.isnan(lmp_uf3)).any():
       raise ValueError(f"NaN in descriptors of {self._data['File']} from group {self._data['Group']}")

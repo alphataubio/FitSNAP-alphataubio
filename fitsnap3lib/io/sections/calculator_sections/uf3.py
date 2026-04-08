@@ -115,7 +115,7 @@ class Uf3(Section):
     model.coefficients = list(range(model.n_feats))
     @self.pt.rank_zero
     def _write():
-      self.write_uf3_lammps_pot(model.bspline_config.chemical_system, model, "compressed_indices.uf3" )
+      self.write_uf3_lammps_pot(model.bspline_config.chemical_system, model, "descriptors.uf3" )
     _write()
     self.pt.all_barrier()
 
