@@ -184,6 +184,11 @@ class ParallelTools():
             self._sub_comm = self._comm
             self._sub_rank = self._rank
             self._sub_size = self._size
+            # Provisional until _comm_split() after Config (see fitsnap.FitSnap.__init__).
+            # Matches WORLD-as-sub_comm: one logical node, head at global rank 0.
+            self._node_index = 0
+            self._number_of_nodes = 1
+            self._sub_head_procs = [0]
 
         if self.stubs == 1:
             self._rank = 0

@@ -6,10 +6,18 @@ import numpy as np
 from datetime import datetime
 
 from fitsnap3lib.lib.uf3.data.composition import ChemicalSystem
-from fitsnap3lib.lib.uf3.regression import least_squares
-from fitsnap3lib.lib.uf3.regression.least_squares import WeightedLinearModel
 from fitsnap3lib.lib.uf3.representation.bspline import BSplineBasis
-from fitsnap3lib.lib.uf3.util import json_io
+
+def _format_species_display(obj):
+  """Format element tuples/lists for logging without Python string quotes."""
+  if isinstance(obj, str):
+    return obj
+  if isinstance(obj, tuple):
+    return "(" + ", ".join(_format_species_display(x) for x in obj) + ")"
+  if isinstance(obj, list):
+    return "[" + ", ".join(_format_species_display(x) for x in obj) + "]"
+  return str(obj)
+
 
 class Uf3(Section):
   """
@@ -70,13 +78,13 @@ class Uf3(Section):
 
     r_min_map = r_max_map = resolution_map = knots_map = None
     if self._config.has_option(sec, "r_min_map_json"):
-      r_min_map = json_io.load_interaction_map(self._config.get(sec, "r_min_map_json"))
+      r_min_map = ast.literal_eval(self._config.get(sec, "r_min_map_json"))
     if self._config.has_option(sec, "r_max_map_json"):
-      r_max_map = json_io.load_interaction_map(self._config.get(sec, "r_max_map_json"))
+      r_max_map = ast.literal_eval(self._config.get(sec, "r_max_map_json"))
     if self._config.has_option(sec, "resolution_map_json"):
       resolution_map = ast.literal_eval(self._config.get(sec, "resolution_map_json"))
     if self._config.has_option(sec, "knots_map_json"):
-      knots_map = json_io.load_interaction_map(self._config.get(sec, "knots_map_json"))["knots"]
+      knots_map = ast.literal_eval(self._config.get(sec, "knots_map_json"))["knots"]
 
     if r_max_map is None and self._config.has_option(sec, "r_max"):
       r_max = float(self._config.get(sec, "r_max"))
@@ -111,20 +119,46 @@ class Uf3(Section):
     self.type_mapping = {el: i + 1 for i, el in enumerate(self.type)}
     self.potential_element_args = " ".join(self.type)
 
-    model = WeightedLinearModel(bspline_config=self.bspline_basis)
-    model.coefficients = list(range(model.n_feats))
     @self.pt.rank_zero
     def _write():
-      self.write_uf3_lammps_pot(model.bspline_config.chemical_system, model, "descriptors.uf3" )
+      self.write_uf3_lammps_pot("descriptors.uf3")
     _write()
     self.pt.all_barrier()
 
+    self.pt.single_print(f"\n*** {self.bspline_basis}\n\n")
+
     self.pt.single_print(
       f"----------------------------------------------------------------\n"
-      f"  UF3 B-spline basis                                            \n"
-      f"    elements {' '.join(self.type)} degree {self.degree}         \n"
-      f"    ncoeff {self.ncoeff} (descriptor cols) full_features {self.nfeats}\n"
-      f"\n\n self.feature_partition_sizes {self.feature_partition_sizes}\n"
+      f"  UF3 B-SPLINE BASIS                                            \n"
+      f"                                                                \n"
+      f"    Xie, S.R., Rupp, M. & Hennig, R.G.,                         \n"
+      f"    Ultra-fast interpretable machine-learning potentials.       \n"
+      f"    npj computational materials 9, 162 (2023).                  \n"
+      f"    https://doi.org/10.1038/s41524-023-01092-7                  \n"
+      f"                                                                \n"
+      f"    CHEMICAL SYSTEM:                                            \n"
+      f"      Elements: {_format_species_display(self.chemical_system.element_list)}             \n"
+      f"      Degree: {self.chemical_system.degree}                     \n"
+      f"      Singles: {_format_species_display(self.chemical_system.interactions_map[1])}       \n"
+      f"      Pairs: {_format_species_display(self.chemical_system.interactions_map[2])}         "
+    )
+
+    if self.chemical_system.degree >= 3: self.pt.single_print(
+      f"      Triplets: {_format_species_display(self.chemical_system.interactions_map[3])}      \n"
+    )
+
+    self.pt.single_print(
+      f"    BASIS FUNCTIONS:                                            "
+    )
+
+    sizes = self.bspline_basis.get_interaction_partitions()[0]
+    for n in range(1, self.bspline_basis.degree + 1):
+      for interaction in self.bspline_basis.interactions_map[n]:
+        self.pt.single_print(
+          f"       {_format_species_display(interaction)}: {sizes[interaction]:d}"
+        )
+
+    self.pt.single_print(
       f"----------------------------------------------------------------\n"
     )
 
@@ -134,15 +168,10 @@ class Uf3(Section):
       return json.loads(val.replace("'", '"'))
     return int(val)
 
-  def write_uf3_lammps_pot(self, chemical_sys, model, path, knots_spacing_type="nk" ):
-    """Returns list
+  def write_uf3_lammps_pot(self, path, knots_spacing_type="nk"):
+    """Write a LAMMPS UF3 potential file (2B/3B blocks) for ``compute uf3`` descriptors."""
 
-    Creates and writes UF3 lammps potential files. Takes UF3 composition object,
-    UF3 model, knots_spacing_type, name of potential directory, name of uf3
-    lammps pot file to be generateas, author and lammps units input. Will
-    overwrite the files if files with the same exists
-    """
-    
+    chemical_sys = self.chemical_system
     current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     author = "FitSNAP"
     leading_trim = 0
@@ -152,18 +181,13 @@ class Uf3(Section):
     self.basis_ranks = []
     self.blist = []
 
-    coeff_idx = 0
-    self.pt.all_print(f"*** model.bspline_config.get_interaction_partitions() {model.bspline_config.get_interaction_partitions()}")
-
-
     with open(path, "w") as pot:
 
       for interaction in chemical_sys.interactions_map[2]:
 
-        knots_2b = model.bspline_config.knots_map[interaction]
-        self.pt.all_print(f"*** bspline_config {model.bspline_config} interaction {interaction} knots_2b {knots_2b}")
-        length = model.bspline_config.get_interaction_partitions()[0][interaction]
-        start_idx = model.bspline_config.get_interaction_partitions()[1][interaction]
+        knots_2b = self.bspline_basis.knots_map[interaction]
+        length = self.bspline_basis.get_interaction_partitions()[0][interaction]
+        start_idx = self.bspline_basis.get_interaction_partitions()[1][interaction]
         end_idx = start_idx + length
         self.basis_ranks.extend([1] * length)
         self.blist.extend([f"{interaction[0]} {interaction[1]}  .  {knot}" for knot in knots_2b[start_idx:end_idx]])
@@ -173,34 +197,43 @@ class Uf3(Section):
         if knots_spacing_type == "uk": pot.write(" uk\n")
         elif knots_spacing_type == "nk": pot.write(" nk\n")
         else: raise ValueError(f"Knot spacing type {knots_spacing_type} not uk or nk")
-        pot.write(f"{model.bspline_config.r_max_map[interaction]} ")
-        pot.write(f"{len(model.bspline_config.knots_map[interaction])}\n")
+        pot.write(f"{self.bspline_basis.r_max_map[interaction]} ")
+        pot.write(f"{len(self.bspline_basis.knots_map[interaction])}\n")
         pot.write(" ".join([f'{v:.17g}' for v in knots_2b]) + "\n")
-        pot.write(f"{model.bspline_config.get_interaction_partitions()[0][interaction]}\n")
-        pot.write(" ".join([f'{v-1:.0f}' for v in range(start_idx,end_idx)]) + "\n")
+        pot.write(f"{self.bspline_basis.get_interaction_partitions()[0][interaction]}\n")
+        pot.write(" ".join([f'{v-1:.0f}' for v in range(start_idx, end_idx)]) + "\n")
         pot.write("#\n")
 
-      if 3 in model.bspline_config.interactions_map:
-        for interaction in model.bspline_config.interactions_map[3]:
+      if 3 in self.bspline_basis.interactions_map:
+        for interaction in self.bspline_basis.interactions_map[3]:
+          km = self.bspline_basis.knots_map[interaction]
+          length = self.bspline_basis.get_interaction_partitions()[0][interaction]
+          start_idx = self.bspline_basis.get_interaction_partitions()[1][interaction]
+          indices = list(range(start_idx, start_idx + length))
+          decompressed = self.bspline_basis.decompress_3B(indices, interaction)
+          d0, d1, d2 = decompressed.shape
+          exp_ij, exp_ik, exp_jk = d0 + 4, d1 + 4, d2 + 4
+          nk_ij, nk_ik, nk_jk = len(km[0]), len(km[1]), len(km[2])
+          if (nk_ij, nk_ik, nk_jk) != (exp_ij, exp_ik, exp_jk):
+            raise RuntimeError(
+              f"UF3 3B {interaction}: knot lengths (ij,ik,jk)=({nk_ij},{nk_ik},{nk_jk}) "
+              f"!= coefficient grid+4 ({exp_ij},{exp_ik},{exp_jk}). "
+              "LAMMPS requires nknots = ncoef_per_dim + 4 for each 3B dimension."
+            )
+
           pot.write(f"#UF3 POT UNITS: {lammps_units} DATE: {current_datetime} AUTHOR: {author} CITATION:\n")
           pot.write(f"3B {interaction[0]} {interaction[1]} {interaction[2]} {leading_trim} {trailing_trim}")
           if knots_spacing_type == "uk": pot.write(" uk\n")
           elif knots_spacing_type == "nk": pot.write(" nk\n")
           else: raise ValueError(f"Knot spacing type {knots_spacing_type} not uk or nk")
-          pot.write(f"{model.bspline_config.r_max_map[interaction][2]} ")
-          pot.write(f"{model.bspline_config.r_max_map[interaction][1]} ")
-          pot.write(f"{model.bspline_config.r_max_map[interaction][0]} ")
-          pot.write(f"{len(model.bspline_config.knots_map[interaction][2])} ")
-          pot.write(f"{len(model.bspline_config.knots_map[interaction][1])} ")
-          pot.write(f"{len(model.bspline_config.knots_map[interaction][0])} \n")
-          pot.write(" ".join([f'{v:.17g}' for v in model.bspline_config.knots_map[interaction][2]]) + "\n")
-          pot.write(" ".join([f'{v:.17g}' for v in model.bspline_config.knots_map[interaction][1]]) + "\n")
-          pot.write(" ".join([f'{v:.17g}' for v in model.bspline_config.knots_map[interaction][0]]) + "\n")
+          pot.write(f"{self.bspline_basis.r_max_map[interaction][2]} ")
+          pot.write(f"{self.bspline_basis.r_max_map[interaction][1]} ")
+          pot.write(f"{self.bspline_basis.r_max_map[interaction][0]} ")
+          pot.write(f"{nk_jk} {nk_ik} {nk_ij} \n")
+          pot.write(" ".join([f'{v:.17g}' for v in km[2]]) + "\n")
+          pot.write(" ".join([f'{v:.17g}' for v in km[1]]) + "\n")
+          pot.write(" ".join([f'{v:.17g}' for v in km[0]]) + "\n")
 
-          length = model.bspline_config.get_interaction_partitions()[0][interaction]
-          start_idx = model.bspline_config.get_interaction_partitions()[1][interaction]
-          indices = list(range(start_idx, start_idx + length))
-          decompressed = model.bspline_config.decompress_3B( indices, (interaction[0], interaction[1], interaction[2]))
           pot.write(f"{decompressed.shape[0]} {decompressed.shape[1]} {decompressed.shape[2]}\n")
           for i in range(decompressed.shape[0]):
             for j in range(decompressed.shape[1]):

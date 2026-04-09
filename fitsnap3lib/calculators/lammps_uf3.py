@@ -71,7 +71,8 @@ class LammpsUf3(LammpsBase):
 
   def _set_computes(self):
     elems = self._elem_args
-    self._lmp.command(f"compute uf3 all uf3 {self._lammps_nbody} descriptors.uf3 {elems}")
+    virial_flag = 1 if self.config.sections["CALCULATOR"].stress else 0
+    self._lmp.command(f"compute uf3 all uf3 {self._lammps_nbody} {virial_flag} descriptors.uf3 {elems}")
 
   def _collect_lammps(self):
     num_atoms = self._data["NumAtoms"]
@@ -99,13 +100,23 @@ class LammpsUf3(LammpsBase):
     index = self.shared_index
     dindex = self.distributed_index
 
-    lmp_uf3 = _extract_compute_np(self._lmp, "uf3", 0, 2, (nrows_uf3, ncols_uf3))
+    # Prefer LAMMPS-reported shape (extract_compute) over wrapping a raw pointer with a
+    # guessed size: if nrows_uf3 * ncols_uf3 were too large, np.frombuffer could read
+    # past the compute buffer and surface bogus NaNs/Inf.
+    lmp_uf3 = _extract_compute_np(self._lmp, "uf3", 0, 2, None)
+    expected_shape = (nrows_uf3, ncols_uf3)
+    if lmp_uf3.shape != expected_shape:
+      raise ValueError(
+        f"UF3: LAMMPS compute shape {lmp_uf3.shape} != expected {expected_shape} for "
+        f"{self._data['File']} (group {self._data['Group']}). "
+        "Check CALCULATOR energy/force/stress vs ncoeff and descriptors.uf3."
+      )
 
     np.set_printoptions(
         precision=3, suppress=False, floatmode='fixed', linewidth=np.inf,
         formatter={'float': '{: .3f}'.format}, threshold = 800, edgeitems=50
     )
-    self.pt.all_print(f"\n*** lmp_uf3 {lmp_uf3.shape}\n{lmp_uf3[:8]}\n");
+    #self.pt.all_print(f"\n*** lmp_uf3 {lmp_uf3.shape}\n{lmp_uf3[:8]}\n");
 
     if (np.isinf(lmp_uf3)).any() or (np.isnan(lmp_uf3)).any():
       raise ValueError(f"NaN in descriptors of {self._data['File']} from group {self._data['Group']}")
@@ -157,16 +168,16 @@ class LammpsUf3(LammpsBase):
 
     if self.config.sections["CALCULATOR"].stress:
       vb_sum_temp = 160.2176565 * lmp_uf3[irow:irow + nrows_virial, :ncols_descriptors] / lmp_volume
-      vb_sum_temp.shape = (ndim_virial, self._ncoeff)
+      vb_sum_temp.shape = (nrows_virial, self._ncoeff)
       if not self._bzeroflag:
         onehot_atoms = np.zeros((np.shape(vb_sum_temp)[0], self._numtypes))
         vb_sum_temp = np.concatenate([onehot_atoms, vb_sum_temp], axis=1)
-      self.pt.shared_arrays['a'].array[index:index + ndim_virial] = vb_sum_temp
+      self.pt.shared_arrays['a'].array[index:index + nrows_virial] = vb_sum_temp
       ref_stress = lmp_uf3[irow:irow + nrows_virial, icolref]
       tmp1 = 160.2176565 * self._data["Stress"][[0, 1, 2, 1, 0, 0], [0, 1, 2, 2, 2, 1]].ravel()
       tmp2 = ref_stress / 10000
-      self.pt.shared_arrays['b'].array[index:index + ndim_virial] = tmp1 - tmp2
-      self.pt.shared_arrays['w'].array[index:index + ndim_virial] = self._data["vweight"]
+      self.pt.shared_arrays['b'].array[index:index + nrows_virial] = tmp1 - tmp2
+      self.pt.shared_arrays['w'].array[index:index + nrows_virial] = self._data["vweight"]
       self.pt.fitsnap_dict['Row_Type'][dindex:dindex + nrows_virial] = ['Stress'] * nrows_virial
       self.pt.fitsnap_dict['Atom_I'][dindex:dindex + nrows_virial] = [int(0)] * nrows_virial
       index += nrows_virial

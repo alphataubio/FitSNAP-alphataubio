@@ -3,21 +3,23 @@
 # -----------------------------------------------------------------------------
 [UF3]
 type = Al Ni
-degree = 2
+degree = 3
 knot_strategy = linear
-r_min = 1.0
-r_max = 5.0
-resolution = 8
-trailing_trim = 3
-bzeroflag = 1
+
+
+r_min_map_json = {("Al", "Ni"): 0, ("Al", "Ni", "Ni"): [1,1,1]}
+r_max_map_json = {("Al", "Ni"): 8.5, ("Al", "Ni", "Ni"): [4.25,4.25,8.5]}
+resolution_map_json = {("Al", "Ni"): 15, ("Al", "Ni", "Ni"): [5,5,10]}
+
+bzeroflag = 0
 
 
 # -----------------------------------------------------------------------------
 [CALCULATOR]
 calculator = LAMMPSUF3
 energy = 1    # goal < 1.64 meV/atom
-force  = 1    # goal < 28 meV/A
-stress = 0    # goal < 0.09 GPa
+force  = 0    # goal < 28 meV/A
+stress = 1    # goal < 0.09 GPa
 
 
 # -----------------------------------------------------------------------------
@@ -35,7 +37,7 @@ alpha = 1e-6
 # -----------------------------------------------------------------------------
 [SCRAPER]
 scraper = ADIOS2
-max_configs_per_rank = 5
+#max_configs_per_rank = 100
 
 
 # -----------------------------------------------------------------------------

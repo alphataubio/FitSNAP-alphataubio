@@ -54,3 +54,7 @@ fitsnap3lib/lib/sym_ACE/lib/wigner_rpi_rank3.json
 fitsnap3lib/lib/sym_ACE/lib/wigner_rpi_rank2.json
 fitsnap3lib/lib/sym_ACE/lib/wigner_rpi_rank1.json
 examples/AlNi_UF3_SLATE_RIDGE/AlNi_UF3_SLATE_RIDGE.uf3
+examples/AlNi_UF3/descriptors.uf3
+examples/W_UF3/descriptors.uf3
+examples/AlNi_UF3/AlNi_UF3_SLATE_RIDGE.uf3coeff
+examples/W_UF3/W_UF3.uf3coeff

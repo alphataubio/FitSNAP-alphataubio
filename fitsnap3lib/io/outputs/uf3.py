@@ -9,7 +9,7 @@ from fitsnap3lib.io.sections.sections import Section
 
 class Uf3(Output):
   """
-  Write UF3 ``model.json`` (via ``WeightedLinearModel.to_json``) and fitted ``.uf3``.
+  Write UF3 potential.
 
   Supports ``[UF3] bzeroflag = 0`` (composition + 2-body columns in ``A``) and ``1``
   (2-body columns only; 1-body slots in the exported vector are set to zero).
@@ -26,14 +26,12 @@ class Uf3(Output):
     decorated_write()
 
   def write_lammps(self, coeffs):
-    from fitsnap3lib.lib.uf3.regression.least_squares import WeightedLinearModel
 
     calc = self.config.sections["CALCULATOR"].calculator.upper()
     if calc != "LAMMPSUF3":
       raise TypeError("UF3 output style requires calculator LAMMPSUF3")
 
     uf3s = Section.sections["UF3"]
-    model = WeightedLinearModel(bspline_config=uf3s.bspline_basis)
     c = np.asarray(coeffs, dtype=float).ravel()
     nt = uf3s.numtypes
     n2 = uf3s.ncoeff
@@ -49,7 +47,7 @@ class Uf3(Output):
         )
       full = np.zeros(ntot, dtype=float)
       full[nt:] = c[:n2]
-      model.coefficients = full
+      self.coefficients = full
     else:
       # Design matrix is [composition, spline columns] — same order as BSplineBasis partition_sizes
       # (1 per element, then 2-body blocks, then 3-body if degree>2).
@@ -58,19 +56,16 @@ class Uf3(Output):
           f"UF3 bzeroflag=0: expected at least {ntot} coefficients "
           f"({nt} composition + {n2} 2-body), got {c.size}"
         )
-      model.coefficients = c[:ntot].copy()
+      self.coefficients = c[:ntot].copy()
 
-    outsec = Section.sections["OUTFILE"]
-    potential_name = outsec.potential_name
-    odir = Section.get_outfile_directory(outsec)
+    outfile_section = Section.sections["OUTFILE"]
+    potential_name = outfile_section.potential_name
+    odir = Section.get_outfile_directory(outfile_section)
     pdir = os.path.dirname(potential_name) or odir
     stem = os.path.basename(potential_name)
     os.makedirs(pdir, exist_ok=True)
 
-    json_path = os.path.join(pdir, f"{stem}_model.json")
-    model.to_json(json_path)
-
-    self.write_uf3_lammps_pot(model.bspline_config.chemical_system, model, f"{stem}.uf3")
+    self.write_uf3_lammps_pot(f"{stem}.uf3")
 
     uf3_section = Section.sections["UF3"]
     if uf3_section.bzeroflag: coeff_names = uf3_section.blist
@@ -78,14 +73,13 @@ class Uf3(Output):
     coeff_path = os.path.join(pdir, f"{stem}.uf3coeff")
     with optional_open(coeff_path, "wt") as fp:
       fp.write(
-        f"# FitSNAP UF3 linear fit coefficients (flattened, length {model.n_feats}; "
+        f"# FitSNAP UF3 linear fit coefficients (flattened, length {len(self.coefficients)}; "
         f"bzeroflag={int(uf3s.bzeroflag)})\n\n"
       )
-      # np.asarray(model.coefficients).ravel()
       fp.write("\n".join(f" {coeff:<30.18} #  {bname}" for coeff, bname in zip(coeffs, coeff_names)))
 
 
-  def write_uf3_lammps_pot(self, chemical_sys, model, path, knots_spacing_type="nk"):
+  def write_uf3_lammps_pot(self, path, knots_spacing_type="nk"):
     """Returns list
 
     Creates and writes UF3 lammps potential files. Takes UF3 composition object,
@@ -99,46 +93,47 @@ class Uf3(Output):
     leading_trim = 0
     trailing_trim = 3
     lammps_units = Section.sections["REFERENCE"].units
+    bspline_basis = Section.sections["UF3"].bspline_basis
 
     with open(path, "w") as pot:
 
-      for interaction in chemical_sys.interactions_map[2]:
+      for interaction in bspline_basis.chemical_system.interactions_map[2]:
         pot.write(f"#UF3 POT UNITS: {lammps_units} DATE: {current_datetime} AUTHOR: {author} CITATION:\n")
         pot.write(f"2B {interaction[0]} {interaction[1]} {leading_trim} {trailing_trim}")
         if knots_spacing_type == "uk": pot.write(" uk\n")
         elif knots_spacing_type == "nk": pot.write(" nk\n")
         else: raise ValueError(f"Knot spacing type {knots_spacing_type} not uk or nk")
-        pot.write(f"{model.bspline_config.r_max_map[interaction]} ")
-        pot.write(f"{len(model.bspline_config.knots_map[interaction])}\n")
-        pot.write(" ".join([f'{v:.17g}' for v in model.bspline_config.knots_map[interaction]]) + "\n")
-        pot.write(f"{model.bspline_config.get_interaction_partitions()[0][interaction]}\n")
-        start_index = model.bspline_config.get_interaction_partitions()[1][interaction]
-        length = model.bspline_config.get_interaction_partitions()[0][interaction]
-        #pot.write(" ".join([f'{v:.17g}' for v in model.coefficients[start_index:start_index + length]]) + "\n")
-        pot.write(" ".join([f'1' for v in model.coefficients[start_index:start_index + length]]) + "\n")
+        pot.write(f"{bspline_basis.r_max_map[interaction]} ")
+        pot.write(f"{len(bspline_basis.knots_map[interaction])}\n")
+        pot.write(" ".join([f'{v:.17g}' for v in bspline_basis.knots_map[interaction]]) + "\n")
+        pot.write(f"{bspline_basis.get_interaction_partitions()[0][interaction]}\n")
+        start_idx = bspline_basis.get_interaction_partitions()[1][interaction]
+        length = bspline_basis.get_interaction_partitions()[0][interaction]
+        pot.write(" ".join([f'1' for v in self.coefficients[start_idx:start_idx + length]]) + "\n")
         pot.write("#\n")
 
-      if 3 in model.bspline_config.interactions_map:
-        for interaction in model.bspline_config.interactions_map[3]:
+      if 3 in bspline_basis.interactions_map:
+        for interaction in bspline_basis.interactions_map[3]:
+
+          length = bspline_basis.get_interaction_partitions()[0][interaction]
+          start_idx = bspline_basis.get_interaction_partitions()[1][interaction]
+          coeffs = self.coefficients[start_idx:start_idx + length]
+          decompressed = bspline_basis.decompress_3B(coeffs, interaction)
+
           pot.write(f"#UF3 POT UNITS: {lammps_units} DATE: {current_datetime} AUTHOR: {author} CITATION:\n")
           pot.write(f"3B {interaction[0]} {interaction[1]} {interaction[2]} {leading_trim} {trailing_trim}")
           if knots_spacing_type == "uk": pot.write(" uk\n")
           elif knots_spacing_type == "nk": pot.write(" nk\n")
           else: raise ValueError(f"Knot spacing type {knots_spacing_type} not uk or nk")
-          pot.write(f"{model.bspline_config.r_max_map[interaction][2]} ")
-          pot.write(f"{model.bspline_config.r_max_map[interaction][1]} ")
-          pot.write(f"{model.bspline_config.r_max_map[interaction][0]} ")
-          pot.write(f"{len(model.bspline_config.knots_map[interaction][2])} ")
-          pot.write(f"{len(model.bspline_config.knots_map[interaction][1])} ")
-          pot.write(f"{len(model.bspline_config.knots_map[interaction][0])} \n")
-          pot.write(" ".join(['{v:.17g}' for v in model.bspline_config.knots_map[interaction][2]]) + "\n")
-          pot.write(" ".join(['{v:.17g}' for v in model.bspline_config.knots_map[interaction][1]]) + "\n")
-          pot.write(" ".join(['{v:.17g}' for v in model.bspline_config.knots_map[interaction][0]]) + "\n")
-
-          solutions = least_squares.arrange_coefficients(model.coefficients, model.bspline_config)
-          decompressed = model.bspline_config.decompress_3B( \
-            solutions[(interaction[0], interaction[1],interaction[2])], \
-            (interaction[0], interaction[1],interaction[2]))
+          pot.write(f"{bspline_basis.r_max_map[interaction][2]} ")
+          pot.write(f"{bspline_basis.r_max_map[interaction][1]} ")
+          pot.write(f"{bspline_basis.r_max_map[interaction][0]} ")
+          pot.write(f"{len(bspline_basis.knots_map[interaction][2])} ")
+          pot.write(f"{len(bspline_basis.knots_map[interaction][1])} ")
+          pot.write(f"{len(bspline_basis.knots_map[interaction][0])} \n")
+          pot.write(" ".join(['{v:.17g}' for v in bspline_basis.knots_map[interaction][2]]) + "\n")
+          pot.write(" ".join(['{v:.17g}' for v in bspline_basis.knots_map[interaction][1]]) + "\n")
+          pot.write(" ".join(['{v:.17g}' for v in bspline_basis.knots_map[interaction][0]]) + "\n")
 
           pot.write(f"{decompressed.shape[0]} {decompressed.shape[1]} {decompressed.shape[2]}\n")
           for i in range(decompressed.shape[0]):

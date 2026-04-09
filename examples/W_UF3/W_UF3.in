@@ -2,13 +2,17 @@
 # -----------------------------------------------------------------------------
 [UF3]
 type = W
-degree = 3
+degree = 2
 knot_strategy = linear
-r_min = 0
-r_max = 5
-#resolution = 5
-resolution_map_json = {("W", "W"): 2, ("W", "W", "W"): [3,4,5]}
-bzeroflag = 1
+#r_min = 1
+#r_max = 5.5
+
+r_min_map_json = {("W", "W"): 1, ("W", "W", "W"): [1,1,1]}
+r_max_map_json = {("W", "W"): 8.5, ("W", "W", "W"): [4.25,4.25,8.5]}
+resolution_map_json = {("W", "W"): 10, ("W", "W", "W"): [10,10,20]}
+
+bzeroflag = 0
+
 
 
 # -----------------------------------------------------------------------------
@@ -20,8 +24,8 @@ W = 0.0
 [CALCULATOR]
 calculator = LAMMPSUF3
 energy = 1
-force  = 0
-stress = 0
+force  = 1
+stress = 1
 
 
 # -----------------------------------------------------------------------------
@@ -43,7 +47,7 @@ threshold_lambda = 1e99
 # -----------------------------------------------------------------------------
 [SCRAPER]
 scraper = xyz
-max_configs_per_rank = 2
+#max_configs_per_rank = 2
 
 [PATH]
 dataPath = XYZ
@@ -53,7 +57,7 @@ dataPath = XYZ
 [REFERENCE]
 units = metal
 atom_style = atomic
-pair_style = zero 5.5
+pair_style = zero 8.5
 pair_coeff = * *
 
 
@@ -76,8 +80,8 @@ group_sections  = name training_size testing_size eweight fweight vweight
 group_types     = str  float         float        float   float   float
 smartweights    = 0
 random_sampling = 0
-#W_14_full            =      0.8           0.2          1     100     1e-12
-W_14            =      0.8           0.2          1     100     1e-12
+W_14_full            =      0.8           0.2          1     1     1e-12
+#W_14            =      0.8           0.2          1     100     1e-12
 
 
 # -----------------------------------------------------------------------------

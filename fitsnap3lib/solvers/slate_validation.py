@@ -323,7 +323,10 @@ class SlateValidation(SlateCommon):
           else:
             units = ""
 
-          fig, ax = plt.subplots(figsize=(6, 6), layout='constrained')
+          fig = plt.figure(figsize=(9.5, 5.9), layout='constrained')
+          gs = fig.add_gridspec(1, 2, width_ratios=[62, 38])
+          ax = fig.add_subplot(gs[0, 0])
+          fig.add_subplot(gs[0, 1]).set_visible(False)
           tab20 = plt.cm.get_cmap('tab20')
           all_preds, all_truths = [], []
 
@@ -414,12 +417,16 @@ class SlateValidation(SlateCommon):
             final_handles.append(hl_dict[pp_key])
             final_labels.append(pp_key)
 
+          # Anchor legend to the axes box (equal aspect shrinks ax vertically; a
+          # full-height leg_ax would misalign the legend top with the plot top).
+          fig.canvas.draw()
           leg = fig.legend(
             handles=final_handles,
             labels=final_labels,
             loc="upper left",
-            bbox_to_anchor=(1.05, 0.99),
-            ncol=2,
+            bbox_to_anchor=(1.02, 1.0),
+            bbox_transform=ax.transAxes,
+            ncol=1,
             borderpad=.618,
             title="GROUPS",
             title_fontsize=12,
