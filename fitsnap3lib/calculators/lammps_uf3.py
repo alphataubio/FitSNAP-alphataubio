@@ -14,18 +14,11 @@ class LammpsUf3(LammpsBase):
     self._i = 0
     self._row_index = 0
 
-    uf3 = Section.sections["UF3"]
-    self._ncoeff = uf3.ncoeff
-    self._numtypes = uf3.numtypes
-    self._type_mapping = uf3.type_mapping
-    self._bzeroflag = uf3.bzeroflag
-    self._elem_args = uf3.potential_element_args
-    self._lammps_nbody = uf3.lammps_nbody
+    self._uf3 = Section.sections["UF3"]
     self.pt.check_lammps()
 
   def get_width(self):
-    if self._bzeroflag: return self._ncoeff
-    return self._ncoeff + self._numtypes
+    return self._uf3.ncoeff
 
   def _pre_box_kokkos_setup2(self):
     self._lmp.command("newton off")
@@ -37,7 +30,7 @@ class LammpsUf3(LammpsBase):
     self._lmp = self.pt.initialize_lammps(self.config.args.lammpslog, printlammps=0, cmds=cmds)
 
   def _set_box(self):
-    self._set_box_helper(numtypes=self._numtypes)
+    self._set_box_helper(numtypes=self._uf3.numtypes)
     #self._lmp.command("kspace_style pppm 1e-4")
 
   def _prepare_lammps(self):
@@ -59,7 +52,7 @@ class LammpsUf3(LammpsBase):
 
   def _create_atoms(self):
     for i, (a_t, (a_x, a_y, a_z)) in enumerate(zip(self._data["AtomTypes"], self._data["Positions"])):
-      a_t = self._type_mapping[a_t]
+      a_t = self._uf3.type_mapping[a_t]
       self._lmp.command(f"create_atoms {a_t} single {a_x:20.20g} {a_y:20.20g} {a_z:20.20g} remap yes")
     n_atoms = int(self._lmp.get_natoms())
     assert i + 1 == n_atoms, "Atom counts don't match when creating atoms: {}, {}\nGroup and configuration: {} {}".format(i + 1, n_atoms, self._data["Group"],self._data["File"])
@@ -70,9 +63,9 @@ class LammpsUf3(LammpsBase):
     assert i + 1 == n_atoms, "Atom counts don't match when assigning charge: {}, {}\nGroup and configuration: {} {}".format(i + 1, n_atoms, self._data["Group"],self._data["File"])
 
   def _set_computes(self):
-    elems = self._elem_args
     virial_flag = 1 if self.config.sections["CALCULATOR"].stress else 0
-    self._lmp.command(f"compute uf3 all uf3 {self._lammps_nbody} {virial_flag} descriptors.uf3 {elems}")
+    types = " ".join(self._uf3.type)
+    self._lmp.command(f"compute uf3 all uf3 {self._uf3.degree} {virial_flag} descriptors.uf3 {types}")
 
   def _collect_lammps(self):
     num_atoms = self._data["NumAtoms"]
@@ -95,7 +88,7 @@ class LammpsUf3(LammpsBase):
     nrows_force = 3 * num_atoms
     nrows_virial = 6 if self.config.sections["CALCULATOR"].stress else 0
     nrows_uf3 = nrows_energy + nrows_force + nrows_virial
-    ncols_descriptors = self._ncoeff
+    ncols_descriptors = self._uf3.ncoeff
     ncols_uf3 = ncols_descriptors + 1
     index = self.shared_index
     dindex = self.distributed_index
@@ -131,13 +124,16 @@ class LammpsUf3(LammpsBase):
     icolref = ncols_descriptors
 
     if self.config.sections["CALCULATOR"].energy:
-      b_sum_temp = lmp_uf3[irow, :ncols_descriptors] / num_atoms
-      if not self._bzeroflag:
-        onehot_atoms = np.zeros(self._numtypes)
-        for atom in self._data["AtomTypes"]: onehot_atoms[self._type_mapping[atom] - 1] += 1
-        onehot_atoms /= len(self._data["AtomTypes"])
-        b_sum_temp = np.concatenate((onehot_atoms, b_sum_temp), axis=0)
-      self.pt.shared_arrays['a'].array[index] = b_sum_temp
+      if self._uf3.bzeroflag:
+        lmp_uf3[irow, :ncols_descriptors] /= num_atoms
+      else:
+        lmp_uf3[irow, self._uf3.numtypes:ncols_descriptors] /= num_atoms
+        for atom in self._data["AtomTypes"]: lmp_uf3[irow, self._uf3.type_mapping[atom] - 1] += 1
+        lmp_uf3[irow, :self._uf3.numtypes] /= len(self._data["AtomTypes"])
+
+        #self.pt.single_print(f"*** lmp_uf3[irow,:2] {lmp_uf3[irow,:2]}")
+
+      self.pt.shared_arrays['a'].array[index] = lmp_uf3[irow, :-1]
       ref_energy = lmp_uf3[irow, icolref]
       self.pt.shared_arrays['b'].array[index] = (energy - ref_energy) / num_atoms
       self.pt.shared_arrays['w'].array[index] = self._data["eweight"]
@@ -151,10 +147,7 @@ class LammpsUf3(LammpsBase):
     if self.config.sections["CALCULATOR"].force:
       s = slice(index, index + 3*num_atoms)
       db_atom_temp = lmp_uf3[irow:irow + nrows_force, :ncols_descriptors]
-      db_atom_temp.shape = (3*num_atoms, self._ncoeff)
-      if not self._bzeroflag:
-        onehot_atoms = np.zeros((db_atom_temp.shape[0], self._numtypes))
-        db_atom_temp = np.concatenate([onehot_atoms, db_atom_temp], axis=1)
+      db_atom_temp.shape = (3*num_atoms, self._uf3.ncoeff)
       self.pt.shared_arrays['a'].array[s] = db_atom_temp
       ref_forces = lmp_uf3[irow:irow + nrows_force, icolref]
       self.pt.shared_arrays['b'].array[s] = self._data["Forces"].ravel() - ref_forces
@@ -167,16 +160,12 @@ class LammpsUf3(LammpsBase):
     irow += nrows_force
 
     if self.config.sections["CALCULATOR"].stress:
-      vb_sum_temp = 160.2176565 * lmp_uf3[irow:irow + nrows_virial, :ncols_descriptors] / lmp_volume
-      vb_sum_temp.shape = (nrows_virial, self._ncoeff)
-      if not self._bzeroflag:
-        onehot_atoms = np.zeros((np.shape(vb_sum_temp)[0], self._numtypes))
-        vb_sum_temp = np.concatenate([onehot_atoms, vb_sum_temp], axis=1)
+      vb_sum_temp = lmp_uf3[irow:irow + nrows_virial, :ncols_descriptors] / lmp_volume
+      vb_sum_temp.shape = (nrows_virial, self._uf3.ncoeff)
       self.pt.shared_arrays['a'].array[index:index + nrows_virial] = vb_sum_temp
       ref_stress = lmp_uf3[irow:irow + nrows_virial, icolref]
-      tmp1 = 160.2176565 * self._data["Stress"][[0, 1, 2, 1, 0, 0], [0, 1, 2, 2, 2, 1]].ravel()
-      tmp2 = ref_stress / 10000
-      self.pt.shared_arrays['b'].array[index:index + nrows_virial] = tmp1 - tmp2
+      tmp1 = self._data["Stress"][[0, 1, 2, 1, 0, 0], [0, 1, 2, 2, 2, 1]].ravel()
+      self.pt.shared_arrays['b'].array[index:index + nrows_virial] = tmp1 - ref_stress
       self.pt.shared_arrays['w'].array[index:index + nrows_virial] = self._data["vweight"]
       self.pt.fitsnap_dict['Row_Type'][dindex:dindex + nrows_virial] = ['Stress'] * nrows_virial
       self.pt.fitsnap_dict['Atom_I'][dindex:dindex + nrows_virial] = [int(0)] * nrows_virial

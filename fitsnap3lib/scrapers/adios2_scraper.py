@@ -163,9 +163,11 @@ class ADIOS2(Scraper):
 
         self.pt.single_print(
           f"----------------------------------------------------------------\n"
-          f"  ADIOS2 scraper\n    {self.dataPath}\n"
+          f"  ADIOS2 SCRAPER                                                \n"
+          f"                                                                \n"
+          f"    {self.dataPath}                                             \n"
           f"    {self.all_nconfigs} configurations with [{' '.join(self.element_map)}]\n"
-          f"    forces {self.has_forces}, stress {self.has_stress}, charge {self.has_charge}"
+          f"    forces {self.has_forces}, stress {self.has_stress}, charge {self.has_charge}\n"
         )
 
     except Exception as e:
@@ -333,7 +335,7 @@ class ADIOS2(Scraper):
         total_train += train_size
         total_test += test_size
         self.pt.single_print(f"    {group_name:<{max_len}}  {train_size:>8}    {test_size:>8}")
-      self.pt.single_print(f"    {'TOTAL':<{max_len}}  {total_train:>8}    {total_test:>8}")
+      self.pt.single_print(f"    {'TOTAL':<{max_len}}  {total_train:>8}    {total_test:>8}\n")
 
     for config_idx in range(c0, c1):
       if self.has_charge:
@@ -389,6 +391,7 @@ class ADIOS2(Scraper):
       if self.rank == 0:
         self.pt.single_print("    AUTO_ESHIFT")
         for el, shift in self.eshift_dict.items(): self.pt.single_print(f"    {el:4s} {shift:>.6f} eV")
+        self.pt.single_print(f"")
 
       # Apply exact shifts to local configurations
       for config in self.data:
@@ -455,7 +458,7 @@ class ADIOS2(Scraper):
 
     if self.has_stress and self.use_stress:
       stress = self.stresses[local_k].reshape((3, 3))
-      data_dict['Stress'] = stress.copy() * 1602176.6208
+      data_dict['Stress'] = stress.copy() * 1.602176634e6
 
     old_data = self.data
     old_conversions = self.conversions

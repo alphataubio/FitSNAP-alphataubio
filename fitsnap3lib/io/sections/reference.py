@@ -74,3 +74,12 @@ class Reference(Section):
         else:
             return "?"
 
+    @property
+    def error_stress_units(self):
+        if self.units == "metal":
+            return "GPa"
+        elif self.units == "real":
+            return "atm"
+        else:
+            return "?"
+

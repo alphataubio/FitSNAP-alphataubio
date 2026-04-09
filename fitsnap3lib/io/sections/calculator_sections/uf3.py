@@ -8,14 +8,14 @@ from datetime import datetime
 from fitsnap3lib.lib.uf3.data.composition import ChemicalSystem
 from fitsnap3lib.lib.uf3.representation.bspline import BSplineBasis
 
-def _format_species_display(obj):
+def _format_species(obj):
   """Format element tuples/lists for logging without Python string quotes."""
   if isinstance(obj, str):
     return obj
   if isinstance(obj, tuple):
-    return "(" + ", ".join(_format_species_display(x) for x in obj) + ")"
+    return "(" + ", ".join(_format_species(x) for x in obj) + ")"
   if isinstance(obj, list):
-    return "[" + ", ".join(_format_species_display(x) for x in obj) + "]"
+    return "[" + ", ".join(_format_species(x) for x in obj) + "]"
   return str(obj)
 
 
@@ -58,8 +58,6 @@ class Uf3(Section):
         "FitSNAP UF3: degree must be 2 (2-body .uf3 only) or 3 (2- and 3-body). "
         f"Got degree = {self.degree}."
       )
-    # LAMMPS ``pair_style uf3`` / ``compute uf3`` nbody: 2 or 3
-    self.lammps_nbody = 3 if self.degree > 2 else 2
 
     # ChemicalSystem sorts symbols (electronegativity / Z). LAMMPS ``compute uf3 E1 E2 ...`` maps
     # type 1 -> first symbol, etc., and column order follows nested type loops (1,1)..(1,nt)..(nt,nt).
@@ -114,18 +112,14 @@ class Uf3(Section):
     # (then 3-body if degree>2). LAMMPS ``compute uf3`` exposes 2-body columns, then 3-body
     # (same total count as these spline blocks when nbody=3 and the template includes 3B).
     self.feature_partition_sizes = self.bspline_basis.get_feature_partition_sizes()
-    self.nfeats = int(np.sum(self.feature_partition_sizes))
-    self.ncoeff = int(np.sum(self.feature_partition_sizes[self.numtypes :]))
+    self.ncoeff = int(np.sum(self.feature_partition_sizes))
     self.type_mapping = {el: i + 1 for i, el in enumerate(self.type)}
-    self.potential_element_args = " ".join(self.type)
 
     @self.pt.rank_zero
     def _write():
       self.write_uf3_lammps_pot("descriptors.uf3")
     _write()
     self.pt.all_barrier()
-
-    self.pt.single_print(f"\n*** {self.bspline_basis}\n\n")
 
     self.pt.single_print(
       f"----------------------------------------------------------------\n"
@@ -136,30 +130,30 @@ class Uf3(Section):
       f"    npj computational materials 9, 162 (2023).                  \n"
       f"    https://doi.org/10.1038/s41524-023-01092-7                  \n"
       f"                                                                \n"
-      f"    CHEMICAL SYSTEM:                                            \n"
-      f"      Elements: {_format_species_display(self.chemical_system.element_list)}             \n"
-      f"      Degree: {self.chemical_system.degree}                     \n"
-      f"      Singles: {_format_species_display(self.chemical_system.interactions_map[1])}       \n"
-      f"      Pairs: {_format_species_display(self.chemical_system.interactions_map[2])}         "
+      f"    CHEMICAL SYSTEM                                             \n"
+      f"    Elements: {_format_species(self.chemical_system.element_list)}\n"
+      f"    Degree: {self.chemical_system.degree}                     \n"
+      f"    Singles: {_format_species(self.chemical_system.interactions_map[1])}\n"
+      f"    Pairs: {_format_species(self.chemical_system.interactions_map[2])}"
     )
 
     if self.chemical_system.degree >= 3: self.pt.single_print(
-      f"      Triplets: {_format_species_display(self.chemical_system.interactions_map[3])}      \n"
+      f"    Triplets: {_format_species(self.chemical_system.interactions_map[3])}      "
     )
 
     self.pt.single_print(
-      f"    BASIS FUNCTIONS:                                            "
+      f"\n    BASIS FUNCTIONS                                             "
     )
 
     sizes = self.bspline_basis.get_interaction_partitions()[0]
     for n in range(1, self.bspline_basis.degree + 1):
       for interaction in self.bspline_basis.interactions_map[n]:
         self.pt.single_print(
-          f"       {_format_species_display(interaction)}: {sizes[interaction]:d}"
+          f"    {_format_species(interaction):16s} {sizes[interaction]:4d}"
         )
 
     self.pt.single_print(
-      f"----------------------------------------------------------------\n"
+      f"    TOTAL            {sum(self.feature_partition_sizes):4d}     \n"
     )
 
   @staticmethod
@@ -181,16 +175,21 @@ class Uf3(Section):
     self.basis_ranks = []
     self.blist = []
 
+    for interaction in chemical_sys.interactions_map[1]:
+      self.basis_ranks.extend([0] * len(interaction))
+      self.blist.append(f"{interaction}")
+
     with open(path, "w") as pot:
 
       for interaction in chemical_sys.interactions_map[2]:
 
         knots_2b = self.bspline_basis.knots_map[interaction]
         length = self.bspline_basis.get_interaction_partitions()[0][interaction]
-        start_idx = self.bspline_basis.get_interaction_partitions()[1][interaction]
+        start_idx = self.bspline_basis.get_interaction_partitions()[1][interaction] + 1
         end_idx = start_idx + length
         self.basis_ranks.extend([1] * length)
-        self.blist.extend([f"{interaction[0]} {interaction[1]}  .  {knot}" for knot in knots_2b[start_idx:end_idx]])
+        self.blist.extend([f"{interaction[0]} {interaction[1]}  .  {knot:.3f}" for knot in knots_2b[start_idx:end_idx]])
+        self.pt.single_print(f"*** len(blist_2b) {len(self.blist)} {self.blist}")
 
         pot.write(f"#UF3 POT UNITS: {lammps_units} DATE: {current_datetime} AUTHOR: {author} CITATION:\n")
         pot.write(f"2B {interaction[0]} {interaction[1]} {leading_trim} {trailing_trim}")
@@ -204,11 +203,12 @@ class Uf3(Section):
         pot.write(" ".join([f'{v-1:.0f}' for v in range(start_idx, end_idx)]) + "\n")
         pot.write("#\n")
 
+
       if 3 in self.bspline_basis.interactions_map:
         for interaction in self.bspline_basis.interactions_map[3]:
           km = self.bspline_basis.knots_map[interaction]
           length = self.bspline_basis.get_interaction_partitions()[0][interaction]
-          start_idx = self.bspline_basis.get_interaction_partitions()[1][interaction]
+          start_idx = self.bspline_basis.get_interaction_partitions()[1][interaction] + 1
           indices = list(range(start_idx, start_idx + length))
           decompressed = self.bspline_basis.decompress_3B(indices, interaction)
           d0, d1, d2 = decompressed.shape
@@ -238,7 +238,15 @@ class Uf3(Section):
           for i in range(decompressed.shape[0]):
             for j in range(decompressed.shape[1]):
               pot.write(' '.join([f"{v-1:.0f}" for v in decompressed[i,j]]) + "\n")
+              for k in range(decompressed.shape[2]):
+                if decompressed[i,j,k]>1:
+                  self.basis_ranks.append(2)
+                  self.blist.append(
+                    f"{interaction[0]} {interaction[1]} {interaction[2]}  "
+                    f"{km[2][i]:.3f}  {km[1][j]:.3f}  {km[0][k]:.3f}"
+                  )
 
           pot.write("#\n")
 
 
+    self.pt.single_print(f"*** len(blist) {len(self.blist)}")

@@ -260,11 +260,13 @@ class ParallelTools():
         self._number_of_nodes = len(self._sub_head_procs)
         self._micro_comm = self._comm.Split(self._rank)
         
-        is_multinode_testing = " [multinode_testing]" if self.multinode_testing else ""
-        self.single_print("----------------------------------------------------------------\n"
-            f"ParallelTools{is_multinode_testing}: {self._size} ranks, "
-            f"{self._number_of_nodes} node(s), {self._sub_size} ranks/node\n"
-            "----------------------------------------------------------------\n"
+        is_multinode_testing = "ON" if self.multinode_testing else "OFF"
+        self.single_print(
+            f"----------------------------------------------------------------\n"
+            f"  PARALLEL TOOLS                                                \n"
+            f"                                                                \n"
+            f"    {self._size} ranks, {self._number_of_nodes} node(s), {self._sub_size} ranks/node\n"
+            f"    multinode_testing {is_multinode_testing}                    \n"
         )
 
     

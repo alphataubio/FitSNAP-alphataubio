@@ -157,7 +157,7 @@ class SlateValidation(SlateCommon):
           reference_section = self.config.sections["REFERENCE"]
           if row_type == 'Energy': row_units = f" ({reference_section.error_energy_units})"
           elif row_type == 'Force': row_units = f" ({reference_section.error_force_units})"
-          elif row_type == 'Stress': row_units = f" ({reference_section.stress_units})"
+          elif row_type == 'Stress': row_units = f" ({reference_section.error_stress_units})"
           else: row_units = ""
           subsystem_lines = [f"### {row_type}{row_units}\n\n"]
                   
@@ -308,18 +308,22 @@ class SlateValidation(SlateCommon):
           scatter_factor = 1.0
           if row_type == 'Energy':
             if reference_section.units == "metal":
-              scatter_factor = 1.0
+              scatter_factor = 1000.0
               units = reference_section.error_energy_units
             else:
               units = reference_section.energy_units
           elif row_type == 'Force':
             if reference_section.units == "metal":
-              scatter_factor = 1.0
+              scatter_factor = 1000.0
               units = reference_section.error_force_units
             else:
               units = reference_section.force_units
           elif row_type == 'Stress':
-            units = reference_section.stress_units
+            if reference_section.units == "metal":
+              scatter_factor = 0.0001
+              units = reference_section.error_stress_units
+            else:
+              units = reference_section.stress_units
           else:
             units = ""
 

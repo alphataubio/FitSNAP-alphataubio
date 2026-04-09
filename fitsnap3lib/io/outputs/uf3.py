@@ -31,41 +31,13 @@ class Uf3(Output):
     if calc != "LAMMPSUF3":
       raise TypeError("UF3 output style requires calculator LAMMPSUF3")
 
-    uf3s = Section.sections["UF3"]
-    c = np.asarray(coeffs, dtype=float).ravel()
-    nt = uf3s.numtypes
-    n2 = uf3s.ncoeff
-    ntot = uf3s.nfeats
-    if ntot != nt + n2:
-      raise RuntimeError(f"UF3 nfeats ({ntot}) != numtypes ({nt}) + ncoeff ({n2})")
-
-    if uf3s.bzeroflag:
-      # Design matrix has only LAMMPS spline columns (2-body; plus 3-body if degree>2); 1-body implicit.
-      if c.size < n2:
-        raise ValueError(
-          f"UF3 bzeroflag=1: expected at least {n2} fitted spline coefficients, got {c.size}"
-        )
-      full = np.zeros(ntot, dtype=float)
-      full[nt:] = c[:n2]
-      self.coefficients = full
-    else:
-      # Design matrix is [composition, spline columns] — same order as BSplineBasis partition_sizes
-      # (1 per element, then 2-body blocks, then 3-body if degree>2).
-      if c.size < ntot:
-        raise ValueError(
-          f"UF3 bzeroflag=0: expected at least {ntot} coefficients "
-          f"({nt} composition + {n2} 2-body), got {c.size}"
-        )
-      self.coefficients = c[:ntot].copy()
-
     outfile_section = Section.sections["OUTFILE"]
     potential_name = outfile_section.potential_name
     odir = Section.get_outfile_directory(outfile_section)
     pdir = os.path.dirname(potential_name) or odir
     stem = os.path.basename(potential_name)
     os.makedirs(pdir, exist_ok=True)
-
-    self.write_uf3_lammps_pot(f"{stem}.uf3")
+    self.write_uf3_lammps_pot(f"{stem}.uf3", coeffs)
 
     uf3_section = Section.sections["UF3"]
     if uf3_section.bzeroflag: coeff_names = uf3_section.blist
@@ -73,13 +45,13 @@ class Uf3(Output):
     coeff_path = os.path.join(pdir, f"{stem}.uf3coeff")
     with optional_open(coeff_path, "wt") as fp:
       fp.write(
-        f"# FitSNAP UF3 linear fit coefficients (flattened, length {len(self.coefficients)}; "
-        f"bzeroflag={int(uf3s.bzeroflag)})\n\n"
+        f"# FitSNAP UF3 linear fit coefficients (flattened, length {len(coeffs)}; "
+        f"bzeroflag={int(uf3_section.bzeroflag)})\n\n"
       )
       fp.write("\n".join(f" {coeff:<30.18} #  {bname}" for coeff, bname in zip(coeffs, coeff_names)))
 
 
-  def write_uf3_lammps_pot(self, path, knots_spacing_type="nk"):
+  def write_uf3_lammps_pot(self, path, coeffs, knots_spacing_type="nk"):
     """Returns list
 
     Creates and writes UF3 lammps potential files. Takes UF3 composition object,
@@ -109,7 +81,7 @@ class Uf3(Output):
         pot.write(f"{bspline_basis.get_interaction_partitions()[0][interaction]}\n")
         start_idx = bspline_basis.get_interaction_partitions()[1][interaction]
         length = bspline_basis.get_interaction_partitions()[0][interaction]
-        pot.write(" ".join([f'1' for v in self.coefficients[start_idx:start_idx + length]]) + "\n")
+        pot.write(" ".join([f'1' for v in coeffs[start_idx:start_idx + length]]) + "\n")
         pot.write("#\n")
 
       if 3 in bspline_basis.interactions_map:
@@ -117,8 +89,7 @@ class Uf3(Output):
 
           length = bspline_basis.get_interaction_partitions()[0][interaction]
           start_idx = bspline_basis.get_interaction_partitions()[1][interaction]
-          coeffs = self.coefficients[start_idx:start_idx + length]
-          decompressed = bspline_basis.decompress_3B(coeffs, interaction)
+          decompressed = bspline_basis.decompress_3B(coeffs[start_idx:start_idx + length], interaction)
 
           pot.write(f"#UF3 POT UNITS: {lammps_units} DATE: {current_datetime} AUTHOR: {author} CITATION:\n")
           pot.write(f"3B {interaction[0]} {interaction[1]} {interaction[2]} {leading_trim} {trailing_trim}")

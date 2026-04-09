@@ -423,7 +423,9 @@ class SlateCommon(Solver):
         
         for _, row in df_local.iterrows():
             group_key = (row['Groups'], row['Testing'], row['Row_Type'])
-            if self.config.sections["REFERENCE"].units == "metal": factor = 1000.0   # eV -> meV
+            if self.config.sections["REFERENCE"].units == "metal":
+              if row['Row_Type'] != "Stress": factor = 1000.0  # energy and forces eV -> meV
+              else: factor = .0001   # stress bar -> GPa
             else: factor = 1.0
             weight = row['weights']
             truth = factor * row['truths']
@@ -465,17 +467,20 @@ class SlateCommon(Solver):
             else:
                 global_means_unweighted[group_key] = 0.0
         
-        # Determine conversion factor (same as in _compute_local_group_sums_from_df)
-        if self.config.sections["REFERENCE"].units == "metal": factor = 1000.0   # eV -> meV
-        else: factor = 1.0
-        
+
         # Pass 2: Compute local SS_tot contributions using global means
         local_ss_tot_weighted = {}
         local_ss_tot_unweighted = {}
         
         for _, row in df_local.iterrows():
             group_key = (row['Groups'], row['Testing'], row['Row_Type'])
-            
+
+            # Determine conversion factor (same as in _compute_local_group_sums_from_df)
+            if self.config.sections["REFERENCE"].units == "metal":
+              if row['Row_Type'] != "Stress": factor = 1000.0  # energy and forces eV -> meV
+              else: factor = .0001   # stress bar -> GPa
+            else: factor = 1.0
+
             if group_key in global_means_weighted:
                 weight = row['weights']
                 truth = factor * row['truths']  # Apply same factor as in Pass 1

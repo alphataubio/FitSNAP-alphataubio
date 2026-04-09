@@ -7,9 +7,13 @@ degree = 3
 knot_strategy = linear
 
 
-r_min_map_json = {("Al", "Ni"): 0, ("Al", "Ni", "Ni"): [1,1,1]}
-r_max_map_json = {("Al", "Ni"): 8.5, ("Al", "Ni", "Ni"): [4.25,4.25,8.5]}
-resolution_map_json = {("Al", "Ni"): 15, ("Al", "Ni", "Ni"): [5,5,10]}
+r_min_map_json = {("Al", "Ni"): 0.5, ("Al", "Ni", "Ni"): [0.5,0.5,0.5]}
+r_max_map_json = {("Al", "Ni"): 5, ("Al", "Ni", "Ni"): [5,5,10]}
+resolution_map_json = {
+    #("Al", "Al"): 15, ("Al", "Ni"): 15, ("Ni", "Ni"): 15,
+    #("Al","Al","Al"): [12,12,12], ("Al","Al","Ni"): [12,12,12], ("Al","Ni","Ni"): [12,12,12],
+    #("Ni","Al","Al"): [12,12,12], ("Ni","Al","Ni"): [12,12,12], ("Ni","Ni","Ni"): [12,12,12],
+  }
 
 bzeroflag = 0
 
@@ -17,7 +21,7 @@ bzeroflag = 0
 # -----------------------------------------------------------------------------
 [CALCULATOR]
 calculator = LAMMPSUF3
-energy = 1    # goal < 1.64 meV/atom
+energy = 0    # goal < 1.64 meV/atom
 force  = 0    # goal < 28 meV/A
 stress = 1    # goal < 0.09 GPa
 
@@ -30,14 +34,18 @@ compute_testerrs = 1
 
 # -----------------------------------------------------------------------------
 [SLATE]
-method = RIDGE
+
+#method = RIDGE
 alpha = 1e-6
+
+method = ARD
 
 
 # -----------------------------------------------------------------------------
 [SCRAPER]
 scraper = ADIOS2
-#max_configs_per_rank = 100
+max_configs_per_rank = 100
+auto_eshift = 1
 
 
 # -----------------------------------------------------------------------------
@@ -74,14 +82,14 @@ validation = 1
 group_sections = name                     eweight fweight vweight
 group_types =    str                      float   float   float
 smartweights = 1
-rattled-300            = 1.0     100.0   10.0
-rattled-500            = 1.0     100.0   10.0
-rattled-1000           = 1.0     100.0   10.0
-rattled-relax          = 1.0     100.0   10.0
-aimd-from-PBE-1000-npt = 1.0     100.0   10.0
-aimd-from-PBE-1000-nvt = 1.0     100.0   10.0
-aimd-from-PBE-3000-npt = 1.0     100.0   10.0
-aimd-from-PBE-3000-nvt = 1.0     100.0   10.0
+rattled-300            = 1.0     10.0   3000
+rattled-500            = 1.0     10.0   5000
+rattled-1000           = 1.0     10.0   10000
+rattled-relax          = 1.0     10.0   1000
+aimd-from-PBE-1000-npt = 1.0     10.0   10000
+aimd-from-PBE-1000-nvt = 1.0     10.0   10000
+aimd-from-PBE-3000-npt = 1.0     10.0   30000
+aimd-from-PBE-3000-nvt = 1.0     10.0   30000
 
 
 # -----------------------------------------------------------------------------

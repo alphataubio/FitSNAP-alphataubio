@@ -1,0 +1,142 @@
+\documentclass[12pt]{article}
+\usepackage[landscape, left=.5in, right=.5in, top=.5in, bottom=.75in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts,amsthm}
+\usepackage{arydshln}
+\setlength{\dashlinegap}{1pt}
+\setlength{\dashlinedash}{1pt}
+
+
+
+\title{UF3 KOKKOS Tensor Core Implementation}
+\author{Mitch Murphy}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+%\tableofcontents\clearpage
+
+
+\section*{Matrix and Tensor Operations for the UF3 Potential}
+
+The provided C++ code evaluates an empirical potential (likely a machine-learning model like UF3) utilizing cubic B-splines for 2-body and 3-body interactions. 
+
+\subsection*{1. Distance Polynomial Vectors}
+First, we define the polynomial distance vectors used throughout the code to evaluate the splines. For any pair distance $r$, we define the $4 \times 1$ position vector $\mathbf{p}(r)$ and the $3 \times 1$ derivative vector $\mathbf{p}'(r)$:
+
+\begin{equation}
+\mathbf{p}(r) = \begin{bmatrix} 1 \\ r \\ r^2 \\ r^3 \end{bmatrix}, \quad 
+\mathbf{p}'(r) = \begin{bmatrix} 1 \\ r \\ r^2 \end{bmatrix}
+\end{equation}
+
+\subsection*{2. Two-Body Interactions}
+The 2-body scalar force and energy are computed using a set of spline coefficients. Let $C_{2b}$ be the $4 \times 4$ coefficient matrix (\texttt{constants\_2b}) and $C'_{2b}$ be the $3 \times 3$ derivative coefficient matrix (\texttt{constants\_2b\_deri}).
+
+\textbf{2-Body Energy:}
+\begin{equation}
+E_{2b} = \mathbf{1}_{4}^T C_{2b} \mathbf{p}(r_{ij})
+\end{equation}
+\textit{(where $\mathbf{1}_{4}$ is a $4 \times 1$ vector of ones).}
+
+\textbf{2-Body Scalar Force:}
+\begin{equation}
+F_{2b} = \mathbf{1}_{3}^T C'_{2b} \mathbf{p}'(r_{ij})
+\end{equation}
+
+\textbf{2-Body Vector Force:}
+Using the displacement vector $\Delta\mathbf{r}_{ij} = \mathbf{r}_i - \mathbf{r}_j$, the force applied to atom $i$ is:
+\begin{equation}
+\mathbf{f}_{i}^{(2b)} = -\frac{F_{2b}}{r_{ij}} \Delta\mathbf{r}_{ij}
+\end{equation}
+
+\subsection*{3. Three-Body Interactions: Basis Vectors}
+For a triplet of atoms $(i, j, k)$, the code computes spline basis vectors for each pair distance ($r_{ij}, r_{ik}, r_{jk}$). Let $C_{ij}$ be the $4 \times 4$ coefficient matrix (\texttt{cc\_3b\_ij}) and $C'_{ij}$ be the $3 \times 3$ derivative matrix (\texttt{cc\_3b\_deri\_ij}). 
+
+The $4 \times 1$ basis vectors ($\mathbf{b}$) and $3 \times 1$ derivative basis vectors ($\mathbf{b}'$) are obtained via matrix-vector multiplication:
+
+\begin{align}
+\mathbf{b}_{ij} &= C_{ij} \mathbf{p}(r_{ij}), & \mathbf{b}'_{ij} &= C'_{ij} \mathbf{p}'(r_{ij}) \\
+\mathbf{b}_{ik} &= C_{ik} \mathbf{p}(r_{ik}), & \mathbf{b}'_{ik} &= C'_{ik} \mathbf{p}'(r_{ik}) \\
+\mathbf{b}_{jk} &= C_{jk} \mathbf{p}(r_{jk}), & \mathbf{b}'_{jk} &= C'_{jk} \mathbf{p}'(r_{jk})
+\end{align}
+
+\subsection*{4. Three-Body Interactions: Tensor Contractions}
+The nested loops representing \texttt{triangle\_eval} variables are tensor contractions. The coefficients are stored in 3-dimensional tensors, which we can represent as sums of bilinear forms evaluated over matrix slices $W_l$.
+
+\textbf{Three-Body Energy (\texttt{triangle\_eval0}):} \\
+Let $W^{(E)}$ be the $4 \times 4 \times 4$ energy coefficient tensor (\texttt{n3b\_coeff\_array}). The energy is the contraction of the basis vectors along the three axes:
+\begin{equation}
+E_{3b} = \sum_{l=0}^{3} b_{ij, l} \left( \mathbf{b}_{ik}^T W^{(E)}_{l} \mathbf{b}_{jk} \right)
+\end{equation}
+
+\textbf{Three-Body Scalar Forces (\texttt{triangle\_eval1, 2, 3}):} \\
+The code evaluates the derivative components by contracting the derivative basis vector of one pair with the standard basis vectors of the other two pairs.
+
+For the $ij$ pair (\texttt{triangle\_eval1}), using the $4 \times 4$ matrix slices $W^{(ij)}_l$ from \texttt{coeff\_for\_der\_ij}:
+\begin{equation}
+T_1 = \sum_{l=0}^{2} b'_{ij, l} \left( \mathbf{b}_{ik}^T W^{(ij)}_{l} \mathbf{b}_{jk} \right)
+\end{equation}
+
+For the $ik$ pair (\texttt{triangle\_eval2}), using the $3 \times 4$ matrix slices $W^{(ik)}_l$ from \texttt{coeff\_for\_der\_ik}:
+\begin{equation}
+T_2 = \sum_{l=0}^{3} b_{ij, l} \left( (\mathbf{b}'_{ik})^T W^{(ik)}_{l} \mathbf{b}_{jk} \right)
+\end{equation}
+
+For the $jk$ pair (\texttt{triangle\_eval3}), using the $4 \times 3$ matrix slices $W^{(jk)}_l$ from \texttt{coeff\_for\_der\_jk}:
+\begin{equation}
+T_3 = \sum_{l=0}^{3} b_{ij, l} \left( \mathbf{b}_{ik}^T W^{(jk)}_{l} \mathbf{b}'_{jk} \right)
+\end{equation}
+
+\subsection*{5. Three-Body Vector Forces}
+Finally, the scalar quantities $T_1$, $T_2$, and $T_3$ are projected back onto the cartesian unit vectors between the atoms. Let the unit displacement vectors be defined as $\hat{\mathbf{r}}_{ji} = \frac{\mathbf{r}_j - \mathbf{r}_i}{r_{ij}}$, $\hat{\mathbf{r}}_{ki} = \frac{\mathbf{r}_k - \mathbf{r}_i}{r_{ik}}$, and $\hat{\mathbf{r}}_{kj} = \frac{\mathbf{r}_k - \mathbf{r}_j}{r_{jk}}$.
+
+The intermediate force vectors are:
+\begin{align}
+\mathbf{f}_{ij} &= T_1 \hat{\mathbf{r}}_{ji} \\
+\mathbf{f}_{ik} &= T_2 \hat{\mathbf{r}}_{ki} \\
+\mathbf{f}_{jk} &= T_3 \hat{\mathbf{r}}_{kj}
+\end{align}
+
+The total force distributed to atoms $i$, $j$, and $k$ from this triplet interaction is simply the linear combination of these intermediate vectors:
+\begin{align}
+\mathbf{F}_i &= \mathbf{f}_{ij} + \mathbf{f}_{ik} \\
+\mathbf{F}_j &= -\mathbf{f}_{ij} + \mathbf{f}_{jk} \\
+\mathbf{F}_k &= -\mathbf{f}_{ik} - \mathbf{f}_{jk}
+\end{align}
+
+\clearpage
+
+
+
+\[
+  \left[
+    \begin{array}{@{} c c c c c @{}}
+      1 & 2 & -1 &  3 &  4 \\
+      \cdashline{1-1}
+      0 & \multicolumn{1}{: c}{1} &  3 & -2 & -1 \\
+      \cdashline{2-5}
+      0 & 0 &  0 &  0 &  0 \\
+      0 & 0 &  0 &  0 &  0
+    \end{array}
+  \right]
+\]
+
+\end{document}
+
+
+
+\begin{equation}
+\end{equation}
+
+
+
+%\clearpage
+
+
+
+
+
+
+
+
+\end{document}
