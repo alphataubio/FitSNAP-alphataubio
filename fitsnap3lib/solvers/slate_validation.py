@@ -66,6 +66,38 @@ class CompactJSONEncoder(json.JSONEncoder):
         continue
       yield chunk
 
+
+def _notebook_config_key(k):
+  """JSON object keys must be strings; UF3 maps use tuple interaction keys."""
+  if isinstance(k, str):
+    return k
+  if isinstance(k, tuple):
+    return "(" + ", ".join(str(x) for x in k) + ")"
+  return str(k)
+
+
+def _notebook_config_jsonable(obj, depth=0):
+  """Recursively convert config values so ``json.dumps`` succeeds (no tuple dict keys)."""
+  if depth > 40:
+    return "<max depth>"
+  if obj is None or isinstance(obj, (bool, int, float, str)):
+    return obj
+  if isinstance(obj, (np.integer, np.floating, np.bool_)):
+    return obj.item()
+  if isinstance(obj, np.ndarray):
+    return _notebook_config_jsonable(obj.tolist(), depth + 1)
+  if isinstance(obj, dict):
+    return {
+      _notebook_config_key(k): _notebook_config_jsonable(v, depth + 1)
+      for k, v in obj.items()
+    }
+  if isinstance(obj, (list, tuple)):
+    return [_notebook_config_jsonable(x, depth + 1) for x in obj]
+  if isinstance(obj, set):
+    return [_notebook_config_jsonable(x, depth + 1) for x in sorted(obj, key=str)]
+  return str(obj)
+
+
 class SlateValidation(SlateCommon):
 
   # --------------------------------------------------------------------------------------------
@@ -110,7 +142,8 @@ class SlateValidation(SlateCommon):
     config_dict = {}
     for section_name, section in self.config.sections.items():
       if hasattr(section, '__dict__'):
-        config_dict[section_name] = {k: v for k, v in section.__dict__.items() if not k.startswith('_')}
+        raw = {k: v for k, v in section.__dict__.items() if not k.startswith('_')}
+        config_dict[section_name] = _notebook_config_jsonable(raw)
 
     config_json = json.dumps(config_dict, cls=CompactJSONEncoder, indent=2, default=str)
       
@@ -492,8 +525,31 @@ class SlateValidation(SlateCommon):
       num_steps = adios2_file.num_steps()-1 # last step was preds/truths
       gamma_history = adios2_file.read("gamma", step_selection=[0,num_steps])
       lambda_history = adios2_file.read("lambda", step_selection=[0,num_steps])
-      gamma_array = gamma_history.reshape((num_steps,len(blist)))
-      lam = lambda_history.reshape((num_steps, len(blist)))
+      n_feat = gamma_history.size // num_steps
+      if n_feat * num_steps != gamma_history.size:
+        raise ValueError(
+          f"gamma step size mismatch: size={gamma_history.size}, num_steps={num_steps}"
+        )
+      blist = list(blist)
+      basis_ranks = np.asarray(basis_ranks, dtype=int)
+      if len(blist) != n_feat or basis_ranks.size != n_feat:
+        self.pt.single_print(
+          f"Warning: ADIOS2 blist length {len(blist)} / basis_ranks {basis_ranks.size} "
+          f"!= n_features {n_feat} from gamma; aligning to gamma."
+        )
+        if len(blist) > n_feat:
+          blist = blist[:n_feat]
+        elif len(blist) < n_feat:
+          blist.extend([f"<basis {i}>" for i in range(len(blist), n_feat)])
+        if basis_ranks.size > n_feat:
+          basis_ranks = basis_ranks[:n_feat]
+        elif basis_ranks.size < n_feat:
+          pad = int(basis_ranks[-1]) if basis_ranks.size else 0
+          basis_ranks = np.concatenate(
+            [basis_ranks, np.full(n_feat - basis_ranks.size, pad, dtype=int)]
+          )
+      gamma_array = gamma_history.reshape((num_steps, n_feat))
+      lam = lambda_history.reshape((num_steps, n_feat))
       lambda_array = np.full_like(lam, np.nan, dtype=float)
       pos = (lam > 0) & np.isfinite(lam)
       lambda_array[pos] = np.log10(lam[pos])
@@ -647,7 +703,7 @@ def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=
   def sort_key(basis):
     ns = basis[1].split(',')
     ls = basis[2].split(',')
-    print(f"*** basis {basis} tuple {tuple(int(i) for i in ns)}")
+    #print(f"*** basis {basis} tuple {tuple(int(i) for i in ns)}")
     return tuple(int(i) for i in ns) + tuple(int(j) for j in ls)
 
   def sort_kv(kv):
@@ -657,7 +713,7 @@ def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=
   # sorted_blist = sorted(blist_rank[rank], key=sort_key ) if rank>=1 else blist_rank[rank]
   
   sorted_blist = blist_rank[rank]
-  print(f"*** rank {rank} sorted_blist {sorted_blist}")
+  #print(f"*** rank {rank} sorted_blist {sorted_blist}")
 
   label_spacing = .01*(6*rank-4)*n_iterations
   if rank == 0:
