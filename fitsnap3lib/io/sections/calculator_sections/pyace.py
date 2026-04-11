@@ -123,15 +123,23 @@ class PyAce(Section):
       ctilde_basis = create_ctilde_basis(self.ace_config)
       self.ctilde_basis = ctilde_basis
       self.ncoeff = ctilde_basis.ncoeff
-                        
+
       self.pt.single_print(
         f"----------------------------------------------------------------\n"
-        f"  PyACE Wigner-RPI basis\n    numtypes {self.numtypes} ncoeff {self.ncoeff}"
+        f"  PyACE Wigner-RPI basis                                        \n"
+        f"                                                                \n"
+        f"    J.M. Goff, C. Sievers, M.A. Wood, A.P. Thompson,            \n"
+        f"    Permutation-adapted complete and independent basis          \n"
+        f"    for atomic cluster expansion descriptors.                   \n"
+        f"    Journal of Computational Physics, 510, 113073 (2024).       \n"
+        f"    https://doi.org/10.1016/j.jcp.2024.113073                   \n"
+        f"                                                                \n"
+        f"    numtypes {self.numtypes} ncoeff {self.ncoeff}               \n"
       )
 
       for k,v in sorted(ctilde_basis.number_functions_by_rank.items()):
-        self.pt.single_print(f"      Rank {k}: {v} basis functions")
-                
+        self.pt.single_print(f"    Rank {k}: {v} basis functions")
+
       self.pt.single_print("----------------------------------------------------------------\n")
             
     except ImportError:
