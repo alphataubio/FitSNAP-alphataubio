@@ -1,7 +1,7 @@
 \documentclass[12pt]{article}
-\usepackage[landscape, left=.5in, right=.5in, top=.5in, bottom=.75in]{geometry}
+\usepackage[portrait, left=.5in, right=.5in, top=.5in, bottom=.75in]{geometry}
 \usepackage{amsmath,amssymb,amsfonts,amsthm}
-\usepackage{arydshln}
+\usepackage{arydshln, scalefnt}
 \setlength{\dashlinegap}{1pt}
 \setlength{\dashlinedash}{1pt}
 
@@ -16,7 +16,7 @@
 
 %\tableofcontents\clearpage
 
-
+\large
 \section*{Matrix and Tensor Operations for the UF3 Potential}
 
 The provided C++ code evaluates an empirical potential (likely a machine-learning model like UF3) utilizing cubic B-splines for 2-body and 3-body interactions. 
@@ -107,6 +107,430 @@ The total force distributed to atoms $i$, $j$, and $k$ from this triplet interac
 \clearpage
 
 
+
+
+
+
+\section*{CUDA Tensor Core WGMMA Mapping for UF3 3-Body Interactions}
+
+
+Hopper introduces the asynchronous warpgroup-level matrix multiply and accumulate operation (WGMMA). A warpgroup consists of four contiguous warps, i.e., 128 contiguous threads, where the warp-rank of the first warp is a multiple of four. The wgmma.mma\_async instruction is executed collectively by all 128 threads in a warpgroup. This operation typically follows one of these forms, where matrix C serves as the accumulator:
+
+C = A * B + C
+C = A * B, where the input from accumulator C is disabled.
+A notable requirement of WGMMA is that operand B must always be stored in shared memory (SMEM). In contrast, operand A can be located in either SMEM or register memory (RMEM), and the accumulator C is always held in RMEM.
+
+
+
+Mapping the 64 concurrent 3-body triplet interactions to the \texttt{wgmma.mma\_async.sync.aligned8k8.f32.f32.f32} instruction requires packing the basis vectors into $M=64, K=8$ inputs, and flattening the tensor slices into $N=8, K=8$ coefficient matrices. 
+
+Crucially, because the atoms $i$ and $j$ are constant for the inner loop over $k$, the basis vector $\mathbf{b}_{ij}$ and its derivative $\mathbf{b}'_{ij}$ are scalar constants across the 64 triplets. We can pre-multiply the spline tensor slices to eliminate the $l$-loop entirely before invoking the Tensor Cores.
+
+\subsection*{1. Pre-computation (Pair-wise Reduction)}
+Before the $M=64$ inner loop, collapse the 3D coefficient tensors into 2D matrices by contracting them with the fixed $ij$ basis vectors. This yields four highly optimized matrices:
+
+\begin{align}
+\widetilde{W}^{(ij)} &= \sum_{l=0}^{2} b'_{ij, l} W^{(ij)}_{l} \quad \in \mathbb{R}^{4 \times 4} \\
+\widetilde{W}^{(ik)} &= \sum_{l=0}^{3} b_{ij, l} W^{(ik)}_{l} \quad \in \mathbb{R}^{3 \times 4} \\
+\widetilde{W}^{(jk)} &= \sum_{l=0}^{3} b_{ij, l} W^{(jk)}_{l} \quad \in \mathbb{R}^{4 \times 3} \\
+\widetilde{W}^{(E)}  &= \sum_{l=0}^{3} b_{ij, l} W^{(E)}_{l}  \quad \in \mathbb{R}^{4 \times 4}
+\end{align}
+
+\subsection*{2. Input Tensor Packing ($A \in \mathbb{R}^{64 \times 8}$)}
+The $A$ matrix holds the $k$-dependent basis vectors for all 64 triplets. We pack the standard basis $\mathbf{b}_{ik}$ and its derivative $\mathbf{b}'_{ik}$ into the $K=8$ dimension. For a triplet $m \in [0, 63]$:
+
+\begin{equation}
+A_{m, :} = \left[ b_{ik_m, 0}, b_{ik_m, 1}, b_{ik_m, 2}, b_{ik_m, 3}, \quad b'_{ik_m, 0}, b'_{ik_m, 1}, b'_{ik_m, 2}, \quad 0 \right]
+\end{equation}
+
+\subsection*{3. Weight Tensor Packing ($B \in \mathbb{R}^{8 \times 8}$)}
+To extract all force components ($T_1, T_2, T_3$) and energy ($E$), we split the operation into two `m64n8k8` instructions to fit within the $N=8$ output dimension. We pad the pre-computed matrices with zeros to align with the $8 \times 8$ WGMMA hardware layout.
+
+\textbf{Weights for $T_2$ and $T_3$ (Instruction 1):}
+\begin{equation}
+B_{23} = \begin{bmatrix} 
+0_{4 \times 4} & \left[ \widetilde{W}^{(jk)}, 0_{4 \times 1} \right] \\ 
+\begin{bmatrix} \widetilde{W}^{(ik)} \\ 0_{1 \times 4} \end{bmatrix} & 0_{4 \times 4} 
+\end{bmatrix} \quad \in \mathbb{R}^{8 \times 8}
+\end{equation}
+
+\textbf{Weights for $T_1$ and Energy (Instruction 2):}
+\begin{equation}
+B_{1E} = \begin{bmatrix} 
+\widetilde{W}^{(ij)} & \widetilde{W}^{(E)} \\ 
+0_{4 \times 4} & 0_{4 \times 4} 
+\end{bmatrix} \quad \in \mathbb{R}^{8 \times 8}
+\end{equation}
+
+\subsection*{4. WGMMA Execution}
+Issue the asynchronous WGMMA instructions to compute the fused intermediate vectors for all 64 triplets simultaneously:
+
+\begin{align}
+D_{23} &= A \times B_{23} \quad \in \mathbb{R}^{64 \times 8} \\
+D_{1E} &= A \times B_{1E} \quad \in \mathbb{R}^{64 \times 8}
+\end{align}
+
+\subsection*{5. Post-Processing: Final Contractions}
+The output matrices $D_{23}$ and $D_{1E}$ contain the accumulated intermediate vectors for each triplet $m$. The final step is a batched dot product with the $j,k$ pair basis vectors ($\mathbf{b}_{jk}$ and $\mathbf{b}'_{jk}$) to resolve the scalars $T_1, T_2, T_3$, and $E$. 
+
+Let $\mathbf{v}^{(T2)}_m = (D_{23})_{m, 0:3}$ and $\mathbf{v}^{(T3)}_m = (D_{23})_{m, 4:6}$.
+Let $\mathbf{v}^{(T1)}_m = (D_{1E})_{m, 0:3}$ and $\mathbf{v}^{(E)}_m = (D_{1E})_{m, 4:7}$.
+
+\begin{align}
+T_2^{(m)} &= \mathbf{v}^{(T2)}_m \cdot \mathbf{b}_{jk_m} \\
+T_3^{(m)} &= \mathbf{v}^{(T3)}_m \cdot \mathbf{b}'_{jk_m} \\
+T_1^{(m)} &= \mathbf{v}^{(T1)}_m \cdot \mathbf{b}_{jk_m} \\
+E_{3b}^{(m)} &= \mathbf{v}^{(E)}_m \cdot \mathbf{b}_{jk_m}
+\end{align}
+
+These scalar values map directly back to the original force vector projections $F_i, F_j, F_k$ per triplet.
+
+
+
+% ========================================================================================
+
+% ----------------------------------------------------------------
+\clearpage
+
+$.m64<N>k8$\\
+where N = 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152, 160, 168, 176, 184, 192, 200, 208, 216, 224, 232, 240, 248, 256\\
+
+$$\frac{256 ~\frac{KB}{SM} * 1024 ~\frac{B}{KB}}{4 ~\frac{FP32}{B}} = 65,536 ~\frac{FP32}{SM}$$
+
+% ----------------------------------------------------------------
+\clearpage
+
+{\large
+$$
+\underbrace{\begin{bmatrix}
+bij_0 \\
+bij_1 \\
+bij_2\\
+bij_3
+\end{bmatrix}}_{4\times 1}
+=
+\underbrace{\begin{bmatrix}
+cij_{0,12} & cij_{0,13} & cij_{0,14} & cij_{0,15} \\
+cij_{1,8 } & cij_{1,9 } & cij_{1,10} & cij_{1,11}\\
+cij_{2,4 } & cij_{2,5 } & cij_{2,6 } & cij_{2,7 }\\
+\hdashline
+cij_{3,0 } & cij_{3,1 } & cij_{3,2 } & cij_{3,3 }
+\end{bmatrix}}_{4\times 4}
+\times
+\underbrace{\begin{bmatrix}
+1 \\
+rij \\
+rij^2\\
+rij^3
+\end{bmatrix}}_{4\times 1}
+$$
+
+\clearpage
+
+$$
+\underbrace{\begin{bmatrix}
+bik_0 \\
+bik_1 \\
+bik_2\\
+bik_3
+\end{bmatrix}}_{4\times 1}
+=
+\underbrace{\begin{bmatrix}
+cik_{0,12} & cik_{0,13} & cik_{0,14} & cik_{0,15} \\
+cik_{1,8 } & cik_{1,9 } & cik_{1,10} & cik_{1,11}\\
+cik_{2,4 } & cik_{2,5 } & cik_{2,6 } & cik_{2,7 }\\
+\hdashline
+cik_{3,0 } & cik_{3,1 } & cik_{3,2 } & cik_{3,3 }
+\end{bmatrix}}_{4\times 4}
+\times
+\underbrace{\begin{bmatrix}
+1 \\
+rik \\
+rik^2\\
+rik^3
+\end{bmatrix}}_{4\times 1}
+$$
+
+\clearpage
+
+$$
+\underbrace{\begin{bmatrix}
+bjk_0(0) & \cdots & bjk_0(N)\\
+bjk_1(0) & \cdots & bjk_1(N)\\
+bjk_2(0) & \cdots & bjk_2(N)\\
+bjk_3(0) & \cdots & bjk_3(N)
+\end{bmatrix}}_{4\times N}
+=
+\underbrace{\begin{bmatrix}
+cjk_{0,12} & cjk_{0,13} & cjk_{0,14} & cjk_{0,15} \\
+cjk_{1,8 } & cjk_{1,9 } & cjk_{1,10} & cjk_{1,11}\\
+cjk_{2,4 } & cjk_{2,5 } & cjk_{2,6 } & cjk_{2,7 }\\
+cjk_{3,0 } & cjk_{3,1 } & cjk_{3,2 } & cjk_{3,3 }
+\end{bmatrix}}_{4\times 4}
+\times
+\underbrace{\begin{bmatrix}
+1        & \cdots & 1                   \\
+rjk(0)   & \cdots & rjk(N)   \\
+rjk(0)^2 & \cdots & rjk(N)^2 \\
+rjk(0)^3 & \cdots & rjk(N)^3
+\end{bmatrix}}_{4\times N}
+$$
+}
+
+
+
+% ----------------------------------------------------------------
+\clearpage
+
+{\scalefont{0.5}
+
+$$\blacktriangle_0(k) = 
+\underbrace{\begin{bmatrix}
+bij_0 \cdot bik_0 (cij_{0,0,0} \cdot bjk_0 + cij_{0,0,1} \cdot bjk_1 + cij_{0,0,2} \cdot bjk_2 + cij_{0,0,3} \cdot bjk_3)\\
+bij_0 \cdot bik_1 (cij_{0,1,0} \cdot bjk_0 + cij_{0,1,1} \cdot bjk_1 + cij_{0,1,2} \cdot bjk_2 + cij_{0,1,3} \cdot bjk_3)\\
+bij_0 \cdot bik_2 (cij_{0,2,0} \cdot bjk_0 + cij_{0,2,1} \cdot bjk_1 + cij_{0,2,2} \cdot bjk_2 + cij_{0,2,3} \cdot bjk_3)\\
+bij_0 \cdot bik_3 (cij_{0,3,0} \cdot bjk_0 + cij_{0,3,1} \cdot bjk_1 + cij_{0,3,2} \cdot bjk_2 + cij_{0,3,3} \cdot bjk_3)\\
+\hdashline
+bij_1 \cdot bik_0 (cij_{1,0,0} \cdot bjk_0 + cij_{1,0,1} \cdot bjk_1 + cij_{1,0,2} \cdot bjk_2 + cij_{1,0,3} \cdot bjk_3)\\
+bij_1 \cdot bik_1 (cij_{1,1,0} \cdot bjk_0 + cij_{1,1,1} \cdot bjk_1 + cij_{1,1,2} \cdot bjk_2 + cij_{1,1,3} \cdot bjk_3)\\
+bij_1 \cdot bik_2 (cij_{1,2,0} \cdot bjk_0 + cij_{1,2,1} \cdot bjk_1 + cij_{1,2,2} \cdot bjk_2 + cij_{1,2,3} \cdot bjk_3)\\
+bij_1 \cdot bik_3 (cij_{1,3,0} \cdot bjk_0 + cij_{1,3,1} \cdot bjk_1 + cij_{1,3,2} \cdot bjk_2 + cij_{1,3,3} \cdot bjk_3)\\
+\hdashline
+bij_2 \cdot bik_0 (cij_{2,0,0} \cdot bjk_0 + cij_{2,0,1} \cdot bjk_1 + cij_{2,0,2} \cdot bjk_2 + cij_{2,0,3} \cdot bjk_3)\\
+bij_2 \cdot bik_1 (cij_{2,1,0} \cdot bjk_0 + cij_{2,1,1} \cdot bjk_1 + cij_{2,1,2} \cdot bjk_2 + cij_{2,1,3} \cdot bjk_3)\\
+bij_2 \cdot bik_2 (cij_{2,2,0} \cdot bjk_0 + cij_{2,2,1} \cdot bjk_1 + cij_{2,2,2} \cdot bjk_2 + cij_{2,2,3} \cdot bjk_3)\\
+bij_2 \cdot bik_3 (cij_{2,3,0} \cdot bjk_0 + cij_{2,3,1} \cdot bjk_1 + cij_{2,3,2} \cdot bjk_2 + cij_{2,3,3} \cdot bjk_3)\\
+\hdashline
+bij_3 \cdot bik_0 (cij_{3,0,0} \cdot bjk_0 + cij_{3,0,1} \cdot bjk_1 + cij_{3,0,2} \cdot bjk_2 + cij_{3,0,3} \cdot bjk_3)\\
+bij_3 \cdot bik_1 (cij_{3,1,0} \cdot bjk_0 + cij_{3,1,1} \cdot bjk_1 + cij_{3,1,2} \cdot bjk_2 + cij_{3,1,3} \cdot bjk_3)\\
+bij_3 \cdot bik_2 (cij_{3,2,0} \cdot bjk_0 + cij_{3,2,1} \cdot bjk_1 + cij_{3,2,2} \cdot bjk_2 + cij_{3,2,3} \cdot bjk_3)\\
+bij_3 \cdot bik_3 (cij_{3,3,0} \cdot bjk_0 + cij_{3,3,1} \cdot bjk_1 + cij_{3,3,2} \cdot bjk_2 + cij_{3,3,3} \cdot bjk_3)\\
+
+\end{bmatrix}}_{16\times 1}
+$$
+
+$$\blacktriangle_1(k) = 
+\underbrace{\begin{bmatrix}
+dbij_0 \cdot bik_0 (dcij_{0,0,0} \cdot bjk_0 + dcij_{0,0,1} \cdot bjk_1 + dcij_{0,0,2} \cdot bjk_2 + dcij_{0,0,3} \cdot bjk_3)\\
+dbij_0 \cdot bik_1 (dcij_{0,1,0} \cdot bjk_0 + dcij_{0,1,1} \cdot bjk_1 + dcij_{0,1,2} \cdot bjk_2 + dcij_{0,1,3} \cdot bjk_3)\\
+dbij_0 \cdot bik_2 (dcij_{0,2,0} \cdot bjk_0 + dcij_{0,2,1} \cdot bjk_1 + dcij_{0,2,2} \cdot bjk_2 + dcij_{0,2,3} \cdot bjk_3)\\
+dbij_0 \cdot bik_3 (dcij_{0,3,0} \cdot bjk_0 + dcij_{0,3,1} \cdot bjk_1 + dcij_{0,3,2} \cdot bjk_2 + dcij_{0,3,3} \cdot bjk_3)\\
+\hdashline
+dbij_1 \cdot bik_0 (dcij_{1,0,0} \cdot bjk_0 + dcij_{1,0,1} \cdot bjk_1 + dcij_{1,0,2} \cdot bjk_2 + dcij_{1,0,3} \cdot bjk_3)\\
+dbij_1 \cdot bik_1 (dcij_{1,1,0} \cdot bjk_0 + dcij_{1,1,1} \cdot bjk_1 + dcij_{1,1,2} \cdot bjk_2 + dcij_{1,1,3} \cdot bjk_3)\\
+dbij_1 \cdot bik_2 (dcij_{1,2,0} \cdot bjk_0 + dcij_{1,2,1} \cdot bjk_1 + dcij_{1,2,2} \cdot bjk_2 + dcij_{1,2,3} \cdot bjk_3)\\
+dbij_1 \cdot bik_3 (dcij_{1,3,0} \cdot bjk_0 + dcij_{1,3,1} \cdot bjk_1 + dcij_{1,3,2} \cdot bjk_2 + dcij_{1,3,3} \cdot bjk_3)\\
+\hdashline
+dbij_2 \cdot bik_0 (dcij_{2,0,0} \cdot bjk_0 + dcij_{2,0,1} \cdot bjk_1 + dcij_{2,0,2} \cdot bjk_2 + dcij_{2,0,3} \cdot bjk_3)\\
+dbij_2 \cdot bik_1 (dcij_{2,1,0} \cdot bjk_0 + dcij_{2,1,1} \cdot bjk_1 + dcij_{2,1,2} \cdot bjk_2 + dcij_{2,1,3} \cdot bjk_3)\\
+dbij_2 \cdot bik_2 (dcij_{2,2,0} \cdot bjk_0 + dcij_{2,2,1} \cdot bjk_1 + dcij_{2,2,2} \cdot bjk_2 + dcij_{2,2,3} \cdot bjk_3)\\
+dbij_2 \cdot bik_3 (dcij_{2,3,0} \cdot bjk_0 + dcij_{2,3,1} \cdot bjk_1 + dcij_{2,3,2} \cdot bjk_2 + dcij_{2,3,3} \cdot bjk_3)\\
+\hdashline
+0 \\
+0 \\
+0 \\
+0 \\
+\end{bmatrix}}_{16\times 1}
+$$
+
+$$\blacktriangle_2(k) = 
+\underbrace{\begin{bmatrix}
+bij_0 \cdot dbik_0 (dcik_{0,0,0} \cdot bjk_0 + dcik_{0,0,1} \cdot bjk_1 + dcik_{0,0,2} \cdot bjk_2 + dcik_{0,0,3} \cdot bjk_3)\\
+bij_0 \cdot dbik_1 (dcik_{0,1,0} \cdot bjk_0 + dcik_{0,1,1} \cdot bjk_1 + dcik_{0,1,2} \cdot bjk_2 + dcik_{0,1,3} \cdot bjk_3)\\
+bij_0 \cdot dbik_2 (dcik_{0,2,0} \cdot bjk_0 + dcik_{0,2,1} \cdot bjk_1 + dcik_{0,2,2} \cdot bjk_2 + dcik_{0,2,3} \cdot bjk_3)\\
+0 \\
+\hdashline
+bij_1 \cdot dbik_0 (dcik_{1,0,0} \cdot bjk_0 + dcik_{1,0,1} \cdot bjk_1 + dcik_{1,0,2} \cdot bjk_2 + dcik_{1,0,3} \cdot bjk_3)\\
+bij_1 \cdot dbik_1 (dcik_{1,1,0} \cdot bjk_0 + dcik_{1,1,1} \cdot bjk_1 + dcik_{1,1,2} \cdot bjk_2 + dcik_{1,1,3} \cdot bjk_3)\\
+bij_1 \cdot dbik_2 (dcik_{1,2,0} \cdot bjk_0 + dcik_{1,2,1} \cdot bjk_1 + dcik_{1,2,2} \cdot bjk_2 + dcik_{1,2,3} \cdot bjk_3)\\
+0 \\
+\hdashline
+bij_2 \cdot dbik_0 (dcik_{2,0,0} \cdot bjk_0 + dcik_{2,0,1} \cdot bjk_1 + dcik_{2,0,2} \cdot bjk_2 + dcik_{2,0,3} \cdot bjk_3)\\
+bij_2 \cdot dbik_1 (dcik_{2,1,0} \cdot bjk_0 + dcik_{2,1,1} \cdot bjk_1 + dcik_{2,1,2} \cdot bjk_2 + dcik_{2,1,3} \cdot bjk_3)\\
+bij_2 \cdot dbik_2 (dcik_{2,2,0} \cdot bjk_0 + dcik_{2,2,1} \cdot bjk_1 + dcik_{2,2,2} \cdot bjk_2 + dcik_{2,2,3} \cdot bjk_3)\\
+0 \\
+\hdashline
+bij_3 \cdot dbik_0 (dcik_{3,0,0} \cdot bjk_0 + dcik_{3,0,1} \cdot bjk_1 + dcik_{3,0,2} \cdot bjk_2 + dcik_{3,0,3} \cdot bjk_3)\\
+bij_3 \cdot dbik_1 (dcik_{3,1,0} \cdot bjk_0 + dcik_{3,1,1} \cdot bjk_1 + dcik_{3,1,2} \cdot bjk_2 + dcik_{3,1,3} \cdot bjk_3)\\
+bij_3 \cdot dbik_2 (dcik_{3,2,0} \cdot bjk_0 + dcik_{3,2,1} \cdot bjk_1 + dcik_{3,2,2} \cdot bjk_2 + dcik_{3,2,3} \cdot bjk_3)\\
+0 \\
+\end{bmatrix}}_{16\times 1}
+$$
+
+$$\blacktriangle_3(k) = 
+\underbrace{\begin{bmatrix}
+bij_0 \cdot bik_0 (dcjk_{0,0,0} \cdot dbjk_0 + dcjk_{0,0,1} \cdot dbjk_1 + dcjk_{0,0,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_0 \cdot bik_1 (dcjk_{0,1,0} \cdot dbjk_0 + dcjk_{0,1,1} \cdot dbjk_1 + dcjk_{0,1,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_0 \cdot bik_2 (dcjk_{0,2,0} \cdot dbjk_0 + dcjk_{0,2,1} \cdot dbjk_1 + dcjk_{0,2,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_0 \cdot bik_3 (dcjk_{0,3,0} \cdot dbjk_0 + dcjk_{0,3,1} \cdot dbjk_1 + dcjk_{0,3,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+\hdashline
+bij_1 \cdot bik_0 (dcjk_{1,0,0} \cdot dbjk_0 + dcjk_{1,0,1} \cdot dbjk_1 + dcjk_{1,0,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_1 \cdot bik_1 (dcjk_{1,1,0} \cdot dbjk_0 + dcjk_{1,1,1} \cdot dbjk_1 + dcjk_{1,1,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_1 \cdot bik_2 (dcjk_{1,2,0} \cdot dbjk_0 + dcjk_{1,2,1} \cdot dbjk_1 + dcjk_{1,2,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_1 \cdot bik_3 (dcjk_{1,3,0} \cdot dbjk_0 + dcjk_{1,3,1} \cdot dbjk_1 + dcjk_{1,3,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+\hdashline
+bij_2 \cdot bik_0 (dcjk_{2,0,0} \cdot dbjk_0 + dcjk_{2,0,1} \cdot dbjk_1 + dcjk_{2,0,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_2 \cdot bik_1 (dcjk_{2,1,0} \cdot dbjk_0 + dcjk_{2,1,1} \cdot dbjk_1 + dcjk_{2,1,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_2 \cdot bik_2 (dcjk_{2,2,0} \cdot dbjk_0 + dcjk_{2,2,1} \cdot dbjk_1 + dcjk_{2,2,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_2 \cdot bik_3 (dcjk_{2,3,0} \cdot dbjk_0 + dcjk_{2,3,1} \cdot dbjk_1 + dcjk_{2,3,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+\hdashline
+bij_3 \cdot bik_0 (dcjk_{3,0,0} \cdot dbjk_0 + dcjk_{3,0,1} \cdot dbjk_1 + dcjk_{3,0,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_3 \cdot bik_1 (dcjk_{3,1,0} \cdot dbjk_0 + dcjk_{3,1,1} \cdot dbjk_1 + dcjk_{3,1,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_3 \cdot bik_2 (dcjk_{3,2,0} \cdot dbjk_0 + dcjk_{3,2,1} \cdot dbjk_1 + dcjk_{3,2,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_3 \cdot bik_3 (dcjk_{3,3,0} \cdot dbjk_0 + dcjk_{3,3,1} \cdot dbjk_1 + dcjk_{3,3,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+\end{bmatrix}}_{16\times 1}
+$$
+
+}
+
+
+
+
+
+% ----------------------------------------------------------------
+\clearpage
+
+{\large
+$$
+\underbrace{\begin{bmatrix}
+bij_0 \\
+bij_1 \\
+bij_2 \\
+bij_3 \\
+\hdashline
+bik_0 \\
+bik_1 \\
+bik_2 \\
+bik_3 \\
+\end{bmatrix}}_{8\times 1}
+=
+\underbrace{\begin{bmatrix}
+cij_{0,12} & cij_{0,13} & cij_{0,14} & cij_{0,15} \\
+cij_{1,8 } & cij_{1,9 } & cij_{1,10} & cij_{1,11}\\
+cij_{2,4 } & cij_{2,5 } & cij_{2,6 } & cij_{2,7 }\\
+cij_{3,0 } & cij_{3,1 } & cij_{3,2 } & cij_{3,3 }\\
+\hdashline
+cik_{0,12} & cik_{0,13} & cik_{0,14} & cik_{0,15} \\
+cik_{1,8 } & cik_{1,9 } & cik_{1,10} & cik_{1,11}\\
+cik_{2,4 } & cik_{2,5 } & cik_{2,6 } & cik_{2,7 }\\
+cik_{3,0 } & cik_{3,1 } & cik_{3,2 } & cik_{3,3 }\\
+\hdashline
+\end{bmatrix}}_{8\times 4}
+\times
+\underbrace{\begin{bmatrix}
+1     \\
+rij   \\
+rij^2 \\
+rij^3 \\
+\hdashline
+1     \\
+rik   \\
+rik^2 \\
+rik^3 \\
+\end{bmatrix}}_{4\times 1}
+$$
+
+
+}
+
+
+
+
+
+
+
+
+% ----------------------------------------------------------------
+\clearpage
+
+$$
+\underbrace{
+\begin{bmatrix}
+c_{1,1} & c_{1,2} & \cdots & c_{1,8} \\
+c_{2,1} & c_{2,2} & \cdots & c_{2,8} \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+c_{64,1}& c_{64,2}& \cdots & c_{64,8}
+\end{bmatrix}
+}_{\text{Matrix } C \, (64 \times 8)}
+=
+\underbrace{
+\begin{bmatrix}
+a_{1,1} & a_{1,2} & \cdots & a_{1,8} \\
+a_{2,1} & a_{2,2} & \cdots & a_{2,8} \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+a_{64,1}& a_{64,2}& \cdots & a_{64,8}
+\end{bmatrix}
+}_{\text{Matrix } A \, (64 \times 8)}
+\times
+\underbrace{
+\begin{bmatrix}
+b_{1,1} & b_{1,2} & \cdots & b_{1,8} \\
+b_{2,1} & b_{2,2} & \cdots & b_{2,8} \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+b_{8,1} & b_{8,2} & \cdots & b_{8,8}
+\end{bmatrix}
+}_{\text{Matrix } B \, (8 \times 8)}
++
+\underbrace{
+\begin{bmatrix}
+c_{1,1} & c_{1,2} & \cdots & c_{1,8} \\
+c_{2,1} & c_{2,2} & \cdots & c_{2,8} \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+\vdots  & \vdots  & \ddots & \vdots  \\
+c_{64,1}& c_{64,2}& \cdots & c_{64,8}
+\end{bmatrix}
+}_{\text{Matrix } C \, (64 \times 8)}
+$$
+
+To visualize how a single row of $A$ and a column of $B$ generate a single element in $C$ (specifically, element $c_{1,1}$):
+
+$$
+\begin{bmatrix}
+\mathbf{c_{1,1}} & \cdots \\
+\vdots & \ddots 
+\end{bmatrix}
+=
+\begin{bmatrix}
+\mathbf{a_{1,1}} & \mathbf{a_{1,2}} & \mathbf{\cdots} & \mathbf{a_{1,8}} \\
+\vdots & \vdots & \ddots & \vdots 
+\end{bmatrix}
+\times
+\begin{bmatrix}
+\mathbf{b_{1,1}} & \cdots \\
+\mathbf{b_{2,1}} & \cdots \\
+\mathbf{\vdots} & \ddots \\
+\mathbf{b_{8,1}} & \cdots 
+\end{bmatrix}
+$$
 
 \[
   \left[
