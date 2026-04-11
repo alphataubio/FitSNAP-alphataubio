@@ -86,21 +86,23 @@ class Uf3(Section):
 
     if r_max_map is None and self._config.has_option(sec, "r_max"):
       r_max = float(self._config.get(sec, "r_max"))
-      r_max_map = {t: r_max for t in self.chemical_system.interactions_map[2]}
+      self.r_max_map = {t: r_max for t in self.chemical_system.interactions_map[2]}
     if r_min_map is None and self._config.has_option(sec, "r_min"):
       r_min = float(self._config.get(sec, "r_min"))
-      r_min_map = {t: r_min for t in self.chemical_system.interactions_map[2]}
+      self.r_min_map = {t: r_min for t in self.chemical_system.interactions_map[2]}
     if resolution_map is None and self._config.has_option(sec, "resolution"):
       res = int(self._config.get(sec, "resolution"))
-      resolution_map = {t: res for t in self.chemical_system.interactions_map[2]}
+      self.resolution_map = {t: res for t in self.chemical_system.interactions_map[2]}
+      if 3 in self.chemical_system.interactions_map:
+        self.resolution_map.update({t: [res, res, res] for t in self.chemical_system.interactions_map[3]})
 
     self.bzeroflag = self.get_value(sec, "bzeroflag", "1", "bool")
 
     self.bspline_basis = BSplineBasis(
       self.chemical_system,
-      r_min_map=r_min_map,
-      r_max_map=r_max_map,
-      resolution_map=resolution_map,
+      r_min_map=self.r_min_map,
+      r_max_map=self.r_max_map,
+      resolution_map=self.resolution_map,
       knot_strategy=knot_strategy,
       offset_1b=bool(not self.bzeroflag),
       leading_trim=0,
@@ -114,12 +116,6 @@ class Uf3(Section):
     self.feature_partition_sizes = self.bspline_basis.get_feature_partition_sizes()
     self.ncoeff = int(np.sum(self.feature_partition_sizes))
     self.type_mapping = {el: i + 1 for i, el in enumerate(self.type)}
-
-    @self.pt.rank_zero
-    def _write():
-      self.write_uf3_lammps_pot("descriptors.uf3")
-    _write()
-    self.pt.all_barrier()
 
     self.pt.single_print(
       f"----------------------------------------------------------------\n"
@@ -156,6 +152,13 @@ class Uf3(Section):
       f"    TOTAL            {sum(self.feature_partition_sizes):4d}     \n"
     )
 
+    @self.pt.rank_zero
+    def _write():
+      self.write_uf3_lammps_pot("descriptors.uf3")
+    _write()
+    self.pt.all_barrier()
+
+
   @staticmethod
   def _parse_trim(val):
     if isinstance(val, str) and val.strip().startswith("{"):
@@ -175,8 +178,10 @@ class Uf3(Section):
     self.basis_ranks = []
     self.blist = []
 
+    # One rank-0 name per element (``interactions_map[1]`` is symbol strings;
+    # ``len("Al")`` is wrong for a per-species count).
     for interaction in chemical_sys.interactions_map[1]:
-      self.basis_ranks.extend([0] * len(interaction))
+      self.basis_ranks.append(0)
       self.blist.append(f"{interaction}")
 
     with open(path, "w") as pot:
@@ -188,8 +193,21 @@ class Uf3(Section):
         start_idx = self.bspline_basis.get_interaction_partitions()[1][interaction] + 1
         end_idx = start_idx + length
         self.basis_ranks.extend([1] * length)
-        self.blist.extend([f"{interaction[0]} {interaction[1]}  .  {knot:.3f}" for knot in knots_2b[start_idx:end_idx]])
-        self.pt.single_print(f"*** len(blist_2b) {len(self.blist)} {self.blist}")
+        # One label per 2B column: middle knot of each cubic B-spline support window
+        # (``get_knot_subintervals``), not a slice of ``knots_2b`` by global column
+        # index (wrong for >2 elements) or by ``offset(first_pair)+1`` (wrong for 4+).
+        subs = self.bspline_basis.knot_subintervals[interaction]
+        if len(subs) != length:
+          raise RuntimeError(
+            f"UF3 2B {interaction}: knot_subintervals ({len(subs)}) != partition size ({length})."
+          )
+        self.blist.extend(
+          [
+            f"{interaction[0]} {interaction[1]}  .  {float(sub[2]):.3f}"
+            for sub in subs
+          ]
+        )
+        #self.pt.single_print(f"*** len(blist_2b) {len(self.blist)} {self.blist}")
 
         pot.write(f"#UF3 POT UNITS: {lammps_units} DATE: {current_datetime} AUTHOR: {author} CITATION:\n")
         pot.write(f"2B {interaction[0]} {interaction[1]} {leading_trim} {trailing_trim}")
@@ -238,15 +256,30 @@ class Uf3(Section):
           for i in range(decompressed.shape[0]):
             for j in range(decompressed.shape[1]):
               pot.write(' '.join([f"{v-1:.0f}" for v in decompressed[i,j]]) + "\n")
-              for k in range(decompressed.shape[2]):
-                if decompressed[i,j,k]>1:
-                  self.basis_ranks.append(2)
-                  self.blist.append(
-                    f"{interaction[0]} {interaction[1]} {interaction[2]}  "
-                    f"{km[2][i]:.3f}  {km[1][j]:.3f}  {km[0][k]:.3f}"
-                  )
+
+          # One blist / rank entry per compressed 3B coefficient (same mask as
+          # ``get_feature_partition_sizes``). Using ``decompressed[i,j,k] > 1`` after
+          # ``decompress_3B(range(...))`` is wrong: those values are global indices,
+          # so symmetry fill marks far too many cells and breaks SLATE ARD reshapes.
+          tm = np.asarray(self.bspline_basis.template_mask[interaction], dtype=np.intp)
+          fw = np.asarray(self.bspline_basis.flat_weights[interaction])
+          for c in np.where(fw > 0)[0]:
+            flat_idx = int(tm[c])
+            # Grid axes follow ``decompress_3B``: (l,m,n) = ``knots_map`` (km[0],km[1],km[2]).
+            # Pot file prints km[2], km[1], km[0]; label with (gk,gj,gi) not (gi,gj,gk) or
+            # asymmetric resolutions (e.g. [10,10,20]) index the wrong knot length and crash.
+            gi, gj, gk = np.unravel_index(flat_idx, (d0, d1, d2))
+            self.basis_ranks.append(2)
+            self.blist.append(
+              f"{interaction[0]} {interaction[1]} {interaction[2]}  "
+              f"{km[2][gk]:.3f}  {km[1][gj]:.3f}  {km[0][gi]:.3f}"
+            )
 
           pot.write("#\n")
 
 
-    self.pt.single_print(f"*** len(blist) {len(self.blist)}")
+    if len(self.blist) != self.ncoeff or len(self.basis_ranks) != self.ncoeff:
+      raise RuntimeError(
+        f"UF3 blist / basis_ranks length mismatch: len(blist)={len(self.blist)}, "
+        f"len(basis_ranks)={len(self.basis_ranks)}, ncoeff={self.ncoeff}"
+      )
