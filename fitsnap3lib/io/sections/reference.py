@@ -7,79 +7,60 @@ from fitsnap3lib.io.sections.sections import Section
 
 class Reference(Section):
 
-    def __init__(self, name, config, pt, infile, args):
-        super().__init__(name, config, pt, infile, args)
-        self.allowedkeys = ['units', 'atom_style', 'pair_style', 'pair_coeff']
+  def __init__(self, name, config, pt, infile, args):
+    super().__init__(name, config, pt, infile, args)
+    self.allowedkeys = ['units', 'atom_style', 'pair_style', 'pair_coeff', 'kspace_style']
 
-        # for value_name in config['REFERENCE']:
-        #     if value_name in allowedkeys: continue
-        #     else: pt.single_print(">>> Found unmatched variable in REFERENCE section of input: ",value_name)
+    # for value_name in config['REFERENCE']:
+    #     if value_name in allowedkeys: continue
+    #     else: pt.single_print(">>> Found unmatched variable in REFERENCE section of input: ",value_name)
 
-        self.units = self.get_value("REFERENCE", "units", "metal").lower()
-        self.atom_style = self.get_value("REFERENCE", "atom_style", "atomic").lower()
-        self.lmp_pairdecl = []
-        self.lmp_pairdecl.append("pair_style " + self.get_value("REFERENCE", "pair_style", "zero 10.0"))
-        if not config.has_section("REFERENCE"):
-            self.delete()
-            return
-        for name, value in self._config.items("REFERENCE"):
-            if not name.find("pair_coeff"):
-                self.lmp_pairdecl.append("pair_coeff " + value)
-        if "pair_coeff" in self.lmp_pairdecl:
-            self.lmp_pairdecl.append("pair_coeff * * ")
-        self.delete()
-        
-    @property
-    def energy_units(self):
-        if self.units == "metal":
-            return "eV/atom"
-        elif self.units == "real":
-            return "kcal/mol/atom"
-        else:
-            return "?"
+    self.units = self.get_value("REFERENCE", "units", "metal").lower()
+    self.atom_style = self.get_value("REFERENCE", "atom_style", "atomic").lower()
+    self.kspace_style = self.get_value("REFERENCE", "kspace_style", "none").lower()
+    self.lmp_pairdecl = []
+    self.lmp_pairdecl.append("pair_style " + self.get_value("REFERENCE", "pair_style", "zero 10.0"))
+    if not config.has_section("REFERENCE"):
+      self.delete()
+      return
+    for name, value in self._config.items("REFERENCE"):
+      if not name.find("pair_coeff"): self.lmp_pairdecl.append("pair_coeff " + value)
+    if "pair_coeff" in self.lmp_pairdecl: self.lmp_pairdecl.append("pair_coeff * * ")
+    self.delete()
 
-    @property
-    def error_energy_units(self):
-        if self.units == "metal":
-            return "meV/atom"
-        elif self.units == "real":
-            return "kcal/mol/atom"
-        else:
-            return "?"
+  @property
+  def energy_units(self):
+    if self.units == "metal": return "eV/atom"
+    elif self.units == "real": return "kcal/mol/atom"
+    else: return "?"
 
-    @property
-    def force_units(self):
-        if self.units == "metal":
-            return "eV/A"
-        elif self.units == "real":
-            return "kcal/mol/A"
-        else:
-            return "?"
+  @property
+  def error_energy_units(self):
+    if self.units == "metal": return "meV/atom"
+    elif self.units == "real": return "kcal/mol/atom"
+    else: return "?"
 
-    @property
-    def error_force_units(self):
-        if self.units == "metal":
-            return "meV/A"
-        elif self.units == "real":
-            return "kcal/mol/A"
-        else:
-            return "?"
+  @property
+  def force_units(self):
+    if self.units == "metal": return "eV/A"
+    elif self.units == "real": return "kcal/mol/A"
+    else: return "?"
 
-    @property
-    def stress_units(self):
-        if self.units == "metal":
-            return "bars"
-        elif self.units == "real":
-            return "atm"
-        else:
-            return "?"
+  @property
+  def error_force_units(self):
+    if self.units == "metal": return "meV/A"
+    elif self.units == "real": return "kcal/mol/A"
+    else: return "?"
 
-    @property
-    def error_stress_units(self):
-        if self.units == "metal":
-            return "GPa"
-        elif self.units == "real":
-            return "atm"
-        else:
-            return "?"
+  @property
+  def stress_units(self):
+    if self.units == "metal": return "bars"
+    elif self.units == "real": return "atm"
+    else: return "?"
+
+  @property
+  def error_stress_units(self):
+    if self.units == "metal": return "GPa"
+    elif self.units == "real": return "atm"
+    else: return "?"
 
