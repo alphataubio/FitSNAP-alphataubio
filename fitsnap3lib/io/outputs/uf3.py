@@ -40,15 +40,13 @@ class Uf3(Output):
     self.write_uf3_lammps_pot(f"{stem}.uf3", coeffs)
 
     uf3_section = Section.sections["UF3"]
-    if uf3_section.bzeroflag: coeff_names = uf3_section.blist
-    else: coeff_names = [[0]]+uf3_section.blist
     coeff_path = os.path.join(pdir, f"{stem}.uf3coeff")
     with optional_open(coeff_path, "wt") as fp:
       fp.write(
         f"# FitSNAP UF3 linear fit coefficients (flattened, length {len(coeffs)}; "
         f"bzeroflag={int(uf3_section.bzeroflag)})\n\n"
       )
-      fp.write("\n".join(f" {coeff:<30.18} #  {bname}" for coeff, bname in zip(coeffs, coeff_names)))
+      fp.write("\n".join(f" {coeff:<30.18} #  {bname}" for coeff, bname in zip(coeffs, uf3_section.blist)))
 
 
   def write_uf3_lammps_pot(self, path, coeffs, knots_spacing_type="nk"):
@@ -81,7 +79,7 @@ class Uf3(Output):
         pot.write(f"{bspline_basis.get_interaction_partitions()[0][interaction]}\n")
         start_idx = bspline_basis.get_interaction_partitions()[1][interaction]
         length = bspline_basis.get_interaction_partitions()[0][interaction]
-        pot.write(" ".join([f'1' for v in coeffs[start_idx:start_idx + length]]) + "\n")
+        pot.write(" ".join([f'{v:.17g}' for v in coeffs[start_idx:start_idx + length]]) + "\n")
         pot.write("#\n")
 
       if 3 in bspline_basis.interactions_map:
