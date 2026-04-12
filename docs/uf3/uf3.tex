@@ -1,6 +1,6 @@
 \documentclass[12pt]{article}
-\usepackage[portrait, left=.5in, right=.5in, top=.5in, bottom=.75in]{geometry}
-\usepackage{amsmath,amssymb,amsfonts,amsthm}
+\usepackage[landscape, paperwidth=18in, paperheight=12in, left=.5in, right=.5in, top=.5in, bottom=.75in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts,amsthm,multirow}
 \usepackage{arydshln, scalefnt}
 \setlength{\dashlinegap}{1pt}
 \setlength{\dashlinedash}{1pt}
@@ -197,6 +197,15 @@ where N = 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136
 
 $$\frac{256 ~\frac{KB}{SM} * 1024 ~\frac{B}{KB}}{4 ~\frac{FP32}{B}} = 65,536 ~\frac{FP32}{SM}$$
 
+
+On H100:
+	•	4 warp schedulers per SM
+	•	Designed for warp-group execution (WGMMA)
+	•	Sweet spots often involve multiples of 128 threads (4 warps)
+	•	Think in warps (32), not threads
+	•	Think in warp-groups (128) for Tensor Core paths
+	•	Typical high-performance block sizes: 128 256 512
+
 % ----------------------------------------------------------------
 \clearpage
 
@@ -284,8 +293,19 @@ $$
 
 {\scalefont{0.5}
 
-$$\blacktriangle_0(k) = 
-\underbrace{\begin{bmatrix}
+$$
+\underbrace{\left[\begin{array}{c:c:c}
+ & & \\[5em]
+\blacktriangle_0(j_0,k_0) & \cdots & \blacktriangle_0(j_{N-2}, k_{N-1}))\\[5em] 
+\hdashline & & \\[5em]
+\blacktriangle_1(j_0,k_0) & \cdots & \blacktriangle_1(j_{N-2}, k_{N-1}))\\[5em] 
+\hdashline & & \\[5em]
+\blacktriangle_2(j_0,k_0) & \cdots & \blacktriangle_2(j_{N-2}, k_{N-1}))\\[5em] 
+\hdashline & & \\[5em]
+\blacktriangle_3(j_0,k_0) & \cdots & \blacktriangle_3(j_{N-2}, k_{N-1}))\\[5em] 
+\end{array}\right]}_{64\times 1}
+= 
+\underbrace{\left[\begin{array}{c}
 bij_0 \cdot bik_0 (cij_{0,0,0} \cdot bjk_0 + cij_{0,0,1} \cdot bjk_1 + cij_{0,0,2} \cdot bjk_2 + cij_{0,0,3} \cdot bjk_3)\\
 bij_0 \cdot bik_1 (cij_{0,1,0} \cdot bjk_0 + cij_{0,1,1} \cdot bjk_1 + cij_{0,1,2} \cdot bjk_2 + cij_{0,1,3} \cdot bjk_3)\\
 bij_0 \cdot bik_2 (cij_{0,2,0} \cdot bjk_0 + cij_{0,2,1} \cdot bjk_1 + cij_{0,2,2} \cdot bjk_2 + cij_{0,2,3} \cdot bjk_3)\\
@@ -305,12 +325,7 @@ bij_3 \cdot bik_0 (cij_{3,0,0} \cdot bjk_0 + cij_{3,0,1} \cdot bjk_1 + cij_{3,0,
 bij_3 \cdot bik_1 (cij_{3,1,0} \cdot bjk_0 + cij_{3,1,1} \cdot bjk_1 + cij_{3,1,2} \cdot bjk_2 + cij_{3,1,3} \cdot bjk_3)\\
 bij_3 \cdot bik_2 (cij_{3,2,0} \cdot bjk_0 + cij_{3,2,1} \cdot bjk_1 + cij_{3,2,2} \cdot bjk_2 + cij_{3,2,3} \cdot bjk_3)\\
 bij_3 \cdot bik_3 (cij_{3,3,0} \cdot bjk_0 + cij_{3,3,1} \cdot bjk_1 + cij_{3,3,2} \cdot bjk_2 + cij_{3,3,3} \cdot bjk_3)\\
-
-\end{bmatrix}}_{16\times 1}
-$$
-
-$$\blacktriangle_1(k) = 
-\underbrace{\begin{bmatrix}
+\hdashline
 dbij_0 \cdot bik_0 (dcij_{0,0,0} \cdot bjk_0 + dcij_{0,0,1} \cdot bjk_1 + dcij_{0,0,2} \cdot bjk_2 + dcij_{0,0,3} \cdot bjk_3)\\
 dbij_0 \cdot bik_1 (dcij_{0,1,0} \cdot bjk_0 + dcij_{0,1,1} \cdot bjk_1 + dcij_{0,1,2} \cdot bjk_2 + dcij_{0,1,3} \cdot bjk_3)\\
 dbij_0 \cdot bik_2 (dcij_{0,2,0} \cdot bjk_0 + dcij_{0,2,1} \cdot bjk_1 + dcij_{0,2,2} \cdot bjk_2 + dcij_{0,2,3} \cdot bjk_3)\\
@@ -330,11 +345,7 @@ dbij_2 \cdot bik_3 (dcij_{2,3,0} \cdot bjk_0 + dcij_{2,3,1} \cdot bjk_1 + dcij_{
 0 \\
 0 \\
 0 \\
-\end{bmatrix}}_{16\times 1}
-$$
-
-$$\blacktriangle_2(k) = 
-\underbrace{\begin{bmatrix}
+\hdashline
 bij_0 \cdot dbik_0 (dcik_{0,0,0} \cdot bjk_0 + dcik_{0,0,1} \cdot bjk_1 + dcik_{0,0,2} \cdot bjk_2 + dcik_{0,0,3} \cdot bjk_3)\\
 bij_0 \cdot dbik_1 (dcik_{0,1,0} \cdot bjk_0 + dcik_{0,1,1} \cdot bjk_1 + dcik_{0,1,2} \cdot bjk_2 + dcik_{0,1,3} \cdot bjk_3)\\
 bij_0 \cdot dbik_2 (dcik_{0,2,0} \cdot bjk_0 + dcik_{0,2,1} \cdot bjk_1 + dcik_{0,2,2} \cdot bjk_2 + dcik_{0,2,3} \cdot bjk_3)\\
@@ -354,11 +365,7 @@ bij_3 \cdot dbik_0 (dcik_{3,0,0} \cdot bjk_0 + dcik_{3,0,1} \cdot bjk_1 + dcik_{
 bij_3 \cdot dbik_1 (dcik_{3,1,0} \cdot bjk_0 + dcik_{3,1,1} \cdot bjk_1 + dcik_{3,1,2} \cdot bjk_2 + dcik_{3,1,3} \cdot bjk_3)\\
 bij_3 \cdot dbik_2 (dcik_{3,2,0} \cdot bjk_0 + dcik_{3,2,1} \cdot bjk_1 + dcik_{3,2,2} \cdot bjk_2 + dcik_{3,2,3} \cdot bjk_3)\\
 0 \\
-\end{bmatrix}}_{16\times 1}
-$$
-
-$$\blacktriangle_3(k) = 
-\underbrace{\begin{bmatrix}
+\hdashline
 bij_0 \cdot bik_0 (dcjk_{0,0,0} \cdot dbjk_0 + dcjk_{0,0,1} \cdot dbjk_1 + dcjk_{0,0,2} \cdot dbjk_2 + \qquad 0\qquad)\\
 bij_0 \cdot bik_1 (dcjk_{0,1,0} \cdot dbjk_0 + dcjk_{0,1,1} \cdot dbjk_1 + dcjk_{0,1,2} \cdot dbjk_2 + \qquad 0\qquad)\\
 bij_0 \cdot bik_2 (dcjk_{0,2,0} \cdot dbjk_0 + dcjk_{0,2,1} \cdot dbjk_1 + dcjk_{0,2,2} \cdot dbjk_2 + \qquad 0\qquad)\\
@@ -378,7 +385,22 @@ bij_3 \cdot bik_0 (dcjk_{3,0,0} \cdot dbjk_0 + dcjk_{3,0,1} \cdot dbjk_1 + dcjk_
 bij_3 \cdot bik_1 (dcjk_{3,1,0} \cdot dbjk_0 + dcjk_{3,1,1} \cdot dbjk_1 + dcjk_{3,1,2} \cdot dbjk_2 + \qquad 0\qquad)\\
 bij_3 \cdot bik_2 (dcjk_{3,2,0} \cdot dbjk_0 + dcjk_{3,2,1} \cdot dbjk_1 + dcjk_{3,2,2} \cdot dbjk_2 + \qquad 0\qquad)\\
 bij_3 \cdot bik_3 (dcjk_{3,3,0} \cdot dbjk_0 + dcjk_{3,3,1} \cdot dbjk_1 + dcjk_{3,3,2} \cdot dbjk_2 + \qquad 0\qquad)\\
-\end{bmatrix}}_{16\times 1}
+\end{array}\right]}_{64\times 1}
+=
+\left[\begin{array}{cccc}
+bik_0 (cij_{0,0,0} & cij_{0,0,1} & cij_{0,0,2} & cij_{0,0,3} \\
+bik_1 (cij_{0,1,0} & cij_{0,1,1} & cij_{0,1,2} & cij_{0,1,3} \\
+bik_2 (cij_{0,2,0} & cij_{0,2,1} & cij_{0,2,2} & cij_{0,2,3} \\
+bik_3 (cij_{0,3,0} & cij_{0,3,1} & cij_{0,3,2} & cij_{0,3,3} \\
+\hdashline
+\end{array}\right]
+\left[\begin{array}{c}
+bij_0 \cdot bjk_0 \\
+bij_0 \cdot bjk_1 \\
+bij_0 \cdot bjk_2 \\
+bij_0 \cdot bjk_3 \\
+\hdashline
+\end{array}\right]
 $$
 
 }
