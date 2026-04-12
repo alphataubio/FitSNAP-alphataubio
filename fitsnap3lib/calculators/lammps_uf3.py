@@ -17,6 +17,13 @@ class LammpsUf3(LammpsBase):
     self._uf3 = Section.sections["UF3"]
     self.pt.check_lammps()
 
+    self.pt.single_print(
+      f"----------------------------------------------------------------\n"
+      f"  LAMMPS UF3 CALCULATOR                                         \n"
+      f"                                                                \n"
+    )
+
+
   def get_width(self):
     return self._uf3.ncoeff
 
@@ -31,7 +38,8 @@ class LammpsUf3(LammpsBase):
 
   def _set_box(self):
     self._set_box_helper(numtypes=self._uf3.numtypes)
-    #self._lmp.command("kspace_style pppm 1e-4")
+    # kspace_style is none by default just like in LAMMPS
+    self._lmp.command(f"kspace_style {self.config.sections['REFERENCE'].kspace_style}")
 
   def _prepare_lammps(self):
     self._set_structure()
@@ -109,9 +117,9 @@ class LammpsUf3(LammpsBase):
         precision=3, suppress=False, floatmode='fixed', linewidth=np.inf,
         formatter={'float': '{: .3f}'.format}, threshold = 800, edgeitems=50
     )
-    #self.pt.all_print(f"\n*** lmp_uf3 {lmp_uf3.shape}\n{lmp_uf3[:8]}\n");
 
     if (np.isinf(lmp_uf3)).any() or (np.isnan(lmp_uf3)).any():
+      self.pt.all_print(f"\n*** lmp_uf3 {lmp_uf3.shape}\n{lmp_uf3}\n");
       raise ValueError(f"NaN in descriptors of {self._data['File']} from group {self._data['Group']}")
 
     units_real = self.config.sections["REFERENCE"].units.lower() == "real"
