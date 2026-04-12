@@ -120,7 +120,12 @@ class SLATE(SlateValidation):
 
         # Compute adaptive hyperparameters
         ap = 1.0 / (var_bw + eps) 
-        
+
+        self.pt.single_print(
+          f"----------------------------------------------------------------\n"
+          f"  SLATE ARD SOLVER                                              \n"
+        )
+
         pt.debug_single_print(f"inverse variance in training data: {ap:.6f}, logscale for threshold_lambda: {np.log10(ap):.6f}")
         
         if self.directmethod:
@@ -130,8 +135,8 @@ class SLATE(SlateValidation):
             self.lambda_2 = self.lambdasmall
             if self.threshold_lambda_config > 0: self.threshold_lambda = self.threshold_lambda_config
             else: self.threshold_lambda = 10**(int(np.abs(np.log10(ap))) + self.logcut)
-            pt.single_print(f"ARD directmethod: alpha_1={self.alpha_1:.2e}, lambda_1={self.lambda_1:.2e}, threshold_lambda={self.threshold_lambda:.2e}")
-            pt.single_print(f"SLATE ARD: m {m} n {n} ap {ap:.2g} alpha_1 {self.alpha_1:.2g} alpha_2 {self.alpha_2:.2g} lambda_1 {self.lambda_1:.2g} lambda_2 {self.lambda_2:.2g}")
+            pt.single_print(f"    directmethod: alpha_1={self.alpha_1:.2e}, lambda_1={self.lambda_1:.2e}, threshold_lambda={self.threshold_lambda:.2e}")
+            pt.single_print(f"    m {m} n {n} ap {ap:.2g} alpha_1 {self.alpha_1:.2g} alpha_2 {self.alpha_2:.2g} lambda_1 {self.lambda_1:.2g} lambda_2 {self.lambda_2:.2g}")
         else:
             self.alpha_1 = self.scap * ap
             self.alpha_2 = self.scap * ap
@@ -140,8 +145,16 @@ class SLATE(SlateValidation):
             if self.threshold_lambda_config > 0: self.threshold_lambda = self.threshold_lambda_config
             else: self.threshold_lambda = 10**(int(np.abs(np.log10(ap))) + self.logcut)
             pt.debug_single_print(f"automated threshold_lambda will be 10**({self.logcut:.6f} + {np.abs(np.log10(ap)):.3f})={self.threshold_lambda:.2g}")
-            pt.single_print(f"SLATE ARD: m {m} n {n} scap {self.scap:.2g} scai {self.scai:.2g} ap {ap:.2g} alpha_1 {self.alpha_1:.2g} alpha_2 {self.alpha_2:.2g} lambda_1 {self.lambda_1:.2g} lambda_2 {self.lambda_2:.2g}")
-        
+            pt.single_print(
+              f"    m {m} n {n} scap {self.scap:.2g} scai {self.scai:.2g} ap {ap:.2g} \n"
+              f"    alpha_1 {self.alpha_1:.2g} alpha_2 {self.alpha_2:.2g} lambda_1 {self.lambda_1:.2g} lambda_2 {self.lambda_2:.2g}\n")
+
+        self.pt.single_print(
+          #f"----------------------------------------------------------------\n"
+          f"    #   TIME ALPHA   SSE     COND_NUMBER GAMMA_SUM N_ACTIVE COEF_CHANGE \n"
+          f"                                                            (REL) (ABS) \n"
+        )
+
         alpha_ = 1.0
         lambda_ = np.ones(n, dtype=np.float64)
         coef_ = np.zeros(n, dtype=np.float64)
@@ -268,11 +281,11 @@ class SLATE(SlateValidation):
             slurm_time_left_str = "" if np.isinf(slurm_time_left) else f" slurm_time_left {slurm_time_left/60:.1f}m"
 
             coef_rel_converged, coef_abs_converged, coef_rel_change, coef_abs_change = mixed_relative_change(coef_old_, coef_)
-            coef_change_str = " " if coef_old_ is None else f" coef_rel_change {coef_rel_change:.2g} coef_abs_change {coef_abs_change:.2g}"
+            coef_change_str = " " if coef_old_ is None else f" {coef_rel_change:5.2g} {coef_abs_change:5.2g}"
             coef_old_ = np.copy(coef_)
 
-            pt.single_print(f"SLATE ARD #{iteration} ({elapsed_iteration/60:.1f}m): alpha {alpha_:.4g} sse {sse_:.3g} cond_number {cond_number:.1g} gamma_sum {gamma_active.sum():.1f} n_active {n_active}{coef_change_str}{slurm_time_left_str}")
-            
+            pt.single_print(f"    {iteration:<3d} {elapsed_iteration/60:.1f}m {alpha_:>6.3g} {sse_:>6.3g} {cond_number:>8.2g} {gamma_active.sum():>5.2f} {n_active:6d}{coef_change_str}{slurm_time_left_str}")
+
             iteration += 1
             
             if iteration > self.max_iter:
