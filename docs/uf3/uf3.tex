@@ -1,5 +1,5 @@
 \documentclass[12pt]{article}
-\usepackage[landscape, paperwidth=18in, paperheight=12in, left=.5in, right=.5in, top=.5in, bottom=.75in]{geometry}
+\usepackage[paperwidth=18in, paperheight=12in, left=.5in, right=.5in, top=.5in, bottom=.75in]{geometry}
 \usepackage{amsmath,amssymb,amsfonts,amsthm,multirow}
 \usepackage{arydshln, scalefnt}
 \setlength{\dashlinegap}{1pt}
@@ -13,198 +13,190 @@
 
 \begin{document}
 \maketitle
-
+\pagestyle{empty}
 %\tableofcontents\clearpage
 
-\large
-\section*{Matrix and Tensor Operations for the UF3 Potential}
-
-The provided C++ code evaluates an empirical potential (likely a machine-learning model like UF3) utilizing cubic B-splines for 2-body and 3-body interactions. 
-
-\subsection*{1. Distance Polynomial Vectors}
-First, we define the polynomial distance vectors used throughout the code to evaluate the splines. For any pair distance $r$, we define the $4 \times 1$ position vector $\mathbf{p}(r)$ and the $3 \times 1$ derivative vector $\mathbf{p}'(r)$:
-
-\begin{equation}
-\mathbf{p}(r) = \begin{bmatrix} 1 \\ r \\ r^2 \\ r^3 \end{bmatrix}, \quad 
-\mathbf{p}'(r) = \begin{bmatrix} 1 \\ r \\ r^2 \end{bmatrix}
-\end{equation}
-
-\subsection*{2. Two-Body Interactions}
-The 2-body scalar force and energy are computed using a set of spline coefficients. Let $C_{2b}$ be the $4 \times 4$ coefficient matrix (\texttt{constants\_2b}) and $C'_{2b}$ be the $3 \times 3$ derivative coefficient matrix (\texttt{constants\_2b\_deri}).
-
-\textbf{2-Body Energy:}
-\begin{equation}
-E_{2b} = \mathbf{1}_{4}^T C_{2b} \mathbf{p}(r_{ij})
-\end{equation}
-\textit{(where $\mathbf{1}_{4}$ is a $4 \times 1$ vector of ones).}
-
-\textbf{2-Body Scalar Force:}
-\begin{equation}
-F_{2b} = \mathbf{1}_{3}^T C'_{2b} \mathbf{p}'(r_{ij})
-\end{equation}
-
-\textbf{2-Body Vector Force:}
-Using the displacement vector $\Delta\mathbf{r}_{ij} = \mathbf{r}_i - \mathbf{r}_j$, the force applied to atom $i$ is:
-\begin{equation}
-\mathbf{f}_{i}^{(2b)} = -\frac{F_{2b}}{r_{ij}} \Delta\mathbf{r}_{ij}
-\end{equation}
-
-\subsection*{3. Three-Body Interactions: Basis Vectors}
-For a triplet of atoms $(i, j, k)$, the code computes spline basis vectors for each pair distance ($r_{ij}, r_{ik}, r_{jk}$). Let $C_{ij}$ be the $4 \times 4$ coefficient matrix (\texttt{cc\_3b\_ij}) and $C'_{ij}$ be the $3 \times 3$ derivative matrix (\texttt{cc\_3b\_deri\_ij}). 
-
-The $4 \times 1$ basis vectors ($\mathbf{b}$) and $3 \times 1$ derivative basis vectors ($\mathbf{b}'$) are obtained via matrix-vector multiplication:
-
-\begin{align}
-\mathbf{b}_{ij} &= C_{ij} \mathbf{p}(r_{ij}), & \mathbf{b}'_{ij} &= C'_{ij} \mathbf{p}'(r_{ij}) \\
-\mathbf{b}_{ik} &= C_{ik} \mathbf{p}(r_{ik}), & \mathbf{b}'_{ik} &= C'_{ik} \mathbf{p}'(r_{ik}) \\
-\mathbf{b}_{jk} &= C_{jk} \mathbf{p}(r_{jk}), & \mathbf{b}'_{jk} &= C'_{jk} \mathbf{p}'(r_{jk})
-\end{align}
-
-\subsection*{4. Three-Body Interactions: Tensor Contractions}
-The nested loops representing \texttt{triangle\_eval} variables are tensor contractions. The coefficients are stored in 3-dimensional tensors, which we can represent as sums of bilinear forms evaluated over matrix slices $W_l$.
-
-\textbf{Three-Body Energy (\texttt{triangle\_eval0}):} \\
-Let $W^{(E)}$ be the $4 \times 4 \times 4$ energy coefficient tensor (\texttt{n3b\_coeff\_array}). The energy is the contraction of the basis vectors along the three axes:
-\begin{equation}
-E_{3b} = \sum_{l=0}^{3} b_{ij, l} \left( \mathbf{b}_{ik}^T W^{(E)}_{l} \mathbf{b}_{jk} \right)
-\end{equation}
-
-\textbf{Three-Body Scalar Forces (\texttt{triangle\_eval1, 2, 3}):} \\
-The code evaluates the derivative components by contracting the derivative basis vector of one pair with the standard basis vectors of the other two pairs.
-
-For the $ij$ pair (\texttt{triangle\_eval1}), using the $4 \times 4$ matrix slices $W^{(ij)}_l$ from \texttt{coeff\_for\_der\_ij}:
-\begin{equation}
-T_1 = \sum_{l=0}^{2} b'_{ij, l} \left( \mathbf{b}_{ik}^T W^{(ij)}_{l} \mathbf{b}_{jk} \right)
-\end{equation}
-
-For the $ik$ pair (\texttt{triangle\_eval2}), using the $3 \times 4$ matrix slices $W^{(ik)}_l$ from \texttt{coeff\_for\_der\_ik}:
-\begin{equation}
-T_2 = \sum_{l=0}^{3} b_{ij, l} \left( (\mathbf{b}'_{ik})^T W^{(ik)}_{l} \mathbf{b}_{jk} \right)
-\end{equation}
-
-For the $jk$ pair (\texttt{triangle\_eval3}), using the $4 \times 3$ matrix slices $W^{(jk)}_l$ from \texttt{coeff\_for\_der\_jk}:
-\begin{equation}
-T_3 = \sum_{l=0}^{3} b_{ij, l} \left( \mathbf{b}_{ik}^T W^{(jk)}_{l} \mathbf{b}'_{jk} \right)
-\end{equation}
-
-\subsection*{5. Three-Body Vector Forces}
-Finally, the scalar quantities $T_1$, $T_2$, and $T_3$ are projected back onto the cartesian unit vectors between the atoms. Let the unit displacement vectors be defined as $\hat{\mathbf{r}}_{ji} = \frac{\mathbf{r}_j - \mathbf{r}_i}{r_{ij}}$, $\hat{\mathbf{r}}_{ki} = \frac{\mathbf{r}_k - \mathbf{r}_i}{r_{ik}}$, and $\hat{\mathbf{r}}_{kj} = \frac{\mathbf{r}_k - \mathbf{r}_j}{r_{jk}}$.
-
-The intermediate force vectors are:
-\begin{align}
-\mathbf{f}_{ij} &= T_1 \hat{\mathbf{r}}_{ji} \\
-\mathbf{f}_{ik} &= T_2 \hat{\mathbf{r}}_{ki} \\
-\mathbf{f}_{jk} &= T_3 \hat{\mathbf{r}}_{kj}
-\end{align}
-
-The total force distributed to atoms $i$, $j$, and $k$ from this triplet interaction is simply the linear combination of these intermediate vectors:
-\begin{align}
-\mathbf{F}_i &= \mathbf{f}_{ij} + \mathbf{f}_{ik} \\
-\mathbf{F}_j &= -\mathbf{f}_{ij} + \mathbf{f}_{jk} \\
-\mathbf{F}_k &= -\mathbf{f}_{ik} - \mathbf{f}_{jk}
-\end{align}
-
-\clearpage
-
-
-
-
-
-
-\section*{CUDA Tensor Core WGMMA Mapping for UF3 3-Body Interactions}
-
-
-Hopper introduces the asynchronous warpgroup-level matrix multiply and accumulate operation (WGMMA). A warpgroup consists of four contiguous warps, i.e., 128 contiguous threads, where the warp-rank of the first warp is a multiple of four. The wgmma.mma\_async instruction is executed collectively by all 128 threads in a warpgroup. This operation typically follows one of these forms, where matrix C serves as the accumulator:
-
-C = A * B + C
-C = A * B, where the input from accumulator C is disabled.
-A notable requirement of WGMMA is that operand B must always be stored in shared memory (SMEM). In contrast, operand A can be located in either SMEM or register memory (RMEM), and the accumulator C is always held in RMEM.
-
-
-
-Mapping the 64 concurrent 3-body triplet interactions to the \texttt{wgmma.mma\_async.sync.aligned8k8.f32.f32.f32} instruction requires packing the basis vectors into $M=64, K=8$ inputs, and flattening the tensor slices into $N=8, K=8$ coefficient matrices. 
-
-Crucially, because the atoms $i$ and $j$ are constant for the inner loop over $k$, the basis vector $\mathbf{b}_{ij}$ and its derivative $\mathbf{b}'_{ij}$ are scalar constants across the 64 triplets. We can pre-multiply the spline tensor slices to eliminate the $l$-loop entirely before invoking the Tensor Cores.
-
-\subsection*{1. Pre-computation (Pair-wise Reduction)}
-Before the $M=64$ inner loop, collapse the 3D coefficient tensors into 2D matrices by contracting them with the fixed $ij$ basis vectors. This yields four highly optimized matrices:
-
-\begin{align}
-\widetilde{W}^{(ij)} &= \sum_{l=0}^{2} b'_{ij, l} W^{(ij)}_{l} \quad \in \mathbb{R}^{4 \times 4} \\
-\widetilde{W}^{(ik)} &= \sum_{l=0}^{3} b_{ij, l} W^{(ik)}_{l} \quad \in \mathbb{R}^{3 \times 4} \\
-\widetilde{W}^{(jk)} &= \sum_{l=0}^{3} b_{ij, l} W^{(jk)}_{l} \quad \in \mathbb{R}^{4 \times 3} \\
-\widetilde{W}^{(E)}  &= \sum_{l=0}^{3} b_{ij, l} W^{(E)}_{l}  \quad \in \mathbb{R}^{4 \times 4}
-\end{align}
-
-\subsection*{2. Input Tensor Packing ($A \in \mathbb{R}^{64 \times 8}$)}
-The $A$ matrix holds the $k$-dependent basis vectors for all 64 triplets. We pack the standard basis $\mathbf{b}_{ik}$ and its derivative $\mathbf{b}'_{ik}$ into the $K=8$ dimension. For a triplet $m \in [0, 63]$:
-
-\begin{equation}
-A_{m, :} = \left[ b_{ik_m, 0}, b_{ik_m, 1}, b_{ik_m, 2}, b_{ik_m, 3}, \quad b'_{ik_m, 0}, b'_{ik_m, 1}, b'_{ik_m, 2}, \quad 0 \right]
-\end{equation}
-
-\subsection*{3. Weight Tensor Packing ($B \in \mathbb{R}^{8 \times 8}$)}
-To extract all force components ($T_1, T_2, T_3$) and energy ($E$), we split the operation into two `m64n8k8` instructions to fit within the $N=8$ output dimension. We pad the pre-computed matrices with zeros to align with the $8 \times 8$ WGMMA hardware layout.
-
-\textbf{Weights for $T_2$ and $T_3$ (Instruction 1):}
-\begin{equation}
-B_{23} = \begin{bmatrix} 
-0_{4 \times 4} & \left[ \widetilde{W}^{(jk)}, 0_{4 \times 1} \right] \\ 
-\begin{bmatrix} \widetilde{W}^{(ik)} \\ 0_{1 \times 4} \end{bmatrix} & 0_{4 \times 4} 
-\end{bmatrix} \quad \in \mathbb{R}^{8 \times 8}
-\end{equation}
-
-\textbf{Weights for $T_1$ and Energy (Instruction 2):}
-\begin{equation}
-B_{1E} = \begin{bmatrix} 
-\widetilde{W}^{(ij)} & \widetilde{W}^{(E)} \\ 
-0_{4 \times 4} & 0_{4 \times 4} 
-\end{bmatrix} \quad \in \mathbb{R}^{8 \times 8}
-\end{equation}
-
-\subsection*{4. WGMMA Execution}
-Issue the asynchronous WGMMA instructions to compute the fused intermediate vectors for all 64 triplets simultaneously:
-
-\begin{align}
-D_{23} &= A \times B_{23} \quad \in \mathbb{R}^{64 \times 8} \\
-D_{1E} &= A \times B_{1E} \quad \in \mathbb{R}^{64 \times 8}
-\end{align}
-
-\subsection*{5. Post-Processing: Final Contractions}
-The output matrices $D_{23}$ and $D_{1E}$ contain the accumulated intermediate vectors for each triplet $m$. The final step is a batched dot product with the $j,k$ pair basis vectors ($\mathbf{b}_{jk}$ and $\mathbf{b}'_{jk}$) to resolve the scalars $T_1, T_2, T_3$, and $E$. 
-
-Let $\mathbf{v}^{(T2)}_m = (D_{23})_{m, 0:3}$ and $\mathbf{v}^{(T3)}_m = (D_{23})_{m, 4:6}$.
-Let $\mathbf{v}^{(T1)}_m = (D_{1E})_{m, 0:3}$ and $\mathbf{v}^{(E)}_m = (D_{1E})_{m, 4:7}$.
-
-\begin{align}
-T_2^{(m)} &= \mathbf{v}^{(T2)}_m \cdot \mathbf{b}_{jk_m} \\
-T_3^{(m)} &= \mathbf{v}^{(T3)}_m \cdot \mathbf{b}'_{jk_m} \\
-T_1^{(m)} &= \mathbf{v}^{(T1)}_m \cdot \mathbf{b}_{jk_m} \\
-E_{3b}^{(m)} &= \mathbf{v}^{(E)}_m \cdot \mathbf{b}_{jk_m}
-\end{align}
-
-These scalar values map directly back to the original force vector projections $F_i, F_j, F_k$ per triplet.
-
-
-
-% ========================================================================================
 
 % ----------------------------------------------------------------
 \clearpage
 
-$.m64<N>k8$\\
-where N = 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152, 160, 168, 176, 184, 192, 200, 208, 216, 224, 232, 240, 248, 256\\
+{
 
-$$\frac{256 ~\frac{KB}{SM} * 1024 ~\frac{B}{KB}}{4 ~\frac{FP32}{B}} = 65,536 ~\frac{FP32}{SM}$$
+\section*{\scalefont{5}.m8n8k4.f64}
+
+\scalefont{2.5}
+
+$$
+\underbrace{\left[\begin{array}{:c:c:c:c:c:c:c:c:}
+\hdashline ~~~ & ~~~ & ~~~ & ~~~ & ~~~ & ~~~ & ~~~ & ~~~ \\
+\hdashline ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ \\
+\hdashline ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ \\
+\hdashline ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ \\
+\hdashline ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ \\
+\hdashline ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ \\
+\hdashline ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ \\
+\hdashline ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ \\
+\hdashline
+\end{array}\right]}_{8\times 8}
+~=~
+\underbrace{\left[\begin{array}{:c:c:c:c:}
+\hdashline ~~~ & ~~~ & ~~~ & ~~~  \\
+\hdashline ~~ & ~~ & ~~ & ~~  \\
+\hdashline ~~ & ~~ & ~~ & ~~  \\
+\hdashline ~~ & ~~ & ~~ & ~~  \\
+\hdashline ~~ & ~~ & ~~ & ~~  \\
+\hdashline ~~ & ~~ & ~~ & ~~  \\
+\hdashline ~~ & ~~ & ~~ & ~~  \\
+\hdashline ~~ & ~~ & ~~ & ~~  \\
+\hdashline
+\end{array}\right]}_{8\times 4}
+~\times~
+\underbrace{\left[\begin{array}{:c:c:c:c:c:c:c:c:}
+\hdashline ~~~ & ~~~ & ~~~ & ~~~ & ~~~ & ~~~ & ~~~ & ~~~ \\
+\hdashline ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ \\
+\hdashline ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ \\
+\hdashline ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ \\[3pt]
+\hdashline
+\end{array}\right]}_{4\times 8}
+~+~
+\underbrace{\left[\begin{array}{:c:c:c:c:c:c:c:c:}
+\hdashline ~~~ & ~~~ & ~~~ & ~~~ & ~~~ & ~~~ & ~~~ & ~~~ \\
+\hdashline ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ \\
+\hdashline ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ \\
+\hdashline ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ \\
+\hdashline ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ \\
+\hdashline ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ \\
+\hdashline ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ \\
+\hdashline ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ & ~~ \\
+\hdashline
+\end{array}\right]}_{8\times 8}
+$$
+}
+
+% ----------------------------------------------------------------
+\clearpage
+
+{\scalefont{0.8}
+
+$$
+\underbrace{\left[\begin{array}{c:c:c}
+ & & \\[5em]
+\blacktriangle_0(j_0,k_0) & \cdots & \blacktriangle_0(j_{N-2}, k_{N-1}))\\[5em] 
+\hdashline & & \\[5em]
+\blacktriangle_1(j_0,k_0) & \cdots & \blacktriangle_1(j_{N-2}, k_{N-1}))\\[5em] 
+\hdashline & & \\[5em]
+\blacktriangle_2(j_0,k_0) & \cdots & \blacktriangle_2(j_{N-2}, k_{N-1}))\\[5em] 
+\hdashline & & \\[5em]
+\blacktriangle_3(j_0,k_0) & \cdots & \blacktriangle_3(j_{N-2}, k_{N-1}))\\[5em] 
+\end{array}\right]}_{64\times 1}
+= 
+\underbrace{\left[\begin{array}{c}
+bij_0 \cdot bik_0 (cij_{0,0,0} \cdot bjk_0 + cij_{0,0,1} \cdot bjk_1 + cij_{0,0,2} \cdot bjk_2 + cij_{0,0,3} \cdot bjk_3)\\
+bij_0 \cdot bik_1 (cij_{0,1,0} \cdot bjk_0 + cij_{0,1,1} \cdot bjk_1 + cij_{0,1,2} \cdot bjk_2 + cij_{0,1,3} \cdot bjk_3)\\
+bij_0 \cdot bik_2 (cij_{0,2,0} \cdot bjk_0 + cij_{0,2,1} \cdot bjk_1 + cij_{0,2,2} \cdot bjk_2 + cij_{0,2,3} \cdot bjk_3)\\
+bij_0 \cdot bik_3 (cij_{0,3,0} \cdot bjk_0 + cij_{0,3,1} \cdot bjk_1 + cij_{0,3,2} \cdot bjk_2 + cij_{0,3,3} \cdot bjk_3)\\
+\hdashline
+bij_1 \cdot bik_0 (cij_{1,0,0} \cdot bjk_0 + cij_{1,0,1} \cdot bjk_1 + cij_{1,0,2} \cdot bjk_2 + cij_{1,0,3} \cdot bjk_3)\\
+bij_1 \cdot bik_1 (cij_{1,1,0} \cdot bjk_0 + cij_{1,1,1} \cdot bjk_1 + cij_{1,1,2} \cdot bjk_2 + cij_{1,1,3} \cdot bjk_3)\\
+bij_1 \cdot bik_2 (cij_{1,2,0} \cdot bjk_0 + cij_{1,2,1} \cdot bjk_1 + cij_{1,2,2} \cdot bjk_2 + cij_{1,2,3} \cdot bjk_3)\\
+bij_1 \cdot bik_3 (cij_{1,3,0} \cdot bjk_0 + cij_{1,3,1} \cdot bjk_1 + cij_{1,3,2} \cdot bjk_2 + cij_{1,3,3} \cdot bjk_3)\\
+\hdashline
+bij_2 \cdot bik_0 (cij_{2,0,0} \cdot bjk_0 + cij_{2,0,1} \cdot bjk_1 + cij_{2,0,2} \cdot bjk_2 + cij_{2,0,3} \cdot bjk_3)\\
+bij_2 \cdot bik_1 (cij_{2,1,0} \cdot bjk_0 + cij_{2,1,1} \cdot bjk_1 + cij_{2,1,2} \cdot bjk_2 + cij_{2,1,3} \cdot bjk_3)\\
+bij_2 \cdot bik_2 (cij_{2,2,0} \cdot bjk_0 + cij_{2,2,1} \cdot bjk_1 + cij_{2,2,2} \cdot bjk_2 + cij_{2,2,3} \cdot bjk_3)\\
+bij_2 \cdot bik_3 (cij_{2,3,0} \cdot bjk_0 + cij_{2,3,1} \cdot bjk_1 + cij_{2,3,2} \cdot bjk_2 + cij_{2,3,3} \cdot bjk_3)\\
+\hdashline
+bij_3 \cdot bik_0 (cij_{3,0,0} \cdot bjk_0 + cij_{3,0,1} \cdot bjk_1 + cij_{3,0,2} \cdot bjk_2 + cij_{3,0,3} \cdot bjk_3)\\
+bij_3 \cdot bik_1 (cij_{3,1,0} \cdot bjk_0 + cij_{3,1,1} \cdot bjk_1 + cij_{3,1,2} \cdot bjk_2 + cij_{3,1,3} \cdot bjk_3)\\
+bij_3 \cdot bik_2 (cij_{3,2,0} \cdot bjk_0 + cij_{3,2,1} \cdot bjk_1 + cij_{3,2,2} \cdot bjk_2 + cij_{3,2,3} \cdot bjk_3)\\
+bij_3 \cdot bik_3 (cij_{3,3,0} \cdot bjk_0 + cij_{3,3,1} \cdot bjk_1 + cij_{3,3,2} \cdot bjk_2 + cij_{3,3,3} \cdot bjk_3)\\
+\hdashline
+dbij_0 \cdot bik_0 (dcij_{0,0,0} \cdot bjk_0 + dcij_{0,0,1} \cdot bjk_1 + dcij_{0,0,2} \cdot bjk_2 + dcij_{0,0,3} \cdot bjk_3)\\
+dbij_0 \cdot bik_1 (dcij_{0,1,0} \cdot bjk_0 + dcij_{0,1,1} \cdot bjk_1 + dcij_{0,1,2} \cdot bjk_2 + dcij_{0,1,3} \cdot bjk_3)\\
+dbij_0 \cdot bik_2 (dcij_{0,2,0} \cdot bjk_0 + dcij_{0,2,1} \cdot bjk_1 + dcij_{0,2,2} \cdot bjk_2 + dcij_{0,2,3} \cdot bjk_3)\\
+dbij_0 \cdot bik_3 (dcij_{0,3,0} \cdot bjk_0 + dcij_{0,3,1} \cdot bjk_1 + dcij_{0,3,2} \cdot bjk_2 + dcij_{0,3,3} \cdot bjk_3)\\
+\hdashline
+dbij_1 \cdot bik_0 (dcij_{1,0,0} \cdot bjk_0 + dcij_{1,0,1} \cdot bjk_1 + dcij_{1,0,2} \cdot bjk_2 + dcij_{1,0,3} \cdot bjk_3)\\
+dbij_1 \cdot bik_1 (dcij_{1,1,0} \cdot bjk_0 + dcij_{1,1,1} \cdot bjk_1 + dcij_{1,1,2} \cdot bjk_2 + dcij_{1,1,3} \cdot bjk_3)\\
+dbij_1 \cdot bik_2 (dcij_{1,2,0} \cdot bjk_0 + dcij_{1,2,1} \cdot bjk_1 + dcij_{1,2,2} \cdot bjk_2 + dcij_{1,2,3} \cdot bjk_3)\\
+dbij_1 \cdot bik_3 (dcij_{1,3,0} \cdot bjk_0 + dcij_{1,3,1} \cdot bjk_1 + dcij_{1,3,2} \cdot bjk_2 + dcij_{1,3,3} \cdot bjk_3)\\
+\hdashline
+dbij_2 \cdot bik_0 (dcij_{2,0,0} \cdot bjk_0 + dcij_{2,0,1} \cdot bjk_1 + dcij_{2,0,2} \cdot bjk_2 + dcij_{2,0,3} \cdot bjk_3)\\
+dbij_2 \cdot bik_1 (dcij_{2,1,0} \cdot bjk_0 + dcij_{2,1,1} \cdot bjk_1 + dcij_{2,1,2} \cdot bjk_2 + dcij_{2,1,3} \cdot bjk_3)\\
+dbij_2 \cdot bik_2 (dcij_{2,2,0} \cdot bjk_0 + dcij_{2,2,1} \cdot bjk_1 + dcij_{2,2,2} \cdot bjk_2 + dcij_{2,2,3} \cdot bjk_3)\\
+dbij_2 \cdot bik_3 (dcij_{2,3,0} \cdot bjk_0 + dcij_{2,3,1} \cdot bjk_1 + dcij_{2,3,2} \cdot bjk_2 + dcij_{2,3,3} \cdot bjk_3)\\
+\hdashline
+0 \\
+0 \\
+0 \\
+0 \\
+\hdashline
+bij_0 \cdot dbik_0 (dcik_{0,0,0} \cdot bjk_0 + dcik_{0,0,1} \cdot bjk_1 + dcik_{0,0,2} \cdot bjk_2 + dcik_{0,0,3} \cdot bjk_3)\\
+bij_0 \cdot dbik_1 (dcik_{0,1,0} \cdot bjk_0 + dcik_{0,1,1} \cdot bjk_1 + dcik_{0,1,2} \cdot bjk_2 + dcik_{0,1,3} \cdot bjk_3)\\
+bij_0 \cdot dbik_2 (dcik_{0,2,0} \cdot bjk_0 + dcik_{0,2,1} \cdot bjk_1 + dcik_{0,2,2} \cdot bjk_2 + dcik_{0,2,3} \cdot bjk_3)\\
+0 \\
+\hdashline
+bij_1 \cdot dbik_0 (dcik_{1,0,0} \cdot bjk_0 + dcik_{1,0,1} \cdot bjk_1 + dcik_{1,0,2} \cdot bjk_2 + dcik_{1,0,3} \cdot bjk_3)\\
+bij_1 \cdot dbik_1 (dcik_{1,1,0} \cdot bjk_0 + dcik_{1,1,1} \cdot bjk_1 + dcik_{1,1,2} \cdot bjk_2 + dcik_{1,1,3} \cdot bjk_3)\\
+bij_1 \cdot dbik_2 (dcik_{1,2,0} \cdot bjk_0 + dcik_{1,2,1} \cdot bjk_1 + dcik_{1,2,2} \cdot bjk_2 + dcik_{1,2,3} \cdot bjk_3)\\
+0 \\
+\hdashline
+bij_2 \cdot dbik_0 (dcik_{2,0,0} \cdot bjk_0 + dcik_{2,0,1} \cdot bjk_1 + dcik_{2,0,2} \cdot bjk_2 + dcik_{2,0,3} \cdot bjk_3)\\
+bij_2 \cdot dbik_1 (dcik_{2,1,0} \cdot bjk_0 + dcik_{2,1,1} \cdot bjk_1 + dcik_{2,1,2} \cdot bjk_2 + dcik_{2,1,3} \cdot bjk_3)\\
+bij_2 \cdot dbik_2 (dcik_{2,2,0} \cdot bjk_0 + dcik_{2,2,1} \cdot bjk_1 + dcik_{2,2,2} \cdot bjk_2 + dcik_{2,2,3} \cdot bjk_3)\\
+0 \\
+\hdashline
+bij_3 \cdot dbik_0 (dcik_{3,0,0} \cdot bjk_0 + dcik_{3,0,1} \cdot bjk_1 + dcik_{3,0,2} \cdot bjk_2 + dcik_{3,0,3} \cdot bjk_3)\\
+bij_3 \cdot dbik_1 (dcik_{3,1,0} \cdot bjk_0 + dcik_{3,1,1} \cdot bjk_1 + dcik_{3,1,2} \cdot bjk_2 + dcik_{3,1,3} \cdot bjk_3)\\
+bij_3 \cdot dbik_2 (dcik_{3,2,0} \cdot bjk_0 + dcik_{3,2,1} \cdot bjk_1 + dcik_{3,2,2} \cdot bjk_2 + dcik_{3,2,3} \cdot bjk_3)\\
+0 \\
+\hdashline
+bij_0 \cdot bik_0 (dcjk_{0,0,0} \cdot dbjk_0 + dcjk_{0,0,1} \cdot dbjk_1 + dcjk_{0,0,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_0 \cdot bik_1 (dcjk_{0,1,0} \cdot dbjk_0 + dcjk_{0,1,1} \cdot dbjk_1 + dcjk_{0,1,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_0 \cdot bik_2 (dcjk_{0,2,0} \cdot dbjk_0 + dcjk_{0,2,1} \cdot dbjk_1 + dcjk_{0,2,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_0 \cdot bik_3 (dcjk_{0,3,0} \cdot dbjk_0 + dcjk_{0,3,1} \cdot dbjk_1 + dcjk_{0,3,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+\hdashline
+bij_1 \cdot bik_0 (dcjk_{1,0,0} \cdot dbjk_0 + dcjk_{1,0,1} \cdot dbjk_1 + dcjk_{1,0,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_1 \cdot bik_1 (dcjk_{1,1,0} \cdot dbjk_0 + dcjk_{1,1,1} \cdot dbjk_1 + dcjk_{1,1,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_1 \cdot bik_2 (dcjk_{1,2,0} \cdot dbjk_0 + dcjk_{1,2,1} \cdot dbjk_1 + dcjk_{1,2,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_1 \cdot bik_3 (dcjk_{1,3,0} \cdot dbjk_0 + dcjk_{1,3,1} \cdot dbjk_1 + dcjk_{1,3,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+\hdashline
+bij_2 \cdot bik_0 (dcjk_{2,0,0} \cdot dbjk_0 + dcjk_{2,0,1} \cdot dbjk_1 + dcjk_{2,0,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_2 \cdot bik_1 (dcjk_{2,1,0} \cdot dbjk_0 + dcjk_{2,1,1} \cdot dbjk_1 + dcjk_{2,1,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_2 \cdot bik_2 (dcjk_{2,2,0} \cdot dbjk_0 + dcjk_{2,2,1} \cdot dbjk_1 + dcjk_{2,2,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_2 \cdot bik_3 (dcjk_{2,3,0} \cdot dbjk_0 + dcjk_{2,3,1} \cdot dbjk_1 + dcjk_{2,3,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+\hdashline
+bij_3 \cdot bik_0 (dcjk_{3,0,0} \cdot dbjk_0 + dcjk_{3,0,1} \cdot dbjk_1 + dcjk_{3,0,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_3 \cdot bik_1 (dcjk_{3,1,0} \cdot dbjk_0 + dcjk_{3,1,1} \cdot dbjk_1 + dcjk_{3,1,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_3 \cdot bik_2 (dcjk_{3,2,0} \cdot dbjk_0 + dcjk_{3,2,1} \cdot dbjk_1 + dcjk_{3,2,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+bij_3 \cdot bik_3 (dcjk_{3,3,0} \cdot dbjk_0 + dcjk_{3,3,1} \cdot dbjk_1 + dcjk_{3,3,2} \cdot dbjk_2 + \qquad 0\qquad)\\
+\end{array}\right]}_{64\times 1}
+=
+\left[\begin{array}{cccc}
+bik_0 (cij_{0,0,0} & cij_{0,0,1} & cij_{0,0,2} & cij_{0,0,3} \\
+bik_1 (cij_{0,1,0} & cij_{0,1,1} & cij_{0,1,2} & cij_{0,1,3} \\
+bik_2 (cij_{0,2,0} & cij_{0,2,1} & cij_{0,2,2} & cij_{0,2,3} \\
+bik_3 (cij_{0,3,0} & cij_{0,3,1} & cij_{0,3,2} & cij_{0,3,3} \\
+\hdashline
+\end{array}\right]
+\left[\begin{array}{c}
+bij_0 \cdot bjk_0 \\
+bij_0 \cdot bjk_1 \\
+bij_0 \cdot bjk_2 \\
+bij_0 \cdot bjk_3 \\
+\hdashline
+\end{array}\right]
+$$
+
+}
 
 
-On H100:
-	•	4 warp schedulers per SM
-	•	Designed for warp-group execution (WGMMA)
-	•	Sweet spots often involve multiples of 128 threads (4 warps)
-	•	Think in warps (32), not threads
-	•	Think in warp-groups (128) for Tensor Core paths
-	•	Typical high-performance block sizes: 128 256 512
+
+
+
+
+
+
 
 % ----------------------------------------------------------------
 \clearpage
@@ -291,7 +283,7 @@ $$
 % ----------------------------------------------------------------
 \clearpage
 
-{\scalefont{0.5}
+{\scalefont{0.8}
 
 $$
 \underbrace{\left[\begin{array}{c:c:c}
@@ -566,6 +558,284 @@ $$
     \end{array}
   \right]
 \]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+\large
+\section*{Matrix and Tensor Operations for the UF3 Potential}
+
+The provided C++ code evaluates an empirical potential (likely a machine-learning model like UF3) utilizing cubic B-splines for 2-body and 3-body interactions. 
+
+\subsection*{1. Distance Polynomial Vectors}
+First, we define the polynomial distance vectors used throughout the code to evaluate the splines. For any pair distance $r$, we define the $4 \times 1$ position vector $\mathbf{p}(r)$ and the $3 \times 1$ derivative vector $\mathbf{p}'(r)$:
+
+\begin{equation}
+\mathbf{p}(r) = \begin{bmatrix} 1 \\ r \\ r^2 \\ r^3 \end{bmatrix}, \quad 
+\mathbf{p}'(r) = \begin{bmatrix} 1 \\ r \\ r^2 \end{bmatrix}
+\end{equation}
+
+\subsection*{2. Two-Body Interactions}
+The 2-body scalar force and energy are computed using a set of spline coefficients. Let $C_{2b}$ be the $4 \times 4$ coefficient matrix (\texttt{constants\_2b}) and $C'_{2b}$ be the $3 \times 3$ derivative coefficient matrix (\texttt{constants\_2b\_deri}).
+
+\textbf{2-Body Energy:}
+\begin{equation}
+E_{2b} = \mathbf{1}_{4}^T C_{2b} \mathbf{p}(r_{ij})
+\end{equation}
+\textit{(where $\mathbf{1}_{4}$ is a $4 \times 1$ vector of ones).}
+
+\textbf{2-Body Scalar Force:}
+\begin{equation}
+F_{2b} = \mathbf{1}_{3}^T C'_{2b} \mathbf{p}'(r_{ij})
+\end{equation}
+
+\textbf{2-Body Vector Force:}
+Using the displacement vector $\Delta\mathbf{r}_{ij} = \mathbf{r}_i - \mathbf{r}_j$, the force applied to atom $i$ is:
+\begin{equation}
+\mathbf{f}_{i}^{(2b)} = -\frac{F_{2b}}{r_{ij}} \Delta\mathbf{r}_{ij}
+\end{equation}
+
+\subsection*{3. Three-Body Interactions: Basis Vectors}
+For a triplet of atoms $(i, j, k)$, the code computes spline basis vectors for each pair distance ($r_{ij}, r_{ik}, r_{jk}$). Let $C_{ij}$ be the $4 \times 4$ coefficient matrix (\texttt{cc\_3b\_ij}) and $C'_{ij}$ be the $3 \times 3$ derivative matrix (\texttt{cc\_3b\_deri\_ij}). 
+
+The $4 \times 1$ basis vectors ($\mathbf{b}$) and $3 \times 1$ derivative basis vectors ($\mathbf{b}'$) are obtained via matrix-vector multiplication:
+
+\begin{align}
+\mathbf{b}_{ij} &= C_{ij} \mathbf{p}(r_{ij}), & \mathbf{b}'_{ij} &= C'_{ij} \mathbf{p}'(r_{ij}) \\
+\mathbf{b}_{ik} &= C_{ik} \mathbf{p}(r_{ik}), & \mathbf{b}'_{ik} &= C'_{ik} \mathbf{p}'(r_{ik}) \\
+\mathbf{b}_{jk} &= C_{jk} \mathbf{p}(r_{jk}), & \mathbf{b}'_{jk} &= C'_{jk} \mathbf{p}'(r_{jk})
+\end{align}
+
+\subsection*{4. Three-Body Interactions: Tensor Contractions}
+The nested loops representing \texttt{triangle\_eval} variables are tensor contractions. The coefficients are stored in 3-dimensional tensors, which we can represent as sums of bilinear forms evaluated over matrix slices $W_l$.
+
+\textbf{Three-Body Energy (\texttt{triangle\_eval0}):} \\
+Let $W^{(E)}$ be the $4 \times 4 \times 4$ energy coefficient tensor (\texttt{n3b\_coeff\_array}). The energy is the contraction of the basis vectors along the three axes:
+\begin{equation}
+E_{3b} = \sum_{l=0}^{3} b_{ij, l} \left( \mathbf{b}_{ik}^T W^{(E)}_{l} \mathbf{b}_{jk} \right)
+\end{equation}
+
+\textbf{Three-Body Scalar Forces (\texttt{triangle\_eval1, 2, 3}):} \\
+The code evaluates the derivative components by contracting the derivative basis vector of one pair with the standard basis vectors of the other two pairs.
+
+For the $ij$ pair (\texttt{triangle\_eval1}), using the $4 \times 4$ matrix slices $W^{(ij)}_l$ from \texttt{coeff\_for\_der\_ij}:
+\begin{equation}
+T_1 = \sum_{l=0}^{2} b'_{ij, l} \left( \mathbf{b}_{ik}^T W^{(ij)}_{l} \mathbf{b}_{jk} \right)
+\end{equation}
+
+For the $ik$ pair (\texttt{triangle\_eval2}), using the $3 \times 4$ matrix slices $W^{(ik)}_l$ from \texttt{coeff\_for\_der\_ik}:
+\begin{equation}
+T_2 = \sum_{l=0}^{3} b_{ij, l} \left( (\mathbf{b}'_{ik})^T W^{(ik)}_{l} \mathbf{b}_{jk} \right)
+\end{equation}
+
+For the $jk$ pair (\texttt{triangle\_eval3}), using the $4 \times 3$ matrix slices $W^{(jk)}_l$ from \texttt{coeff\_for\_der\_jk}:
+\begin{equation}
+T_3 = \sum_{l=0}^{3} b_{ij, l} \left( \mathbf{b}_{ik}^T W^{(jk)}_{l} \mathbf{b}'_{jk} \right)
+\end{equation}
+
+\subsection*{5. Three-Body Vector Forces}
+Finally, the scalar quantities $T_1$, $T_2$, and $T_3$ are projected back onto the cartesian unit vectors between the atoms. Let the unit displacement vectors be defined as $\hat{\mathbf{r}}_{ji} = \frac{\mathbf{r}_j - \mathbf{r}_i}{r_{ij}}$, $\hat{\mathbf{r}}_{ki} = \frac{\mathbf{r}_k - \mathbf{r}_i}{r_{ik}}$, and $\hat{\mathbf{r}}_{kj} = \frac{\mathbf{r}_k - \mathbf{r}_j}{r_{jk}}$.
+
+The intermediate force vectors are:
+\begin{align}
+\mathbf{f}_{ij} &= T_1 \hat{\mathbf{r}}_{ji} \\
+\mathbf{f}_{ik} &= T_2 \hat{\mathbf{r}}_{ki} \\
+\mathbf{f}_{jk} &= T_3 \hat{\mathbf{r}}_{kj}
+\end{align}
+
+The total force distributed to atoms $i$, $j$, and $k$ from this triplet interaction is simply the linear combination of these intermediate vectors:
+\begin{align}
+\mathbf{F}_i &= \mathbf{f}_{ij} + \mathbf{f}_{ik} \\
+\mathbf{F}_j &= -\mathbf{f}_{ij} + \mathbf{f}_{jk} \\
+\mathbf{F}_k &= -\mathbf{f}_{ik} - \mathbf{f}_{jk}
+\end{align}
+
+\clearpage
+
+
+
+
+
+
+\section*{CUDA Tensor Core WGMMA Mapping for UF3 3-Body Interactions}
+
+
+Hopper introduces the asynchronous warpgroup-level matrix multiply and accumulate operation (WGMMA). A warpgroup consists of four contiguous warps, i.e., 128 contiguous threads, where the warp-rank of the first warp is a multiple of four. The wgmma.mma\_async instruction is executed collectively by all 128 threads in a warpgroup. This operation typically follows one of these forms, where matrix C serves as the accumulator:
+
+C = A * B + C
+C = A * B, where the input from accumulator C is disabled.
+A notable requirement of WGMMA is that operand B must always be stored in shared memory (SMEM). In contrast, operand A can be located in either SMEM or register memory (RMEM), and the accumulator C is always held in RMEM.
+
+
+
+Mapping the 64 concurrent 3-body triplet interactions to the \texttt{wgmma.mma\_async.sync.aligned8k8.f32.f32.f32} instruction requires packing the basis vectors into $M=64, K=8$ inputs, and flattening the tensor slices into $N=8, K=8$ coefficient matrices. 
+
+Crucially, because the atoms $i$ and $j$ are constant for the inner loop over $k$, the basis vector $\mathbf{b}_{ij}$ and its derivative $\mathbf{b}'_{ij}$ are scalar constants across the 64 triplets. We can pre-multiply the spline tensor slices to eliminate the $l$-loop entirely before invoking the Tensor Cores.
+
+\subsection*{1. Pre-computation (Pair-wise Reduction)}
+Before the $M=64$ inner loop, collapse the 3D coefficient tensors into 2D matrices by contracting them with the fixed $ij$ basis vectors. This yields four highly optimized matrices:
+
+\begin{align}
+\widetilde{W}^{(ij)} &= \sum_{l=0}^{2} b'_{ij, l} W^{(ij)}_{l} \quad \in \mathbb{R}^{4 \times 4} \\
+\widetilde{W}^{(ik)} &= \sum_{l=0}^{3} b_{ij, l} W^{(ik)}_{l} \quad \in \mathbb{R}^{3 \times 4} \\
+\widetilde{W}^{(jk)} &= \sum_{l=0}^{3} b_{ij, l} W^{(jk)}_{l} \quad \in \mathbb{R}^{4 \times 3} \\
+\widetilde{W}^{(E)}  &= \sum_{l=0}^{3} b_{ij, l} W^{(E)}_{l}  \quad \in \mathbb{R}^{4 \times 4}
+\end{align}
+
+\subsection*{2. Input Tensor Packing ($A \in \mathbb{R}^{64 \times 8}$)}
+The $A$ matrix holds the $k$-dependent basis vectors for all 64 triplets. We pack the standard basis $\mathbf{b}_{ik}$ and its derivative $\mathbf{b}'_{ik}$ into the $K=8$ dimension. For a triplet $m \in [0, 63]$:
+
+\begin{equation}
+A_{m, :} = \left[ b_{ik_m, 0}, b_{ik_m, 1}, b_{ik_m, 2}, b_{ik_m, 3}, \quad b'_{ik_m, 0}, b'_{ik_m, 1}, b'_{ik_m, 2}, \quad 0 \right]
+\end{equation}
+
+\subsection*{3. Weight Tensor Packing ($B \in \mathbb{R}^{8 \times 8}$)}
+To extract all force components ($T_1, T_2, T_3$) and energy ($E$), we split the operation into two `m64n8k8` instructions to fit within the $N=8$ output dimension. We pad the pre-computed matrices with zeros to align with the $8 \times 8$ WGMMA hardware layout.
+
+\textbf{Weights for $T_2$ and $T_3$ (Instruction 1):}
+\begin{equation}
+B_{23} = \begin{bmatrix} 
+0_{4 \times 4} & \left[ \widetilde{W}^{(jk)}, 0_{4 \times 1} \right] \\ 
+\begin{bmatrix} \widetilde{W}^{(ik)} \\ 0_{1 \times 4} \end{bmatrix} & 0_{4 \times 4} 
+\end{bmatrix} \quad \in \mathbb{R}^{8 \times 8}
+\end{equation}
+
+\textbf{Weights for $T_1$ and Energy (Instruction 2):}
+\begin{equation}
+B_{1E} = \begin{bmatrix} 
+\widetilde{W}^{(ij)} & \widetilde{W}^{(E)} \\ 
+0_{4 \times 4} & 0_{4 \times 4} 
+\end{bmatrix} \quad \in \mathbb{R}^{8 \times 8}
+\end{equation}
+
+\subsection*{4. WGMMA Execution}
+Issue the asynchronous WGMMA instructions to compute the fused intermediate vectors for all 64 triplets simultaneously:
+
+\begin{align}
+D_{23} &= A \times B_{23} \quad \in \mathbb{R}^{64 \times 8} \\
+D_{1E} &= A \times B_{1E} \quad \in \mathbb{R}^{64 \times 8}
+\end{align}
+
+\subsection*{5. Post-Processing: Final Contractions}
+The output matrices $D_{23}$ and $D_{1E}$ contain the accumulated intermediate vectors for each triplet $m$. The final step is a batched dot product with the $j,k$ pair basis vectors ($\mathbf{b}_{jk}$ and $\mathbf{b}'_{jk}$) to resolve the scalars $T_1, T_2, T_3$, and $E$. 
+
+Let $\mathbf{v}^{(T2)}_m = (D_{23})_{m, 0:3}$ and $\mathbf{v}^{(T3)}_m = (D_{23})_{m, 4:6}$.
+Let $\mathbf{v}^{(T1)}_m = (D_{1E})_{m, 0:3}$ and $\mathbf{v}^{(E)}_m = (D_{1E})_{m, 4:7}$.
+
+\begin{align}
+T_2^{(m)} &= \mathbf{v}^{(T2)}_m \cdot \mathbf{b}_{jk_m} \\
+T_3^{(m)} &= \mathbf{v}^{(T3)}_m \cdot \mathbf{b}'_{jk_m} \\
+T_1^{(m)} &= \mathbf{v}^{(T1)}_m \cdot \mathbf{b}_{jk_m} \\
+E_{3b}^{(m)} &= \mathbf{v}^{(E)}_m \cdot \mathbf{b}_{jk_m}
+\end{align}
+
+These scalar values map directly back to the original force vector projections $F_i, F_j, F_k$ per triplet.
+
+
+
+% ========================================================================================
+
+% ----------------------------------------------------------------
+\clearpage
+
+$.m64<N>k8$\\
+where N = 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152, 160, 168, 176, 184, 192, 200, 208, 216, 224, 232, 240, 248, 256\\
+
+$$\frac{256 ~\frac{KB}{SM} * 1024 ~\frac{B}{KB}}{4 ~\frac{FP32}{B}} = 65,536 ~\frac{FP32}{SM}$$
+
+
+On H100:
+	•	4 warp schedulers per SM
+	•	Designed for warp-group execution (WGMMA)
+	•	Sweet spots often involve multiples of 128 threads (4 warps)
+	•	Think in warps (32), not threads
+	•	Think in warp-groups (128) for Tensor Core paths
+	•	Typical high-performance block sizes: 128 256 512
+
+
+.f64 floating point type mma operation with .m8n8k4 shape requires sm\_80 or higher. 
+
+$$(8\times8)=(8\times4)*(4\times8) + (8\times8)$$
+
+
+.f64 floating point type mma operation with .m16n8k4, .m16n8k8, and .m16n8k16 shapes require sm\_90 or higher.
+
+
 
 \end{document}
 
