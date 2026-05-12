@@ -35,9 +35,9 @@ class Uf3(Section):
       "type",
       "degree",
       "knot_strategy",
-      "r_min",
-      "r_max",
-      "resolution",
+      "r_min", "r_min_2b", "r_min_3b",
+      "r_max", "r_max_2b", "r_max_3b",
+      "resolution", "resolution_2b", "resolution_3b",
       "r_min_map_json",
       "r_max_map_json",
       "resolution_map_json",
@@ -73,30 +73,67 @@ class Uf3(Section):
       )
 
     knot_strategy = self.get_value(sec, "knot_strategy", "linear")
-
+    self.bzeroflag = self.get_value(sec, "bzeroflag", "1", "bool")
     r_min_map = r_max_map = resolution_map = knots_map = None
+
+    interactions = self.chemical_system.interactions_map
+
+    # r_min
+
     if self._config.has_option(sec, "r_min_map_json"):
       r_min_map = ast.literal_eval(self._config.get(sec, "r_min_map_json"))
+
+    if r_min_map is None and self._config.has_option(sec, "r_min"):
+      r_min = float(self._config.get(sec, "r_min"))
+      self.r_min_map = {t: r_min for t in interactions[2]}
+
+    # r_max
+
     if self._config.has_option(sec, "r_max_map_json"):
       r_max_map = ast.literal_eval(self._config.get(sec, "r_max_map_json"))
+
+    if r_max_map is None:
+
+      if self._config.has_option(sec, "r_max"):
+        r_max_2b = r_max_3b = float(self._config.get(sec, "r_max"))
+        
+      if self._config.has_option(sec, "r_max_2b"):
+        r_max_2b = float(self._config.get(sec, "r_max_2b"))
+        
+      if self._config.has_option(sec, "r_max_3b"):
+        r_max_3b = float(self._config.get(sec, "r_max_3b"))
+
+      self.r_max_map = {t: r_max_2b for t in interactions[2]}
+      if 3 in interactions:
+        self.r_max_map.update({t: [r_max_3b, r_max_3b, 2*r_max_3b] for t in interactions[3]})
+
+    # resolution
+
     if self._config.has_option(sec, "resolution_map_json"):
       resolution_map = ast.literal_eval(self._config.get(sec, "resolution_map_json"))
+
     if self._config.has_option(sec, "knots_map_json"):
       knots_map = ast.literal_eval(self._config.get(sec, "knots_map_json"))["knots"]
 
-    if r_max_map is None and self._config.has_option(sec, "r_max"):
-      r_max = float(self._config.get(sec, "r_max"))
-      self.r_max_map = {t: r_max for t in self.chemical_system.interactions_map[2]}
-    if r_min_map is None and self._config.has_option(sec, "r_min"):
-      r_min = float(self._config.get(sec, "r_min"))
-      self.r_min_map = {t: r_min for t in self.chemical_system.interactions_map[2]}
-    if resolution_map is None and self._config.has_option(sec, "resolution"):
-      res = int(self._config.get(sec, "resolution"))
-      self.resolution_map = {t: res for t in self.chemical_system.interactions_map[2]}
-      if 3 in self.chemical_system.interactions_map:
-        self.resolution_map.update({t: [res, res, res] for t in self.chemical_system.interactions_map[3]})
+    if resolution_map is None:
 
-    self.bzeroflag = self.get_value(sec, "bzeroflag", "1", "bool")
+      if self._config.has_option(sec, "resolution"):
+        resolution_2b = resolution_3b = int(self._config.get(sec, "resolution"))
+
+      if self._config.has_option(sec, "resolution_2b"):
+        resolution_2b = int(self._config.get(sec, "resolution_2b"))
+
+      if self._config.has_option(sec, "resolution_3b"):
+        resolution_3b = int(self._config.get(sec, "resolution_3b"))
+
+      self.resolution_map = {t: resolution_2b for t in interactions[2]}
+      if 3 in interactions:
+        self.resolution_map.update({t: [resolution_3b, resolution_3b, resolution_3b] for t in interactions[3]})
+
+
+    #self.pt.single_print(f"*** resolution_map {self.resolution_map}")
+
+    # create basis
 
     self.bspline_basis = BSplineBasis(
       self.chemical_system,
