@@ -193,9 +193,31 @@ class SlateCommon(Solver):
             pt.single_print(f"==============================\n")
     
         for i in range(reg_num_rows):
-            if reg_col_idx+i < n: # avoid out of bounds padding from multiple nodes
-                aw[reg_row_idx+i, reg_col_idx+i] = sqrt_alpha
+            g = reg_col_idx + i  # global index into the [ridge(n rows) | curvature(ncoeff_2b rows)] reg block
+            if g < n:  # ridge rows: diagonal identity scaled by sqrt_alpha
+                aw[reg_row_idx+i, g] = sqrt_alpha
             bw[reg_row_idx+i] = 0.0
+
+        # Curvature (second-difference D2) regularization for UF3 2-body coefficients.
+        # The augmented matrix layout is: n ridge rows, then ncoeff_2b curvature rows.
+        # Column layout in A: [1-body (offset_2b cols)] [2-body (ncoeff_2b cols)] [3-body].
+        # offset_2b = numtypes = basis_ranks.count(0); independent of bzeroflag.
+        # D2 row c: off-diag neighbours +=1, centre -=2 (halved to -1 at boundaries).
+        is_slate_ridge_uf3 = pt.fitsnap_dict.get("is_slate_ridge_uf3", False)
+        if is_slate_ridge_uf3:
+            sqrt_alpha_curvature = np.sqrt(self.config.sections['SLATE'].alpha_curvature)
+            ncoeff_2b = pt.fitsnap_dict.get("ncoeff_2b", 0)
+            offset_2b = pt.fitsnap_dict.get("offset_2b", 0)
+            for i in range(reg_num_rows):
+                g = reg_col_idx + i
+                if n <= g < n + ncoeff_2b:
+                    c = g - n  # row index into D2, equals the 2b coefficient index
+                    diag_val = -1.0 if (c == 0 or c == ncoeff_2b - 1) else -2.0
+                    if c > 0:
+                        aw[reg_row_idx+i, offset_2b + c-1] = sqrt_alpha_curvature
+                    aw[reg_row_idx+i, offset_2b + c] = sqrt_alpha_curvature * diag_val
+                    if c < ncoeff_2b - 1:
+                        aw[reg_row_idx+i, offset_2b + c+1] = sqrt_alpha_curvature
 
         # -------- SLATE AUGMENTED QR --------
         pt.sub_barrier() # make sure all sub ranks done filling local tiles

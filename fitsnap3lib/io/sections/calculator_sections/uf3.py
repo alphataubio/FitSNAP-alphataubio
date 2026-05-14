@@ -189,11 +189,20 @@ class Uf3(Section):
       f"    TOTAL            {sum(self.feature_partition_sizes):4d}     \n"
     )
 
+    # Initialize on all ranks so the attribute always exists before create_a() runs.
+    # write_uf3_lammps_pot (rank 0 only) will populate them; broadcast syncs everyone.
+    self.basis_ranks = []
+    self.blist = []
+
     @self.pt.rank_zero
     def _write():
       self.write_uf3_lammps_pot("descriptors.uf3")
     _write()
     self.pt.all_barrier()
+
+    if not self.pt.stubs:
+      self.basis_ranks = self.pt._comm.bcast(self.basis_ranks, root=0)
+      self.blist = self.pt._comm.bcast(self.blist, root=0)
 
 
   @staticmethod

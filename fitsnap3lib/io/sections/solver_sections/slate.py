@@ -5,7 +5,7 @@ class Slate(Section):
 
     def __init__(self, name, config, pt, infile, args):
         super().__init__(name, config, pt, infile, args)
-        self.allowedkeys = ['method', 'alpha',
+        self.allowedkeys = ['method', 'alpha', 'alpha_curvature',
             'max_iter', 'rtol', 'atol',
             'alphabig', 'alphasmall', 'lambdabig', 'lambdasmall',
             'directmethod', 'scap', 'scai', 'logcut', 'threshold_lambda']
@@ -18,6 +18,7 @@ class Slate(Section):
 
         # alpha for RIDGE
         self.alpha = self.get_value("SLATE", "alpha", "1e-8", "float")
+        self.alpha_curvature = self.get_value("SLATE", "alpha_curvature", "1e-8", "float")
 
         # ARD parameters - matching legacy ARD section
         # Maximum number of iterations

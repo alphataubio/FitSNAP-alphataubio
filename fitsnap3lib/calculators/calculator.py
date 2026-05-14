@@ -306,10 +306,20 @@ class Calculator:
                     
                 max_a_len = pt._comm.allreduce(a_len, op=pt.MPI.MAX)
                 method = self.config.sections["SLATE"].method.upper()
-                
+                calculator_section = self.config.sections["CALCULATOR"]
+
                 if method == "RIDGE":
-                    pt.add_2_fitsnap("is_slate_ridge", True)
-                    extra_rows = a_width
+                    if calculator_section.calculator.upper() == "LAMMPSUF3":
+                      pt.add_2_fitsnap("is_slate_ridge_uf3", True)
+                      basis_ranks = self.config.sections["UF3"].basis_ranks
+                      ncoeff_2b = basis_ranks.count(1)
+                      offset_2b = basis_ranks.count(0)  # 1-body cols precede 2b cols
+                      pt.add_2_fitsnap("ncoeff_2b", ncoeff_2b)
+                      pt.add_2_fitsnap("offset_2b", offset_2b)
+                      extra_rows = a_width + ncoeff_2b
+                    else:
+                      pt.add_2_fitsnap("is_slate_ridge", True)
+                      extra_rows = a_width
                 elif method == "ARD":
                     pt.add_2_fitsnap("is_slate_ard", True)
                     extra_rows = 0

@@ -688,6 +688,8 @@ class ParallelTools():
         """
         
         is_slate_ridge = self.fitsnap_dict.get("is_slate_ridge", False)
+        is_slate_ridge_uf3 = self.fitsnap_dict.get("is_slate_ridge_uf3", False)
+        is_slate_ridge = is_slate_ridge or is_slate_ridge_uf3  # UF3 reuses same distributed index infrastructure
         is_slate_ard = self.fitsnap_dict.get("is_slate_ard", False)
 
         nof = len(self.shared_arrays["number_of_atoms"].array)
