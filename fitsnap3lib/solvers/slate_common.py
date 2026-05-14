@@ -208,16 +208,28 @@ class SlateCommon(Solver):
             sqrt_alpha_curvature = np.sqrt(self.config.sections['SLATE'].alpha_curvature)
             ncoeff_2b = pt.fitsnap_dict.get("ncoeff_2b", 0)
             offset_2b = pt.fitsnap_dict.get("offset_2b", 0)
+            n_edges_3b = pt.fitsnap_dict.get("n_edges_3b", 0)
+            edges_3b = pt.fitsnap_dict.get("edges_3b", None)
+            g_3b_start = n + ncoeff_2b  # 3b curvature rows follow 2b curvature rows
             for i in range(reg_num_rows):
                 g = reg_col_idx + i
                 if n <= g < n + ncoeff_2b:
-                    c = g - n  # row index into D2, equals the 2b coefficient index
+                    # 2b second-difference curvature: stencil [1, -2, 1] ([-1,1] at boundaries)
+                    c = g - n
                     diag_val = -1.0 if (c == 0 or c == ncoeff_2b - 1) else -2.0
                     if c > 0:
                         aw[reg_row_idx+i, offset_2b + c-1] = sqrt_alpha_curvature
                     aw[reg_row_idx+i, offset_2b + c] = sqrt_alpha_curvature * diag_val
                     if c < ncoeff_2b - 1:
                         aw[reg_row_idx+i, offset_2b + c+1] = sqrt_alpha_curvature
+                elif edges_3b is not None and g_3b_start <= g < g_3b_start + n_edges_3b:
+                    # 3b graph-Laplacian: one incidence row per edge (+1 at u, -1 at v)
+                    # D^T D = L3 (graph Laplacian), so augmented LS gives the correct penalty
+                    e = g - g_3b_start
+                    col_u = int(edges_3b[e, 0])
+                    col_v = int(edges_3b[e, 1])
+                    aw[reg_row_idx + i, col_u] =  sqrt_alpha_curvature
+                    aw[reg_row_idx + i, col_v] = -sqrt_alpha_curvature
 
         # -------- SLATE AUGMENTED QR --------
         pt.sub_barrier() # make sure all sub ranks done filling local tiles

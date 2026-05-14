@@ -316,7 +316,12 @@ class Calculator:
                       offset_2b = basis_ranks.count(0)  # 1-body cols precede 2b cols
                       pt.add_2_fitsnap("ncoeff_2b", ncoeff_2b)
                       pt.add_2_fitsnap("offset_2b", offset_2b)
-                      extra_rows = a_width + ncoeff_2b
+                      edges_3b = self.config.sections["UF3"].edges_3b
+                      n_edges_3b = len(edges_3b)
+                      pt.add_2_fitsnap("n_edges_3b", n_edges_3b)
+                      if n_edges_3b > 0:
+                        pt.add_2_fitsnap("edges_3b", edges_3b)
+                      extra_rows = a_width + ncoeff_2b + n_edges_3b
                     else:
                       pt.add_2_fitsnap("is_slate_ridge", True)
                       extra_rows = a_width

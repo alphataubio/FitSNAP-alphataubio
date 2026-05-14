@@ -154,6 +154,40 @@ class Uf3(Section):
     self.ncoeff = int(np.sum(self.feature_partition_sizes))
     self.type_mapping = {el: i + 1 for i, el in enumerate(self.type)}
 
+    # Precompute 3b edges for graph-Laplacian curvature regularization.
+    # Runs on ALL ranks (bspline_basis is available everywhere; no broadcast needed).
+    # An edge connects two adjacent free 3b coefficients in the tensor-product grid;
+    # penalty: alpha_curvature * sum_{edges} (c_u - c_v)^2 = c^T L3 c  (graph Laplacian).
+    # Adjacency is checked in the full (d0,d1,d2) grid but edges are only emitted when
+    # BOTH endpoints have flat_weights > 0 (i.e., are free/unmasked coefficients).
+    # d0,d1,d2 = len(km[i]) - 4: cubic B-spline count = n_knots - degree.
+    self.edges_3b = np.empty((0, 2), dtype=np.int32)
+    if self.degree >= 3 and 3 in self.chemical_system.interactions_map:
+      n_1b = len(self.chemical_system.interactions_map[1])
+      n_2b = len(self.chemical_system.interactions_map[2])
+      col_offset_3b = sum(self.feature_partition_sizes[:n_1b + n_2b])
+      edge_list = []
+      col_off = col_offset_3b
+      for triplet in self.chemical_system.interactions_map[3]:
+        km  = self.bspline_basis.knots_map[triplet]
+        d0, d1, d2 = len(km[0]) - 4, len(km[1]) - 4, len(km[2]) - 4
+        tm  = np.asarray(self.bspline_basis.template_mask[triplet], dtype=np.intp)
+        fw  = np.asarray(self.bspline_basis.flat_weights[triplet])
+        free_idx  = np.where(fw > 0)[0]          # positions in compressed array that are free
+        flat_pos  = tm[free_idx].astype(int)      # corresponding flat grid positions
+        flat_to_col = {int(fp): lc for lc, fp in enumerate(flat_pos)}  # flat_pos -> local col
+        for loc_col, fp in enumerate(flat_pos):
+          gi, gj, gk = np.unravel_index(fp, (d0, d1, d2))
+          for di, dj, dk in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):  # +1 only -> each edge once
+            ni, nj, nk = gi + di, gj + dj, gk + dk
+            if ni < d0 and nj < d1 and nk < d2:
+              nfp = int(np.ravel_multi_index((ni, nj, nk), (d0, d1, d2)))
+              if nfp in flat_to_col:  # neighbor is also a free coefficient
+                edge_list.append((col_off + loc_col, col_off + flat_to_col[nfp]))
+        col_off += len(free_idx)
+      if edge_list:
+        self.edges_3b = np.array(edge_list, dtype=np.int32)
+
     self.pt.single_print(
       f"----------------------------------------------------------------\n"
       f"  UF3 B-SPLINE BASIS                                            \n"
