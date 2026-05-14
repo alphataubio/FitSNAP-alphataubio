@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cmath>
 #include <vector>
+#include <iomanip>
 #include <iostream>
 #include <functional>
 #include <algorithm> 
@@ -88,11 +89,16 @@ void slate_ridge_augmented_qr(double* local_aw, double* local_bw,
   };
 
   if (mpi_rank == 0) {
+    const double memory_gb_total = static_cast<double>(m*n*sizeof(double))/static_cast<double>(1024*1024*1024);
+    const double memory_gb_per_node = memory_gb_total / mpi_size;
+
     std::cerr << "\n---------------- SLATE Ridge Solver ----------------" << std::endl;
     std::cerr << "MPI: " << mpi_size << " rank(s) (one per node), ";
     std::cerr            << num_threads << " OpenMP threads/node" << std::endl;
     std::cerr << "Rank: " << mpi_rank << " lld " << lld << std::endl;
     std::cerr << "Matrix size: " << m << " x " << n << std::endl;
+    std::cerr << std::fixed << std::setprecision(2);
+    std::cerr << "Memory: " << memory_gb_total << " gb, " << memory_gb_per_node << " gb/node" << std::endl;
     std::cerr << "Tile size: " << mb << " x " << nb << std::endl;
     std::cerr << "Grid: " << mt << " x " << nt << std::endl;
     std::cerr << "----------------------------------------------------" << std::endl;
