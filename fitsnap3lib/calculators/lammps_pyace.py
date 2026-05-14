@@ -33,7 +33,9 @@ class LammpsPyace(LammpsPace):
   def _set_box(self):
 
     super()._set_box()
-    self._lmp.command(f"kspace_style pppm 1e-4")
+    
+    # kspace_style is none by default just like in LAMMPS
+    self._lmp.command(f"kspace_style {self.config.sections['REFERENCE'].kspace_style}")
 
 
   # --------------------------------------------------------------------------------------------
