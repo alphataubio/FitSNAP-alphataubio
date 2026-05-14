@@ -55,8 +55,8 @@ void slate_ridge_augmented_qr(double* local_aw, double* local_bw,
   // -------------------------------- TILE SIZE --------------------------------
   // FIXME: find optimal tile size based on cache size
     
-  int64_t mb = 256;
-  int64_t nb = 256;
+  int64_t mb = 512;
+  int64_t nb = 512;
   int64_t nt = ceil_div64(n, nb);
   int64_t m_node = m / mpi_size;
   int64_t mt_node = ceil_div64(m_node, mb);
