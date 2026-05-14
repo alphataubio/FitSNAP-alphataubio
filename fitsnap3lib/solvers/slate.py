@@ -284,12 +284,16 @@ class SLATE(SlateValidation):
             coef_change_str = " " if coef_old_ is None else f" {coef_rel_change:5.2g} {coef_abs_change:5.2g}"
             coef_old_ = np.copy(coef_)
 
-            pt.single_print(f"    {iteration:<3d} {elapsed_iteration/60:.1f}m {alpha_:>6.3g} {sse_:>6.3g} {cond_number:>8.2g} {gamma_active.sum():>5.2f} {n_active:6d}{coef_change_str}{slurm_time_left_str}")
+            pt.single_print(f"    {iteration:<3d} {elapsed_iteration/60:.1f}m {alpha_:>6.3g} {sse_:>6.3g} {cond_number:>8.3g} {gamma_active.sum():>5.2f} {n_active:6d}{coef_change_str}{slurm_time_left_str}")
 
             iteration += 1
             
             if iteration > self.max_iter:
                 pt.single_print(f"SLATE ARD: stopping... reached max_iter {self.max_iter}")
+                break
+
+            if cond_number > 1e16:
+                pt.single_print(f"SLATE ARD: stopping... cond_number {cond_number} > 1e16")
                 break
 
             if coef_rel_converged:
