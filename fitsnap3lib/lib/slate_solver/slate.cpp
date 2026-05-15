@@ -28,15 +28,32 @@ constexpr int64_t ceil_div64(int64_t a, int64_t b) { return (a + b - 1) / b; }
 // -----------------------------------------------------------------------------
 void slate_set_openmp_threads(int num_threads, int debug) {
 #ifdef __linux__
-    cpu_set_t mask;
-    CPU_ZERO(&mask);
     int ncpus = sysconf(_SC_NPROCESSORS_ONLN);
     if (ncpus <= 0) ncpus = 64;
-    for (int i = 0; i < ncpus; i++) CPU_SET(i, &mask);
-    sched_setaffinity(0, sizeof(mask), &mask);
-#endif
+    // Open full CPU mask on calling thread so OpenMP can spawn workers anywhere
+    cpu_set_t full_mask;
+    CPU_ZERO(&full_mask);
+    for (int i = 0; i < ncpus; i++) CPU_SET(i, &full_mask);
+    sched_setaffinity(0, sizeof(full_mask), &full_mask);
+#endif // __linux__
     omp_set_num_threads(num_threads);
-    if (debug) std::cerr << "SLATE_CPP: Set OpenMP threads to " << num_threads << std::endl;
+#ifdef __linux__
+    // OMP_PROC_BIND was initialized with OMP_NUM_THREADS=1, so its binding
+    // table only has 1 place — all threads collapse onto core 0.
+    // Fix: call sched_setaffinity *inside* the parallel region to pin each
+    // thread to its own core via OS syscall, bypassing OMP_PROC_BIND entirely.
+    #pragma omp parallel shared(ncpus)
+    {
+        int tid = omp_get_thread_num();
+        cpu_set_t tmask;
+        CPU_ZERO(&tmask);
+        CPU_SET(tid % ncpus, &tmask);
+        sched_setaffinity(0, sizeof(tmask), &tmask);
+    }
+#endif // __linux__
+    //if (debug)
+    std::cerr << "SLATE_CPP: Set OpenMP threads to " << num_threads
+                         << ", pinned threads 0.." << num_threads-1 << " to cores" << std::endl;
 }
 
 // -----------------------------------------------------------------------------
@@ -91,17 +108,18 @@ void slate_ridge_augmented_qr(double* local_aw, double* local_bw,
   if (mpi_rank == 0) {
     const double memory_gb_total = static_cast<double>(m*n*sizeof(double))/static_cast<double>(1024*1024*1024);
     const double memory_gb_per_node = memory_gb_total / mpi_size;
-
-    std::cerr << "\n---------------- SLATE Ridge Solver ----------------" << std::endl;
-    std::cerr << "MPI: " << mpi_size << " rank(s) (one per node), ";
-    std::cerr            << num_threads << " OpenMP threads/node" << std::endl;
-    std::cerr << "Rank: " << mpi_rank << " lld " << lld << std::endl;
-    std::cerr << "Matrix size: " << m << " x " << n << std::endl;
+    std::cerr << "----------------------------------------------------------------" << std::endl;
+    std::cerr << "  SLATE RIDGE SOLVER" << std::endl;
+    std::cerr << std::endl;
+    std::cerr << "    MPI: " << mpi_size << " rank(s) (one per node), ";
+    std::cerr                << num_threads << " OpenMP threads/node" << std::endl;
+    std::cerr << "    Rank: " << mpi_rank << " lld " << lld << std::endl;
+    std::cerr << "    Matrix size: " << m << " x " << n << std::endl;
     std::cerr << std::fixed << std::setprecision(2);
-    std::cerr << "Memory: " << memory_gb_total << " gb, " << memory_gb_per_node << " gb/node" << std::endl;
-    std::cerr << "Tile size: " << mb << " x " << nb << std::endl;
-    std::cerr << "Grid: " << mt << " x " << nt << std::endl;
-    std::cerr << "----------------------------------------------------" << std::endl;
+    std::cerr << "    Memory: " << memory_gb_total << " GB, " << memory_gb_per_node << " GB/node" << std::endl;
+    std::cerr << "    Tile size: " << mb << " x " << nb << std::endl;
+    std::cerr << "    Grid: " << mt << " x " << nt << std::endl;
+    std::cerr << std::endl;
   }
 
   try {
@@ -196,8 +214,8 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
   // -------------------------------- TILE SIZE --------------------------------
   // FIXME: find optimal tile size based on cache size
     
-  int64_t mb = 256;
-  int64_t nb = 256;
+  int64_t mb = 512;
+  int64_t nb = 512;
   int64_t nt = ceil_div64(n_active, nb);
   int64_t m_node = m / mpi_size;
   int64_t mt_node = ceil_div64(m_node, mb);
