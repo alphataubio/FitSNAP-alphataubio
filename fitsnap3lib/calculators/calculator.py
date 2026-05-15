@@ -316,6 +316,12 @@ class Calculator:
                       offset_2b = basis_ranks.count(0)  # 1-body cols precede 2b cols
                       pt.add_2_fitsnap("ncoeff_2b", ncoeff_2b)
                       pt.add_2_fitsnap("offset_2b", offset_2b)
+                      # Per-pair 2b sizes: stencil must be applied per-pair, not
+                      # across the full ncoeff_2b chain (which couples adjacent pairs).
+                      uf3_sec = self.config.sections["UF3"]
+                      n_2b_pairs = len(uf3_sec.chemical_system.interactions_map[2])
+                      ncoeff_2b_per_pair = list(uf3_sec.feature_partition_sizes[offset_2b : offset_2b + n_2b_pairs])
+                      pt.add_2_fitsnap("ncoeff_2b_per_pair", ncoeff_2b_per_pair)
                       edges_3b = self.config.sections["UF3"].edges_3b
                       n_edges_3b = len(edges_3b)
                       pt.add_2_fitsnap("n_edges_3b", n_edges_3b)

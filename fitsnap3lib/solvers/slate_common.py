@@ -211,17 +211,33 @@ class SlateCommon(Solver):
             n_edges_3b = pt.fitsnap_dict.get("n_edges_3b", 0)
             edges_3b = pt.fitsnap_dict.get("edges_3b", None)
             g_3b_start = n + ncoeff_2b  # 3b curvature rows follow 2b curvature rows
+            ncoeff_2b_per_pair = pt.fitsnap_dict.get("ncoeff_2b_per_pair", None)
             for i in range(reg_num_rows):
                 g = reg_col_idx + i
                 if n <= g < n + ncoeff_2b:
-                    # 2b second-difference curvature: stencil [1, -2, 1] ([-1,1] at boundaries)
-                    c = g - n
-                    diag_val = -1.0 if (c == 0 or c == ncoeff_2b - 1) else -2.0
-                    if c > 0:
-                        aw[reg_row_idx+i, offset_2b + c-1] = sqrt_alpha_curvature
-                    aw[reg_row_idx+i, offset_2b + c] = sqrt_alpha_curvature * diag_val
-                    if c < ncoeff_2b - 1:
-                        aw[reg_row_idx+i, offset_2b + c+1] = sqrt_alpha_curvature
+                    # 2b second-difference curvature applied PER PAIR independently.
+                    # Treating the full ncoeff_2b chain as one couples adjacent pair
+                    # types at boundaries: wrong center weight (-2 instead of -1)
+                    # AND spurious off-diagonal entries into the adjacent pair's columns.
+                    c = g - n  # global 2b index [0, ncoeff_2b)
+                    # Walk the pair list to find which pair c belongs to
+                    pair_start = 0
+                    nc = ncoeff_2b  # fallback if ncoeff_2b_per_pair not available
+                    if ncoeff_2b_per_pair:
+                        for nc_pair in ncoeff_2b_per_pair:
+                            if c < pair_start + nc_pair:
+                                nc = nc_pair
+                                break
+                            pair_start += nc_pair
+                    local_c = c - pair_start
+                    # Per-pair boundary: half-weight at the two ends of each pair's chain
+                    diag_val = -1.0 if (local_c == 0 or local_c == nc - 1) else -2.0
+                    col_base = offset_2b + pair_start
+                    if local_c > 0:
+                        aw[reg_row_idx+i, col_base + local_c - 1] = sqrt_alpha_curvature
+                    aw[reg_row_idx+i, col_base + local_c]     = sqrt_alpha_curvature * diag_val
+                    if local_c < nc - 1:
+                        aw[reg_row_idx+i, col_base + local_c + 1] = sqrt_alpha_curvature
                 elif edges_3b is not None and g_3b_start <= g < g_3b_start + n_edges_3b:
                     # 3b graph-Laplacian: one incidence row per edge (+1 at u, -1 at v)
                     # D^T D = L3 (graph Laplacian), so augmented LS gives the correct penalty
