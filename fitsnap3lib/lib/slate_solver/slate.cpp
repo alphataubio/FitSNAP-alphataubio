@@ -36,6 +36,17 @@ void slate_set_openmp_threads(int num_threads, int debug) {
     for (int i = 0; i < ncpus; i++) CPU_SET(i, &full_mask);
     sched_setaffinity(0, sizeof(full_mask), &full_mask);
 #endif // __linux__
+    // BLAS must be single-threaded so SLATE task parallelism isn't over-subscribed.
+    // Without this, all 192 cores rush into each tile GEMM sequentially instead of
+    // running 192 concurrent single-threaded tile tasks.
+    setenv("BLIS_NUM_THREADS",    "1", 1);  // AOCL/BLIS
+    setenv("BLIS_JC_NT",          "1", 1);
+    setenv("BLIS_IC_NT",          "1", 1);
+    setenv("BLIS_JR_NT",          "1", 1);
+    setenv("BLIS_IR_NT",          "1", 1);
+    setenv("OPENBLAS_NUM_THREADS","1", 1);  // fallback
+    setenv("MKL_NUM_THREADS",     "1", 1);  // fallback
+
     omp_set_num_threads(num_threads);
 #ifdef __linux__
     // OMP_PROC_BIND was initialized with OMP_NUM_THREADS=1, so its binding
@@ -51,7 +62,7 @@ void slate_set_openmp_threads(int num_threads, int debug) {
         sched_setaffinity(0, sizeof(tmask), &tmask);
     }
 #endif // __linux__
-    //if (debug)
+    if (debug)
     std::cerr << "SLATE_CPP: Set OpenMP threads to " << num_threads
                          << ", pinned threads 0.." << num_threads-1 << " to cores" << std::endl;
 }
