@@ -292,8 +292,8 @@ class SLATE(SlateValidation):
                 pt.single_print(f"SLATE ARD: stopping... reached max_iter {self.max_iter}")
                 break
 
-            if cond_number > 1e16:
-                pt.single_print(f"SLATE ARD: stopping... cond_number {cond_number} > 1e16")
+            if cond_number > 1e15:
+                pt.single_print(f"SLATE ARD: stopping... cond_number {cond_number:>8.3g} > 1e15")
                 break
 
             if coef_rel_converged:
