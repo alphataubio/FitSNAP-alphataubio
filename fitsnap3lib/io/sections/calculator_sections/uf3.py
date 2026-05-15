@@ -155,36 +155,58 @@ class Uf3(Section):
     self.type_mapping = {el: i + 1 for i, el in enumerate(self.type)}
 
     # Precompute 3b edges for graph-Laplacian curvature regularization.
-    # Runs on ALL ranks (bspline_basis is available everywhere; no broadcast needed).
-    # An edge connects two adjacent free 3b coefficients in the tensor-product grid;
-    # penalty: alpha_curvature * sum_{edges} (c_u - c_v)^2 = c^T L3 c  (graph Laplacian).
-    # Adjacency is checked in the full (d0,d1,d2) grid but edges are only emitted when
-    # BOTH endpoints have flat_weights > 0 (i.e., are free/unmasked coefficients).
-    # d0,d1,d2 = len(km[i]) - 4: cubic B-spline count = n_knots - degree.
+    # Each edge connects two adjacent free 3b coefficients in the tensor-product
+    # grid; penalty: alpha_curvature * sum_{edges}(c_u - c_v)^2 = c^T L3 c.
+    # DISTRIBUTED: col_offs (prefix sums) are computed on all ranks cheaply,
+    # then each rank processes triplets[rank::size]. Edges are allgathered and
+    # sorted by (col_u, col_v) for a deterministic global ordering on all ranks.
+    # Sorting is safe because col_u < col_v always (+1 direction only) and
+    # col_offs is monotonically increasing, so sort order == triplet order.
     self.edges_3b = np.empty((0, 2), dtype=np.int32)
     if self.degree >= 3 and 3 in self.chemical_system.interactions_map:
       n_1b = len(self.chemical_system.interactions_map[1])
       n_2b = len(self.chemical_system.interactions_map[2])
       col_offset_3b = sum(self.feature_partition_sizes[:n_1b + n_2b])
-      edge_list = []
+      triplets = list(self.chemical_system.interactions_map[3])
+
+      # Pass 1 (all ranks): prefix sums so every rank knows each triplet's col_off
+      col_offs = []
       col_off = col_offset_3b
-      for triplet in self.chemical_system.interactions_map[3]:
-        km  = self.bspline_basis.knots_map[triplet]
+      for triplet in triplets:
+        col_offs.append(col_off)
+        fw = np.asarray(self.bspline_basis.flat_weights[triplet])
+        col_off += int(np.sum(fw > 0))
+
+      # Pass 2 (distributed): each rank handles its subset of triplets
+      rank = self.pt._rank
+      size = self.pt._size
+      local_edges = []
+      for idx in range(rank, len(triplets), size):
+        triplet  = triplets[idx]
+        col_off  = col_offs[idx]
+        km       = self.bspline_basis.knots_map[triplet]
         d0, d1, d2 = len(km[0]) - 4, len(km[1]) - 4, len(km[2]) - 4
-        tm  = np.asarray(self.bspline_basis.template_mask[triplet], dtype=np.intp)
-        fw  = np.asarray(self.bspline_basis.flat_weights[triplet])
-        free_idx  = np.where(fw > 0)[0]          # positions in compressed array that are free
-        flat_pos  = tm[free_idx].astype(int)      # corresponding flat grid positions
-        flat_to_col = {int(fp): lc for lc, fp in enumerate(flat_pos)}  # flat_pos -> local col
+        tm       = np.asarray(self.bspline_basis.template_mask[triplet], dtype=np.intp)
+        fw       = np.asarray(self.bspline_basis.flat_weights[triplet])
+        free_idx = np.where(fw > 0)[0]
+        flat_pos = tm[free_idx].astype(int)
+        flat_to_col = {int(fp): lc for lc, fp in enumerate(flat_pos)}
         for loc_col, fp in enumerate(flat_pos):
           gi, gj, gk = np.unravel_index(fp, (d0, d1, d2))
           for di, dj, dk in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):  # +1 only -> each edge once
             ni, nj, nk = gi + di, gj + dj, gk + dk
             if ni < d0 and nj < d1 and nk < d2:
               nfp = int(np.ravel_multi_index((ni, nj, nk), (d0, d1, d2)))
-              if nfp in flat_to_col:  # neighbor is also a free coefficient
-                edge_list.append((col_off + loc_col, col_off + flat_to_col[nfp]))
-        col_off += len(free_idx)
+              if nfp in flat_to_col:
+                local_edges.append((col_off + loc_col, col_off + flat_to_col[nfp]))
+
+      # Pass 3: gather and sort for deterministic global ordering
+      if not self.pt.stubs:
+        all_local = self.pt._comm.allgather(local_edges)
+        edge_list = [e for sublist in all_local for e in sublist]
+      else:
+        edge_list = local_edges
+      edge_list.sort()  # (col_u, col_v) sort == triplet order since col_offs monotone
       if edge_list:
         self.edges_3b = np.array(edge_list, dtype=np.int32)
 
