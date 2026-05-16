@@ -1,8 +1,10 @@
 
-import numpy as np
 from fitsnap3lib.calculators.lammps_base import LammpsBase, _extract_compute_np
 from fitsnap3lib.calculators.lammps_pace import LammpsPace
 import lammps
+import os
+import numpy as np
+
 
 # LAMMPS ``units real`` uses kcal/mol (and kcal/mol/Å for forces); OMOL/JSON/VASP training uses eV.
 _KCAL_MOL_PER_EV = 23.060549
@@ -21,6 +23,12 @@ class LammpsPyace(LammpsPace):
     self._data = {}
     self._i = 0
     self._row_index = 0
+    # Saved on first _initialize_lammps so __del__ can finalize Kokkos explicitly.
+    # On macOS, libomp tears down pthread infrastructure before Kokkos's atexit/static
+    # destructor fires, leaving OpenMPInternal::~OpenMPInternal() holding an invalid
+    # mutex (EINVAL). Calling lammps_kokkos_finalize() here — while Python's GC is
+    # still running and libomp is fully alive — avoids that race entirely.
+    self._lmp_lib = None
 
   # --------------------------------------------------------------------------------------------
 
@@ -30,6 +38,7 @@ class LammpsPyace(LammpsPace):
     else: return self._ncoeff + self._numtypes
 
   # --------------------------------------------------------------------------------------------
+
   def _set_box(self):
 
     super()._set_box()
@@ -37,6 +46,34 @@ class LammpsPyace(LammpsPace):
     # kspace_style is none by default just like in LAMMPS
     self._lmp.command(f"kspace_style {self.config.sections['REFERENCE'].kspace_style}")
 
+  # --------------------------------------------------------------------------------------------
+
+  def _initialize_lammps(self, printlammps=0):
+
+    num_threads = os.getenv("SLURM_CPUS_PER_TASK")
+    if num_threads is None: num_threads = os.getenv("OMP_NUM_THREADS", 1)
+
+    # pace/kk parallelises only the cheap post-accumulation loop (320 cols), not
+    # ACECTildeEvaluator::compute_atom() which dominates runtime. Real atom-level
+    # parallelism would need per-thread evaluator instances.
+    # Use kk only when SLURM_CPUS_PER_TASK is set (i.e. on cluster with multi-CPU tasks).
+    if os.getenv("SLURM_CPUS_PER_TASK") is not None:
+      cmds = ["-screen", "none", "-k", "on", "t", num_threads, "-sf", "kk"]
+    else:
+      cmds = ["-screen", "none"]
+    self._lmp = self.pt.initialize_lammps(self.config.args.lammpslog, printlammps=0, cmds=cmds)
+    if self._lmp_lib is None:
+      self._lmp_lib = self._lmp.lib   # ctypes handle; survives lammps.close()
+    self._lmp.command("newton off")
+    if os.getenv("SLURM_CPUS_PER_TASK") is not None:
+      self._lmp.command("package kokkos neigh full newton off")
+
+  # --------------------------------------------------------------------------------------------
+
+  def _set_neighbor_list(self):
+    self._lmp.command("mass * 1.0e-20")
+    self._lmp.command("neighbor 1.0e-20 bin")
+    self._lmp.command("neigh_modify one 10000")
 
   # --------------------------------------------------------------------------------------------
   # everything is handled by LAMMPS compute pace (similar format as compute snap)
@@ -196,6 +233,23 @@ class LammpsPyace(LammpsPace):
     #if self._i > 0: quit()
   
   # --------------------------------------------------------------------------------------------
-  
+
+  def __del__(self):
+    """Finalize Kokkos before Python's GC releases C++ static state.
+
+    macOS-specific: libomp registers atexit handlers that destroy pthread
+    mutexes early; Kokkos's own atexit/static destructor then fires on an
+    already-invalid mutex, calling std::terminate. By calling
+    lammps_kokkos_finalize() here we pull Kokkos cleanup forward into the
+    Python GC phase, while libomp is still fully initialized.
+    No-op on Linux (GNU libgomp handles this ordering correctly).
+    """
+    try:
+      lib = self._lmp_lib
+      if lib is not None and hasattr(lib, 'lammps_kokkos_finalize'):
+        lib.lammps_kokkos_finalize()
+        self._lmp_lib = None
+    except Exception:
+      pass
 
 

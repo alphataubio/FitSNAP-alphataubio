@@ -140,7 +140,7 @@ class PyAce(Section):
       for k,v in sorted(ctilde_basis.number_functions_by_rank.items()):
         self.pt.single_print(f"    Rank {k}: {v} basis functions")
 
-      self.pt.single_print("----------------------------------------------------------------\n")
+      self.pt.single_print("")
             
     except ImportError:
       raise RuntimeError("PyACE not available - cannot create basis")
