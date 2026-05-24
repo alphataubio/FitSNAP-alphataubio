@@ -5,6 +5,7 @@ from fitsnap3lib.io.sections.sections import Section
 import numpy as np
 from collections import defaultdict
 
+from fitsnap3lib.lib.sym_ACE.bbasis import *
 from fitsnap3lib.lib.sym_ACE.ctilde import *
 
 
@@ -120,9 +121,9 @@ class PyAce(Section):
     """
     try:
             
-      ctilde_basis = create_ctilde_basis(self.ace_config)
-      self.ctilde_basis = ctilde_basis
-      self.ncoeff = ctilde_basis.ncoeff
+      self.bbasis = create_bbasis(self.ace_config)
+      self.ctilde_basis = create_ctilde_basis(self.ace_config)
+      self.ncoeff = self.ctilde_basis.ncoeff
 
       self.pt.single_print(
         f"----------------------------------------------------------------\n"
@@ -137,7 +138,7 @@ class PyAce(Section):
         f"    numtypes {self.numtypes} ncoeff {self.ncoeff}               \n"
       )
 
-      for k,v in sorted(ctilde_basis.number_functions_by_rank.items()):
+      for k,v in sorted(self.ctilde_basis.number_functions_by_rank.items()):
         self.pt.single_print(f"    Rank {k}: {v} basis functions")
 
       self.pt.single_print("")
@@ -246,7 +247,7 @@ class PyAce(Section):
 
   # --------------------------------------------------------------------------------------------
     
-  def _create_coupling_coefficients_yace(self, output_filename="coupling_coefficients.yace"):
+  def _create_coupling_coefficients_yace(self, output_filename="coupling_coefficients"):
     """Create a coupling_coefficients.yace file using proper PyACE workflow
         
     This method follows the official PyACE pattern:
@@ -265,8 +266,8 @@ class PyAce(Section):
     @self.pt.rank_zero
     def _write_yace():
       try:
-        # Save as .yace file
-        self.ctilde_basis.save_yaml(output_filename)
+        self.bbasis.save_yaml(f"{output_filename}.yaml")
+        self.ctilde_basis.save_yaml(f"{output_filename}.yace")
       except Exception as e:
         self.pt.single_print(f"Error creating .yace file: {e}")
         import traceback

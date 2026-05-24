@@ -189,6 +189,8 @@ class WignerRPI:
         valid = []
         for lab in combined_labs:
             mu_l, n_l, l_l, l_int = _parse_label_full(lab, rv)
+
+            #print(f"*** mu_l {mu_l} n_l {n_l} l_l {l_l} l_int {l_int}\n")
             p_maps = _get_constrained_permutations(ref_shell, list(zip(mu_l, n_l, l_l)))
             
             vec = []
@@ -203,24 +205,33 @@ class WignerRPI:
                 valid.append({
                     'label': lab, 
                     'vector': (v / np.linalg.norm(v)).tolist(), # JSON compatible
-                    'mus': mu_l, 'ns': n_l, 'ls': l_l
+                    'mus': mu_l, 'ns': n_l, 'ls': l_l, 'LS': l_int
                 })
 
         if not valid: return []
         A = np.column_stack([np.array(v['vector']) for v in valid])
         _, S, _ = scipy.linalg.svd(A, full_matrices=False)
         tol = max(1e-14, S[0] * 1e-12)
-        
+
         res, basis_mat = [], []
         for v in valid:
             vec_arr = np.array(v['vector'])
             ortho = vec_arr.copy()
             for b in basis_mat: ortho -= np.dot(ortho, b) * b
+
+            # --------- SIGN-LOCKING BLOCK --------
             if np.linalg.norm(ortho) > tol:
-                v['vector'] = (ortho / np.linalg.norm(ortho)).tolist()
-                v['m_configs'] = m_configs # Optimized: attach m-configs to result
-                basis_mat.append(np.array(v['vector']))
+                # Find the index of the largest absolute value to determine sign
+                max_idx = np.argmax(np.abs(ortho))
+                sign = 1.0 if ortho[max_idx] > 0 else -1.0
+                normalized_vec = (sign * ortho / np.linalg.norm(ortho))
+                
+                v['vector'] = normalized_vec.tolist()
+                v['m_configs'] = m_configs 
+                basis_mat.append(normalized_vec)
                 res.append(v)
+            # --------------------------------------
+
             if len(res) >= n_expected: break
             
         self.rpi_memory_cache[rv][key] = res
