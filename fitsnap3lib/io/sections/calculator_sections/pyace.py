@@ -25,7 +25,7 @@ class PyAce(Section):
     # Define allowed keys for PYACE section
     allowedkeys = [
       # Basic settings
-      'elements', 'cutoff', 'deltaSplineBins',
+      'elements', 'cutoff', 'deltaSplineBins', 
             
       # JSON format
       'embeddings', 'bonds', 'functions',
@@ -33,8 +33,8 @@ class PyAce(Section):
       # Full backwards compatibility with ACE section
       'numTypes', 'type', 'bzeroflag', 'ranks', 'lmin', 'lmax', 'nmax',
       'mumax', 'nmaxbase', 'rcutfac', 'lambda', 'rcinner', 'drcinner',
-      'erefs', 'RPI_heuristic', 'bikflag', 'dgradflag', 'wigner_flag',
-      'b_basis', 'manuallabs',
+      'erefs', 'bikflag', 'dgradflag', 'wigner_flag',
+      'b_basis',
     ]
         
     # Check for unknown keys
