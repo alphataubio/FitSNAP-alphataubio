@@ -142,15 +142,10 @@ class LammpsBase(Calculator):
     def _initialize_lammps(self, printlammps=0):
         self._lmp = self.pt.initialize_lammps(self.config.args.lammpslog, printlammps)
 
-    def _pre_box_kokkos_setup(self):
-        """Hook for Kokkos calculators: run ``package kokkos`` before ``create_box``."""
-        pass
-
     def _set_structure(self):
         self._lmp.command("clear")
         self._lmp.command("units " + self.config.sections["REFERENCE"].units)
         self._lmp.command("atom_style " + self.config.sections["REFERENCE"].atom_style)
-        self._pre_box_kokkos_setup()
 
         lmp_setup = _extract_commands("""
                         atom_modify map array sort 0 2.0
@@ -238,7 +233,7 @@ class LammpsBase(Calculator):
             self._lmp.command(f"variable {k} equal {v}")
 
     def _run_lammps(self):
-        self._lmp.command("run 0")
+        self._lmp.command("run 0 post no")
 
     def _extract_atom_ids(self, num_atoms):
         # helper function to account for change in LAMMPS numpy_wrapper method name
