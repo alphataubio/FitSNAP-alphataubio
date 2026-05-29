@@ -1,7 +1,6 @@
 
 from fitsnap3lib.calculators.lammps_base import LammpsBase, _extract_compute_np
 from fitsnap3lib.calculators.lammps_pace import LammpsPace
-import lammps
 import os
 import numpy as np
 
@@ -13,9 +12,14 @@ _KCAL_MOL_PER_EV = 23.060549
 
 class LammpsPyace(LammpsPace):
   """
-  Calculator using pyace basis in [PYACE] with LAMMPS compute pace
+  Calculator using pyace basis in [PYACE] with LAMMPS compute pace.
+
+  One LAMMPS instance and one ``compute pace`` for the whole config loop so the
+  coupling-coefficients YAML is parsed only once.  Each config only swaps atoms
+  and the box (delete_atoms + change_box + create_atoms); pair_style/compute
+  are not recreated.
   """
-  
+
   # --------------------------------------------------------------------------------------------
 
   def __init__(self, name, pt, config):
@@ -23,67 +27,146 @@ class LammpsPyace(LammpsPace):
     self._data = {}
     self._i = 0
     self._row_index = 0
-    # Saved on first _initialize_lammps so __del__ can finalize Kokkos explicitly.
-    # On macOS, libomp tears down pthread infrastructure before Kokkos's atexit/static
-    # destructor fires, leaving OpenMPInternal::~OpenMPInternal() holding an invalid
-    # mutex (EINVAL). Calling lammps_kokkos_finalize() here — while Python's GC is
-    # still running and libomp is fully alive — avoids that race entirely.
     self._lmp_lib = None
+
+    self._initialize_lammps()
+
+  # --------------------------------------------------------------------------------------------
+
+  def __del__(self):
+    """Finalize Kokkos before Python's GC releases C++ static state (macOS libomp race)."""
+    try:
+      lib = self._lmp_lib
+      if lib is not None and hasattr(lib, 'lammps_kokkos_finalize'):
+        lib.lammps_kokkos_finalize()
+        self._lmp_lib = None
+    except Exception:
+      pass
 
   # --------------------------------------------------------------------------------------------
 
   def get_width(self):
-    """Get width of descriptor vector for PYACE calculator"""
     if self._bzeroflag: return self._ncoeff
     else: return self._ncoeff + self._numtypes
 
   # --------------------------------------------------------------------------------------------
 
-  def _set_box(self):
-
-    super()._set_box()
-    
-    # kspace_style is none by default just like in LAMMPS
-    self._lmp.command(f"kspace_style {self.config.sections['REFERENCE'].kspace_style}")
-
-  # --------------------------------------------------------------------------------------------
-
   def _initialize_lammps(self, printlammps=0):
+    """One-time setup: open LAMMPS, declare pair/compute/neighbor (YAML read here)."""
 
     num_threads = os.getenv("SLURM_CPUS_PER_TASK")
-    if num_threads is None: num_threads = os.getenv("OMP_NUM_THREADS", 1)
+    if num_threads is None: num_threads = os.getenv("OMP_NUM_THREADS", 4)
 
-    # pace/kk parallelises only the cheap post-accumulation loop (320 cols), not
-    # ACECTildeEvaluator::compute_atom() which dominates runtime. Real atom-level
-    # parallelism would need per-thread evaluator instances.
-    # Use kk only when SLURM_CPUS_PER_TASK is set (i.e. on cluster with multi-CPU tasks).
-    if os.getenv("SLURM_CPUS_PER_TASK") is not None:
+    if (kokkos := self.config.sections["CALCULATOR"].kokkos):
       cmds = ["-screen", "none", "-k", "on", "t", num_threads, "-sf", "kk"]
     else:
-      cmds = ["-screen", "none"]
+      cmds = ["-screen", "lammps.log"]
+
     self._lmp = self.pt.initialize_lammps(self.config.args.lammpslog, printlammps=0, cmds=cmds)
-    if self._lmp_lib is None:
-      self._lmp_lib = self._lmp.lib   # ctypes handle; survives lammps.close()
-    self._lmp.command("newton off")
-    if os.getenv("SLURM_CPUS_PER_TASK") is not None:
+    if self._lmp_lib is None: self._lmp_lib = self._lmp.lib
+
+    self._lmp.command("boundary p p p")
+    #self._lmp.command("boundary f f f")
+
+    if kokkos:
+      self._lmp.command("newton off")
       self._lmp.command("package kokkos neigh full newton off")
 
-  # --------------------------------------------------------------------------------------------
+    reference_section = self.config.sections["REFERENCE"]
+    self._lmp.command("units " + reference_section.units)
+    self._lmp.command("atom_style " + reference_section.atom_style)
+    self._lmp.command("atom_modify map array sort 0 2.0")
+    #self._lmp.command("box tilt large")
 
-  def _set_neighbor_list(self):
+    numtypes = len(self.config.sections["PYACE"].elements)
+    #self._lmp.command("region pybox block -99 99 -99 99 -99 99")
+
+    self._lmp.command("region pybox prism 0 1 0 1 0 1 1 1 1")
+    self._lmp.command(f"create_box {numtypes} pybox")
+
+    for line in reference_section.lmp_pairdecl:
+      if "pair_coeff" in line:
+        lower = " ".join([word.lower() for word in line.split()[:4]])
+        leave_alone = " ".join([word for word in line.split()[4:]])
+        self._lmp.command(f"{lower} {leave_alone}")
+      else:
+        self._lmp.command(line.lower())
+
     self._lmp.command("mass * 1.0e-20")
     self._lmp.command("neighbor 1.0e-20 bin")
     self._lmp.command("neigh_modify one 10000")
 
+    # Parsed once — do not re-declare in the config loop.
+    if (self._bikflag and self._dgradflag):
+      self._lmp.command("compute pace all pace coupling_coefficients.yace 1 1")
+    elif (self._bikflag and not self._dgradflag):
+      self._lmp.command("compute pace all pace coupling_coefficients.yace 1 0")
+    else:
+      self._lmp.command("compute pace all pace coupling_coefficients.yace 0 0")
+
+    self._lmp.command(f"kspace_style {reference_section.kspace_style}")
+
   # --------------------------------------------------------------------------------------------
-  # everything is handled by LAMMPS compute pace (similar format as compute snap)
 
-  def _set_computes(self):
+  def process_configs(self, data, i):
 
-    if self._bikflag: self._lmp.command("compute pace all pace coupling_coefficients.yace 1 0")
-    else: self._lmp.command("compute pace all pace coupling_coefficients.yace 0 0")
+    try:
+      self._data = data
+      self._i = i
+      self._prepare_lammps()
+      self._run_lammps()
+      self._collect_lammps()
 
-    
+    except Exception as e:
+      if False and self.config.args.printlammps:
+        self._data = data
+        self._i = i
+        self._initialize_lammps(1)
+        self._prepare_lammps()
+        self._run_lammps()
+        self._collect_lammps()
+        self._lmp = self.pt.close_lammps()
+      raise e
+
+  # --------------------------------------------------------------------------------------------
+
+  def _create_atoms(self):
+    self._create_atoms_helper(type_mapping=self._type_mapping)
+
+  # --------------------------------------------------------------------------------------------
+
+  def _prepare_lammps(self):
+    """Swap in a new structure without clear and without re-creating compute pace."""
+
+    self._lmp.command("delete_atoms group all")
+
+    ((ax, bx, cx), (ay, by, cy), (az, bz, cz)) = self._data["Lattice"]
+    assert all(abs(c) < 1e-10 for c in (ay, az, bz)), \
+      f"Cell not normalized for {self._data['Group']} / {self._data['File']}"
+
+    change_box_cmd = "change_box all triclinic"
+    change_box_cmd += f" x final 0 {ax:20.20g}"
+    change_box_cmd += f" y final 0 {by:20.20g}"
+    change_box_cmd += f" z final 0 {cz:20.20g}"
+    change_box_cmd += f" xy final {bx:20.20g}"
+    change_box_cmd += f" xz final {cx:20.20g}"
+    change_box_cmd += f" yz final {cy:20.20g}"
+    self._lmp.command(change_box_cmd)
+
+    self._create_atoms()
+
+    atom_style = self.config.sections["REFERENCE"].atom_style
+    if atom_style == "spin": self._create_spins()
+    if atom_style == "charge": self._create_charge()
+
+  # --------------------------------------------------------------------------------------------
+
+  def _run_lammps(self):
+    # Occasional neighbor stencils (compute pace) need timestamp reset when reusing
+    # run 0 at step 0 across configs with different box sizes.
+    self._lmp.command("reset_timestep 0")
+    self._lmp.command("run 0 post no")
+
   # --------------------------------------------------------------------------------------------
 
   def _collect_lammps(self):
@@ -98,12 +181,11 @@ class LammpsPyace(LammpsPace):
         
     assert np.all(lmp_atom_ids == 1 + np.arange(num_atoms)), "LAMMPS seems to have lost atoms \nGroup and configuration: {} {}".format(self._data["Group"],self._data["File"])
 
-    # Extract pace data, including reference potential data
     nrows_energy = 1
     bik_rows = 1
     ndim_force = 3
     nrows_force = ndim_force * num_atoms
-    ndim_virial = 6
+    ndim_virial = 6 if self.config.sections["CALCULATOR"].stress else 0
     nrows_virial = ndim_virial
     nrows_pace = nrows_energy + nrows_force + nrows_virial
     ncols_descriptors = self._ncoeff
@@ -112,14 +194,6 @@ class LammpsPyace(LammpsPace):
     index = self.shared_index
     dindex = self.distributed_index
     lmp_pace = _extract_compute_np(self._lmp, "pace", 0, 2, (nrows_pace, ncols_pace))
-    
-    np.set_printoptions(
-        precision=4, suppress=False, floatmode='fixed', linewidth=np.inf,
-        formatter={'float': '{:.6f}'.format}, threshold = 800, edgeitems=50
-    )
-    
-    #self.pt.single_print(f"\n\n*** i {self._i} num_atoms {num_atoms} n_coeff {n_coeff} lmp_pace\n{lmp_pace}")
-    
 
     if (np.isinf(lmp_pace)).any() or (np.isnan(lmp_pace)).any():
       self.pt.single_print("! WARNING! applying np.nan_to_num()")
@@ -128,8 +202,6 @@ class LammpsPyace(LammpsPace):
       raise ValueError(f"NaN in file {self._data['File']} of group {self._data['Group']}")
 
     units_real = self.config.sections["REFERENCE"].units.lower() == "real"
-    # ``compute pace`` reports the reference column and energy/force-related rows in LAMMPS
-    # native energy units (kcal/mol, kcal/mol/Å for real). Training energies and forces are eV.
     if units_real:
         ev_per_kcal_mol = 1.0 / _KCAL_MOL_PER_EV
         r0, r1 = 0, nrows_energy
@@ -151,8 +223,6 @@ class LammpsPyace(LammpsPace):
     bik_rows = 1
     icolref = ncols_descriptors
 
-    # -------------------------------- ENERGY --------------------------------
-
     if self.config.sections["CALCULATOR"].energy:
       b_sum_temp = lmp_pace[irow, :ncols_descriptors] / num_atoms
       if not self._bzeroflag:
@@ -163,10 +233,7 @@ class LammpsPyace(LammpsPace):
         b_sum_temp = np.concatenate((onehot_atoms, b_sum_temp), axis=0)
       self.pt.shared_arrays['a'].array[index] = b_sum_temp
       ref_energy = lmp_pace[irow, icolref]
-      # A, ref, and b are eV / (eV/Å) after optional real→eV conversion above. SLATE scales
-      # Energy/Force metrics to kcal for [REFERENCE] units = real (see slate_common).
       self.pt.shared_arrays['b'].array[index] = (energy - ref_energy) / num_atoms
-      #self.pt.all_print(f"*** i {self._i} energy {energy:.2f} ref_energy {ref_energy:.2f}")
       self.pt.shared_arrays['w'].array[index] = self._data["eweight"]
       self.pt.fitsnap_dict['Row_Type'][dindex:dindex + bik_rows] = ['Energy'] * nrows_energy
       self.pt.fitsnap_dict['Atom_I'][dindex:dindex + bik_rows] = [int(i) for i in range(nrows_energy)]
@@ -174,8 +241,6 @@ class LammpsPyace(LammpsPace):
       dindex += nrows_energy
 
     irow += nrows_energy
-    
-    # -------------------------------- FORCE --------------------------------
 
     if self.config.sections["CALCULATOR"].force:
       s = slice(index, index + num_atoms*ndim_force)
@@ -195,8 +260,6 @@ class LammpsPyace(LammpsPace):
 
     irow += nrows_force
 
-    # -------------------------------- STRESS --------------------------------
-
     if self.config.sections["CALCULATOR"].stress:
       vb_sum_temp = 160.2176565 * lmp_pace[irow:irow + nrows_virial, :ncols_descriptors] / lmp_volume
       vb_sum_temp.shape = (ndim_virial, self._ncoeff)
@@ -206,11 +269,8 @@ class LammpsPyace(LammpsPace):
 
       self.pt.shared_arrays['a'].array[index:index+ndim_virial] = vb_sum_temp
       ref_stress = lmp_pace[irow:irow + nrows_virial, icolref]
-        
-      # Convert b vector from eV/Å³ to GPa
       tmp1 = 160.2176565 * self._data["Stress"][[0, 1, 2, 1, 0, 0], [0, 1, 2, 2, 2, 1]].ravel()
       tmp2 = ref_stress/10000
-      #self.pt.single_print(f"*** tmp1 {tmp1} tmp2 {tmp2}")
       self.pt.shared_arrays['b'].array[index:index+ndim_virial] = tmp1 - tmp2
 
       self.pt.shared_arrays['w'].array[index:index+ndim_virial] = self._data["vweight"]
@@ -225,31 +285,6 @@ class LammpsPyace(LammpsPace):
     self.pt.fitsnap_dict['Testing'][self.distributed_index:dindex] = [bool(self._data['test_bool'])] * length
     self.shared_index = index
     self.distributed_index = dindex
-    
-    # Log validation data if enabled
-    if self.config.sections["OUTFILE"].validation:
-        pass
-        
-    #if self._i > 0: quit()
-  
+
   # --------------------------------------------------------------------------------------------
-
-  def __del__(self):
-    """Finalize Kokkos before Python's GC releases C++ static state.
-
-    macOS-specific: libomp registers atexit handlers that destroy pthread
-    mutexes early; Kokkos's own atexit/static destructor then fires on an
-    already-invalid mutex, calling std::terminate. By calling
-    lammps_kokkos_finalize() here we pull Kokkos cleanup forward into the
-    Python GC phase, while libomp is still fully initialized.
-    No-op on Linux (GNU libgomp handles this ordering correctly).
-    """
-    try:
-      lib = self._lmp_lib
-      if lib is not None and hasattr(lib, 'lammps_kokkos_finalize'):
-        lib.lammps_kokkos_finalize()
-        self._lmp_lib = None
-    except Exception:
-      pass
-
 

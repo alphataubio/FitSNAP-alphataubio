@@ -11,7 +11,7 @@ class Calculator(Section):
         super().__init__(name, config, pt, infile, args)
         #self.pt = ParallelTools()
         self.allowedkeys = ['calculator', 'energy', 'per_atom_energy', 'force', 'stress', \
-                            'nonlinear', 'per_atom_scalar']
+                            'nonlinear', 'per_atom_scalar', 'kokkos']
         self._check_section()
 
         self.calculator = self.get_value("CALCULATOR", "calculator", "LAMMPSSNAP")
@@ -29,19 +29,17 @@ class Calculator(Section):
         self.stress = self.get_value("CALCULATOR", "stress", "True", "bool")
         self.dse = self.check_path(self.get_value("CALCULATOR", "dee", "detailed_stress_errors.dat"))
         self.pt.add_2_fitsnap("stress", self.stress)
+
         self.nonlinear = self.get_value("CALCULATOR", "nonlinear", "False", "bool")
-
         self.pt.add_2_fitsnap("nonlinear", self.nonlinear)
-
-
-        if (self.nonlinear):
-            self.linear = False
-        else:
-            self.linear = True
+        if (self.nonlinear): self.linear = False
+        else: self.linear = True
 
         if (self.per_atom_scalar and (self.force or self.energy)):
             raise Exception("Cannot fit to arbitrary per-atom scalars and forces/energies.")
         if (self.per_atom_scalar and self.linear):
             raise Exception("Fitting to arbitrary per-atom scalars only implemented for nonlinear solvers.")
-            
+
+        self.kokkos = self.get_value("CALCULATOR", "kokkos", "False", "bool")
+
         self.delete()
