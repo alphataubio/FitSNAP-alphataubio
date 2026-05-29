@@ -235,11 +235,6 @@ class ADIOS2(Scraper):
     """Read only this rank's config subset (``start``/``count``); build ``self.data``."""
     self.data = []
 
-    # --- 1. Check for auto_eshift flag ---
-    self.auto_eshift = False
-    if "SCRAPER" in self.config.sections and hasattr(self.config.sections["SCRAPER"], "auto_eshift"):
-      self.auto_eshift = bool(int(self.config.sections["SCRAPER"].auto_eshift))
-
     c0 = self._cfg_start
     n_load = self._n_load
     c1 = c0 + n_load
@@ -348,55 +343,9 @@ class ADIOS2(Scraper):
         logging.warning(f"Failed to extract config {config_idx}: {e}")
         continue
 
-    # --- 2. Add the Global Auto ESHIFT Reduction ---
-    if self.auto_eshift:
-      num_elements = len(self.element_map)
-      element_to_idx = {el: i for i, el in enumerate(self.element_map)}
-      
-      # Prepare local matrices for Normal Equations (AtA * x = Atb)
-      AtA_local = np.zeros((num_elements, num_elements), dtype=np.float64)
-      Atb_local = np.zeros(num_elements, dtype=np.float64)
-      
-      for config in self.data:
-        counts = np.zeros(num_elements, dtype=np.float64)
-        for atom in config['AtomTypes']: counts[element_to_idx[atom]] += 1.0
-        energy = config['Energy']
-        # Accumulate AtA and Atb locally
-        AtA_local += np.outer(counts, counts)
-        Atb_local += counts * energy
-        
-      # Prepare global matrices
-      AtA_global = np.zeros_like(AtA_local)
-      Atb_global = np.zeros_like(Atb_local)
-      
-      # Sum across all MPI ranks
-      if self.pt.stubs == 0:
-        from mpi4py import MPI
-        self.comm.Allreduce(AtA_local, AtA_global, op=MPI.SUM)
-        self.comm.Allreduce(Atb_local, Atb_global, op=MPI.SUM)
-      else:
-        AtA_global = AtA_local
-        Atb_global = Atb_local
-        
-      # Solve the linear system
-      try:
-        x = np.linalg.solve(AtA_global, Atb_global)
-      except np.linalg.LinAlgError:
-        # Fallback if matrix is singular
-        x, _, _, _ = np.linalg.lstsq(AtA_global, Atb_global, rcond=None)
-        
-      self.eshift_dict = {el: shift for el, shift in zip(self.element_map, x)}
-      
-      # Print globally exact shifts from Rank 0
-      if self.rank == 0:
-        self.pt.single_print("    AUTO_ESHIFT")
-        for el, shift in self.eshift_dict.items(): self.pt.single_print(f"    {el:4s} {shift:>.6f} eV")
-        self.pt.single_print(f"")
-
-      # Apply exact shifts to local configurations
-      for config in self.data:
-        shift_sum = sum(self.eshift_dict[atom] for atom in config['AtomTypes'])
-        config['Energy'] -= shift_sum
+    # Check for auto_eshift flag
+    if "SCRAPER" in self.config.sections and self.config.sections["SCRAPER"].auto_eshift:
+      self.auto_eshift()
 
     n_loc = len(self.data)
     if self.pt.stubs == 0:
@@ -408,6 +357,68 @@ class ADIOS2(Scraper):
     self.pt.single_print(f"----------------------------------------------------------------\n")
 
     return self.data
+
+  # --------------------------------------------------------------------------------------------
+
+  def auto_eshift(self):
+
+    # Add the Global Auto ESHIFT Reduction
+
+    num_elements = len(self.element_map)
+    element_to_idx = {el: i for i, el in enumerate(self.element_map)}
+      
+    # Prepare local matrices for Normal Equations (AtA * x = Atb)
+    AtA_local = np.zeros((num_elements, num_elements), dtype=np.float64)
+    Atb_local = np.zeros(num_elements, dtype=np.float64)
+      
+    for config in self.data:
+      counts = np.zeros(num_elements, dtype=np.float64)
+      for atom in config['AtomTypes']: counts[element_to_idx[atom]] += 1.0
+      energy = config['Energy']
+      # Accumulate AtA and Atb locally
+      AtA_local += np.outer(counts, counts)
+      Atb_local += counts * energy
+        
+    # Prepare global matrices
+    AtA_global = np.zeros_like(AtA_local)
+    Atb_global = np.zeros_like(Atb_local)
+      
+    # Sum across all MPI ranks
+    if self.pt.stubs == 0:
+      from mpi4py import MPI
+      self.comm.Allreduce(AtA_local, AtA_global, op=MPI.SUM)
+      self.comm.Allreduce(Atb_local, Atb_global, op=MPI.SUM)
+    else:
+      AtA_global = AtA_local
+      Atb_global = Atb_local
+        
+    # Solve the linear system
+    try:
+      x = np.linalg.solve(AtA_global, Atb_global)
+    except np.linalg.LinAlgError:
+      # Fallback if matrix is singular
+      x, _, _, _ = np.linalg.lstsq(AtA_global, Atb_global, rcond=None)
+        
+    eshift_dict = {el: shift for el, shift in zip(self.element_map, x)}
+      
+    # Print globally exact shifts from Rank 0
+    if self.rank == 0:
+      self.pt.single_print("    AUTO_ESHIFT")
+      for el, shift in eshift_dict.items(): self.pt.single_print(f"    {el:4s} {shift:>.6f} eV")
+      self.pt.single_print(f"")
+
+    # Apply exact shifts to local configurations
+    for config in self.data:
+      shift_sum = sum(eshift_dict[atom] for atom in config['AtomTypes'])
+      config['Energy'] -= shift_sum
+
+    if "PYACE" in self.config.sections:
+      pyace_section = self.config.sections["PYACE"]
+      eshift_values = [float(v) for v in eshift_dict.values()]
+      pyace_section.bbasis.E0vals = eshift_values
+      pyace_section.ctilde_basis.E0vals = eshift_values
+      pyace_section.create_coupling_coefficients_yace()
+
 
   # --------------------------------------------------------------------------------------------
 

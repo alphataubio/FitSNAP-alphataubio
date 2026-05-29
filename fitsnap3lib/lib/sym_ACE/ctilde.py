@@ -403,8 +403,7 @@ def create_ctilde_basis(potential_config):
   cbasis = CTildeBasisSet()
   cbasis.elements = sort_by_atomic_number(potential_config['elements'])
   cbasis.nelements = len(cbasis.elements)
-  #cbasis.E0vals = potential_config.get('erefs', [0.0]*cbasis.nelements)
-  cbasis.E0vals = [-16.250308, -1036.915625, -1490.011986, -2047.382757]
+  cbasis.E0vals = potential_config.get('erefs', [0.0]*cbasis.nelements)
   cbasis.deltaSplineBins = potential_config.get('deltaSplineBins', 0.001)
   
   # Read bzeroflag from config

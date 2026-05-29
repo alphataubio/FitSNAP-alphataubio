@@ -62,7 +62,7 @@ class PyAce(Section):
     }
         
     self._create_basis()
-    self._create_coupling_coefficients_yace()
+    self.create_coupling_coefficients_yace()
       
   # --------------------------------------------------------------------------------------------
 
@@ -247,7 +247,7 @@ class PyAce(Section):
 
   # --------------------------------------------------------------------------------------------
     
-  def _create_coupling_coefficients_yace(self, output_filename="coupling_coefficients"):
+  def create_coupling_coefficients_yace(self, output_filename="coupling_coefficients"):
     """Create a coupling_coefficients.yace file using proper PyACE workflow
         
     This method follows the official PyACE pattern:

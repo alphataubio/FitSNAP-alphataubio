@@ -62,3 +62,8 @@ docs/uf3/uf3.aux
 docs/uf3/uf3.log
 docs/uf3/uf3.out
 docs/uf3/uf3.synctex.gz
+examples/AlNi_PYACE_SLATE_ARD/AlNi_PYACE_SLATE_ARD-v1.ipynb
+examples/AlNi_PYACE_SLATE_ARD/coupling_coefficients.yaml
+examples/AlNi_PYACE_SLATE_ARD/AlNi_PYACE_SLATE_ARD_jacobi.ipynb
+examples/AlNi_PYACE_SLATE_ARD/AlNi_PYACE_SLATE_ARD copy.ipynb
+fitsnap3lib/lib/sym_ACE/lib/wigner_rpi_rank5.json
