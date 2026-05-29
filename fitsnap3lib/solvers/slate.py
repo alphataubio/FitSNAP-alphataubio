@@ -151,8 +151,8 @@ class SLATE(SlateValidation):
 
         self.pt.single_print(
           #f"----------------------------------------------------------------\n"
-          f"    #   TIME ALPHA   SSE     COND_NUMBER GAMMA_SUM N_ACTIVE COEF_CHANGE \n"
-          f"                                                            (REL) (ABS) \n"
+          f"    #   TIME    ALPHA   SSE  COND_NUMBER  GAMMA_SUM  N_ACTIVE  COEF_CHANGE \n"
+          f"                                                               (REL) (ABS) \n"
         )
 
         alpha_ = 1.0
@@ -163,9 +163,9 @@ class SLATE(SlateValidation):
         
         # --- THREAD CONFIGURATION (ONCE) ---
         # Only set OpenMP threads once, on the Head Ranks.
-        if pt._sub_rank == 0:
+        #if pt._sub_rank == 0:
             # Thread count = Total Ranks on Node (since other ranks are sleeping)
-            set_openmp_threads(pt._sub_size, self.config.debug)
+            #set_openmp_threads(pt._sub_size, self.config.debug)
 
         iteration = 1
         start_time_iteration = time.time()
@@ -263,7 +263,7 @@ class SLATE(SlateValidation):
 
             # Prune features
             
-            if iteration >= 3:
+            if iteration >= 10 and iteration % 5 == 0:
                 log10_lambda = np.log10(lambda_ + 1e-9)
                 min, max = np.min(log10_lambda), np.max(log10_lambda)
                 #self.threshold_lambda = 10.0**(min + .99*(max-min))
@@ -284,7 +284,7 @@ class SLATE(SlateValidation):
             coef_change_str = " " if coef_old_ is None else f" {coef_rel_change:5.2g} {coef_abs_change:5.2g}"
             coef_old_ = np.copy(coef_)
 
-            pt.single_print(f"    {iteration:<3d} {elapsed_iteration/60:.1f}m {alpha_:>6.3g} {sse_:>6.3g} {cond_number:>8.3g} {gamma_active.sum():>5.2f} {n_active:6d}{coef_change_str}{slurm_time_left_str}")
+            pt.single_print(f"    {iteration:<3d} {elapsed_iteration/60:.1f}m  {alpha_:>6.3g}  {sse_:>6.3g}  {cond_number:>8.3g}  {gamma_active.sum():>5.2f}  {n_active:6d}{coef_change_str}{slurm_time_left_str}")
 
             iteration += 1
             

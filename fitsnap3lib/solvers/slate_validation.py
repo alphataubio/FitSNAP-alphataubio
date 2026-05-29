@@ -564,25 +564,6 @@ class SlateValidation(SlateCommon):
       blist_rank[r].append(re.split(split_pattern, f))
       rank_indices[r].append(i)
           
-    # Create and display lambda heatmaps
-      
-    notebook["cells"].append({
-      "cell_type": "markdown",
-      "metadata": {"collapsed": False, "jp-MarkdownHeadingCollapsed": False, "jupyter": {"outputs_hidden": False}},
-      "source": ["## Lambda Heatmaps\n"]
-    })
-
-    threshold = np.log10(self.threshold_lambda)
-          
-    for rank in range(int(basis_ranks.min()), int(basis_ranks.max())+1):
-      if len(blist_rank[rank]) == 0: continue
-      img_base64 = plot_rank_n(rank, blist_rank, rank_indices, 'Log10(Lambda)', lambda_array.T, threshold, 'max' )
-      notebook["cells"].append({
-        "cell_type": "markdown",
-        "metadata": {},
-        "source": [f'<div align="center"><img src="data:image/svg+xml;base64,{img_base64}"></div>']
-      })
-
     # Summary statistics with side-by-side gamma and lambda distributions
       
     n_iterations, n_features = gamma_array.shape
@@ -592,11 +573,11 @@ class SlateValidation(SlateCommon):
       iter_indices = list(range(n_iterations))
     else:
       # Show first, last, and evenly spaced middle iterations
-      iter_indices = [0] + list(np.linspace(1, n_iterations-2, min(8, n_iterations-2), dtype=int)) + [n_iterations-1]
-      
+      iter_indices = list(range(10)) + list(np.linspace(10, n_iterations-2, min(5, n_iterations-2), dtype=int)) + [n_iterations-1]
+
     n_rows = len(iter_indices)
-    fig, axes = plt.subplots(n_rows, 2, figsize=(14, 4*n_rows))
-      
+    fig, axes = plt.subplots(n_rows, 2, figsize=(14, 5*n_rows))
+
     cmap_gamma = plt.cm.turbo
     cmap_lambda = plt.cm.turbo.reversed()
       
@@ -689,10 +670,32 @@ class SlateValidation(SlateCommon):
       ]
     })
 
+    # Create and display lambda heatmaps
+      
+    notebook["cells"].append({
+      "cell_type": "markdown",
+      "metadata": {"collapsed": False, "jp-MarkdownHeadingCollapsed": False, "jupyter": {"outputs_hidden": False}},
+      "source": ["## Lambda Heatmaps\n"]
+    })
+
+    threshold = np.log10(self.threshold_lambda)
+          
+    for rank in range(int(basis_ranks.min()), int(basis_ranks.max())+1):
+      if len(blist_rank[rank]) == 0: continue
+      img_base64 = plot_rank_n(rank, blist_rank, rank_indices, 'Log10(Lambda)', lambda_array.T, threshold, 'max' )
+      notebook["cells"].append({
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [f'<div align="center"><img src="data:image/svg+xml;base64,{img_base64}"></div>']
+      })
+
+
+
 
 def draw_labels(ax, y_positions, texts, x=-1):
   y_positions = np.array(y_positions)
   for y, txt in zip(y_positions, texts): ax.text(x, y, txt, ha="center", va="center", fontsize=8)
+
 
 def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=None, threshold_position='min'):
   
@@ -700,20 +703,24 @@ def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=
 
   if (heatmap_rows := len(rank_indices[rank])) == 0: return
 
-  def sort_key(basis):
-    ns = basis[1].split(',')
-    ls = basis[2].split(',')
-    #print(f"*** basis {basis} tuple {tuple(int(i) for i in ns)}")
-    return tuple(int(i) for i in ns) + tuple(int(j) for j in ls)
+  if rank >= 1:
+    combined = list(zip(blist_rank[rank], rank_indices[rank]))
 
-  def sort_kv(kv):
-    atoms, ns = kv[0].split('_')
-    return tuple([atoms]+[int(i) for i in ns.split(',')])
+    def sort_key(item):
+      basis = item[0]
+      atoms = basis[0]
+      ns = tuple(int(i) for i in basis[1].split(',')) if len(basis) > 1 and basis[1] else ()
+      ls = tuple(int(j) for j in basis[2].replace(']', '').split(',')) if len(basis) > 2 and basis[2] else ()
+      
+      # Swapped hierarchy: Group by atoms -> ls -> ns
+      return (atoms, ls, ns)
 
-  # sorted_blist = sorted(blist_rank[rank], key=sort_key ) if rank>=1 else blist_rank[rank]
-  
-  sorted_blist = blist_rank[rank]
-  #print(f"*** rank {rank} sorted_blist {sorted_blist}")
+    combined.sort(key=sort_key)
+    sorted_blist = [item[0] for item in combined]
+    sorted_indices = [item[1] for item in combined]
+  else:
+    sorted_blist = blist_rank[rank]
+    sorted_indices = rank_indices[rank]
 
   label_spacing = .01*(6*rank-4)*n_iterations
   if rank == 0:
@@ -746,7 +753,8 @@ def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=
     vmin, vmax = dmin, max(dmax, np.nextafter(dmin, np.inf))
 
   fig, ax = plt.subplots(figsize=figsize, layout="constrained")
-  im_data = np.ma.masked_invalid(history_array[rank_indices[rank]])
+  
+  im_data = np.ma.masked_invalid(history_array[sorted_indices])
   im = ax.imshow(im_data, aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)
 
   # --- atom labels ---
@@ -754,26 +762,37 @@ def plot_rank_n(rank, blist_rank, rank_indices, title, history_array, threshold=
   y, y_positions, texts = 0, [], []
   for k, v in atoms.items():
     ax.add_patch(Rectangle((xlim, y - 0.5), xticks_extra[0]-xlim, v, fc='w', ec="k", zorder=9))
-    ax.text((xlim+xticks_extra[0])/2, (atom_y := y + v / 2 - 0.5), k,
+    ax.text((xlim+xticks_extra[0])/2, y + v / 2 - 0.5, k,
         ha="center", va="center", fontsize=10, fontweight="bold", zorder=10)
     y += v
       
   if rank >= 1:
-    # --- ns labels ---
-    y, ns = 0, Counter([f"{basis[0]}_{basis[1]}" for basis in sorted_blist])
-    ax.text((ns_x:=(xticks_extra[0]+xticks_extra[1])/2), heatmap_rows, 'ns', ha="center", va="top", fontsize=10, fontweight="bold")
-    #for k, v in sorted(ns.items(), key=sort_kv):
-    for k, v in ns.items():
-      ax.add_patch(Rectangle((xticks_extra[0], y - 0.5), xticks_extra[1]-xticks_extra[0], v, fc='w', ec="k", zorder=9))
-      ax.text(ns_x, y + v / 2 - 0.5, k.split('_')[1], ha="center", va="center", fontsize=8, zorder=10)
+    # --- ns & ls labels ---
+    y = 0
+    # Create contiguous blocks based on 'ls' instead of 'ns'
+    ls_counts = Counter([f"{basis[0]}_{basis[2]}" for basis in sorted_blist])
+    
+    # Left column: ns headers
+    ns_x = (xticks_extra[0] + xticks_extra[1]) / 2
+    ax.text(ns_x, heatmap_rows, 'ns', ha="center", va="top", fontsize=10, fontweight="bold")
+    
+    # Right column: ls headers
+    ls_x = (xticks_extra[1] - 0.5) / 2
+    ax.text(ls_x, heatmap_rows, 'ls', ha="center", va="top", fontsize=10, fontweight="bold")
+
+    for k, v in ls_counts.items():
+      # 1. Merge 'ls' inside the RIGHT column (from xticks_extra[1] to -0.5)
+      ax.add_patch(Rectangle((xticks_extra[1], y - 0.5), -0.5 - xticks_extra[1], v, fc='w', ec="k", zorder=9))
+      ax.text(ls_x, y + v / 2 - 0.5, k.split('_')[1].replace(']', ''), ha="center", va="center", fontsize=8, zorder=10)
+      
+      # 2. Collect 'ns' elements to draw individually in the LEFT column
       for j in range(v):
         y_positions.append(y + j)
-        texts.append(sorted_blist[y + j][2].replace(']', ''))
+        texts.append(sorted_blist[y + j][1])
       y += v
 
-    # --- ls labels ---
-    ax.text((ls_x:=(xticks_extra[1]-.5)/2), heatmap_rows, 'ls', ha="center", va="top", fontsize=10, fontweight="bold")
-    draw_labels(ax, y_positions, texts, x=ls_x)
+    # 3. Draw individual 'ns' labels in the left column bounds
+    draw_labels(ax, y_positions, texts, x=ns_x)
 
   tick_values = MaxNLocator(steps=[1, 5, 10],integer=True).tick_values(0, n_iterations)
   tick_positions = [t - .5 for t in tick_values]
