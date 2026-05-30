@@ -77,9 +77,9 @@ class BondSpecification:
     self.nradmax = 0
     self.lmax = 0
     self.nradbasemax = 0
-    self.radbasename = "ACE.jl.base" 
-    self.radparameters = []
-    self.radcoefficients = [] 
+    self.radbasename = "ChebExpCos"
+    self.radparameters = [1.0]
+    self.radcoefficients = []
     self.prehc = 0.0
     self.lambdahc = 0.0
     self.rcut = 0.0
@@ -313,6 +313,7 @@ def generate_functions_ext(potential_config):
       if key not in functions_ext: functions_ext[key] = {}
       functions_ext[key].update(v)
       if 'lmin' not in functions_ext[key]: functions_ext[key]['lmin'] = 0
+      if 'rank' not in functions_ext[key]: functions_ext[key]['rank'] = len(key) - 1
 
   return max_rank, {k: v for k, v in functions_ext.items() if len(v) > 0}
 
@@ -432,7 +433,7 @@ def create_ctilde_basis(potential_config):
         
     bs = BondSpecification()
     bs.radbasename = spec.get('radbase', 'ChebExpCos')
-    bs.radparameters = spec.get('radparameters', [])
+    bs.radparameters = spec.get('radparameters', [1.0])
     bs.rcut = spec.get('rcut', 5.0)
     bs.dcut = spec.get('dcut', 0.01)
     bs.rcut_in = spec.get('rcut_in', 0.0)
@@ -459,9 +460,12 @@ def create_ctilde_basis(potential_config):
     cbasis.bonds[(i, j)] = bs
   
   lmax_by_rank = [0]*max_rank
-  for f in funcs_spec.values():
-    rank = f['rank']
-    lmax_by_rank[rank-1] = max(lmax_by_rank[rank-1], f['lmax'])
+  for species_tuple, f in funcs_spec.items():
+    rank = len(species_tuple) - 1
+    if rank < 1: continue
+    while len(lmax_by_rank) < rank:
+      lmax_by_rank.append(0)
+    lmax_by_rank[rank-1] = max(lmax_by_rank[rank-1], f.get('lmax', 0))
   
   wigner_rpi = WignerRPI(lmax_by_rank=lmax_by_rank)
 
