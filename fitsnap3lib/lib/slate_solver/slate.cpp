@@ -210,17 +210,20 @@ void slate_ridge_augmented_qr(double* local_aw, double* local_bw,
 double slate_ard_update_v1(double*, double*, double*, double*, int64_t, int64_t, int64_t,
   double, double*, MPI_Comm, int);
 
-double slate_ard_update_v2(double*, double*, double*, double*, int64_t, int64_t, int64_t,
+double slate_ard_update_v2(double*, double*, double*, double*, double*, int64_t, int64_t, int64_t,
   double, double*, MPI_Comm, int);
 
 double slate_ard_update(
   double* local_aw_active, double* local_bw, double* local_sigma_diag, double* local_coef_active,
+  double* local_sse,
   int64_t m, int64_t n_active, int64_t lld, double alpha, double* lambda_active,
   MPI_Comm comm, int debug) {
 
+  // NOTE: v1 (frozen) does NOT fill local_sse. If you switch the dispatcher back to v1,
+  // slate.py must compute SSE itself again (see git history of perform_fit_ard).
   //return slate_ard_update_v1(local_aw_active, local_bw, local_sigma_diag, local_coef_active, m, n_active, lld, alpha, lambda_active, comm, debug);
 
-  return slate_ard_update_v2(local_aw_active, local_bw, local_sigma_diag, local_coef_active, m, n_active, lld, alpha, lambda_active, comm, debug);
+  return slate_ard_update_v2(local_aw_active, local_bw, local_sigma_diag, local_coef_active, local_sse, m, n_active, lld, alpha, lambda_active, comm, debug);
 
 }
 
@@ -473,6 +476,7 @@ double slate_ard_update_v1(
 
 
 double slate_ard_update_v2(double* local_aw_active, double* local_bw, double* local_sigma_diag, double* local_coef_active,
+                     double* local_sse,
                      int64_t m, int64_t n_active, int64_t lld,
                      double alpha, double* lambda_active,
                      MPI_Comm comm, int debug) {
@@ -536,75 +540,41 @@ double slate_ard_update_v2(double* local_aw_active, double* local_bw, double* lo
     
   try {
     
-    // -------------------------------- SLATE MATRICES --------------------------------
-    // Numerically stable ARD update via AUGMENTED QR (no normal equations).
+    // -------------------------------- AUGMENTED-QR ARD UPDATE (no aw copy; SSE in C++) --------------------------------
+    // Stable ARD WITHOUT normal equations, WITHOUT copying the m x n design matrix, and with
+    // the data-residual SSE computed here (slate.py no longer touches aw after this call).
     //
-    // The previous version formed C = alpha*X^T X + diag(lambda) with herk(). Forming the
-    // cross product squares the conditioning (cond(C) = kappa(X)^2) AND, once alpha grows
-    // large (alpha ~ 1e11 in practice here), rounds the O(1) diag(lambda) prior away
-    // underneath alpha*X^T X. Both destroy the sigma_diag / gamma accuracy that ARD
-    // relevance determination relies on -- which is why nothing ever pruned (N_ACTIVE
-    // stayed pinned at n) and the fit collapsed to plain ridge.
+    // Scale the least-squares system by 1/sqrt(alpha) so diag(lambda) is not rounded away
+    // under alpha*X^T X, and stack the regularizer as extra rows:
     //
-    // Stable formulation: scale the whole least-squares system by 1/sqrt(alpha) so the
-    // regularizer sits on the same scale as the (alpha-weighted) data, then QR the
-    // augmented operator directly, never forming the cross product:
+    //     A_aug = [        X         ] ((m+n) x n)     b_aug = [ y ]      (y := bw)
+    //             [ diag(sqrt(l/a))  ]                         [ 0 ]
     //
-    //     A_aug = [        X         ]  ((m + n) x n)      rhs:  [ y ]
-    //             [ diag(sqrt(l/a))  ]                           [ 0 ]
+    //     A_aug = Q R   =>   R^T R = X^T X + diag(l/a) = C / alpha
     //
-    //     A_aug = Q R   =>   R^T R = X^T X + diag(lambda/alpha) = C / alpha
+    // The least-squares minimizer of || b_aug - A_aug c ||^2 is exactly the ARD MAP:
+    //     coef = (X^T X + diag(l/a))^-1 X^T y = alpha * C^-1 * X^T y,
+    // obtained as coef = R^-1 (Q^T b_aug)[0:n]. Its residual decomposes as
+    //     || b_aug - A_aug coef ||^2 = ||y - X coef||^2 + (1/alpha) sum_i l_i coef_i^2
+    //                                =      SSE          +        penalty
+    // and the QR delivers || b_aug - A_aug coef ||^2 = ||d2||^2, where [d1; d2] = Q^T b_aug
+    // and d2 is the trailing m entries. Hence SSE = ||d2||^2 - penalty, computed below and
+    // returned via local_sse. (penalty ~ gamma_sum/alpha is <= SSE in practice, so this is
+    // not a cancellation-prone subtraction.)
     //
-    //   W          = (R^T R)^-1 = alpha * C^-1
-    //   coef       = W * (X^T y) = alpha * C^-1 * X^T y          (the ARD MAP estimate)
-    //   sigma_diag = diag(C^-1)  = diag(W) / alpha
+    //   sigma_diag = diag(C^-1) = diag( (R^T R)^-1 ) / alpha       (W := (R^T R)^-1)
     //
-    // cond(R) ~ kappa(X) -- the SQUARE ROOT of the cond(C) the old code put in COND_NUMBER
-    // (so e.g. the old 1.8e11 reads as ~4e5 now). The residual/sigma floor improves from
-    // kappa(X)^2 * eps_double to kappa(X) * eps_double.
-    //
-    // IMPORTANT: qr_factor() overwrites its matrix in place. slate.py recomputes the SSE
-    // in Python from aw AFTER this call (local_pred = aw[:, :n_active] @ coef), so aw must
-    // survive. We therefore COPY the weighted design block into a SLATE-owned A_aug and
-    // factor the copy; the aw/bw shared buffers are only ever READ here.
-    //   Cost: one extra design-matrix-sized copy (per-rank ~ local aw) while A_aug lives.
-    //   Assumes the m >> n regime this solver already documents (n <= rows-per-node), so
-    //   the leading n x n of A_aug tiles into square diagonal blocks for the R view.
+    // aw is ALIASED into A_aug's data block and OVERWRITTEN in place by qr_factor(). That is
+    // safe: slate.py repacks aw from the unweighted design matrix every iteration and no
+    // longer reads it post-call. bw is NOT aliased into b_aug (Q^T overwrites b_aug); since
+    // bw persists across iterations its values are COPIED in -- an m-vector copy, never the
+    // m x n matrix.
+    //   R-view validity (square diagonal tiles) needs nt <= mt_node - 1, i.e.
+    //   n_active <~ (rows-per-node - mb); holds with large margin in the m >> n regime. If
+    //   violated, SLATE throws (caught below) rather than returning a wrong answer.
 
-    // ---- X_alias / y: views onto the FitSNAP shared buffers (READ-ONLY here) ----
-    slate::Matrix<double> X_alias(m, n_active, tileMb, tileNb, tileRank, tileDevice, comm);
-    for (int64_t i = 0; i < mt; ++i)
-      for (int64_t j = 0; j < nt; ++j)
-        if (X_alias.tileIsLocal(i, j)) {
-          const int64_t offset = (i % mt_node) * mb + j * nb * lld;
-          X_alias.tileInsert(i, j, local_aw_active + offset, lld);
-        }
-
-    slate::Matrix<double> y(m, 1, tileMb, tile1, tileRank, tileDevice, comm);
-    for (int64_t i = 0; i < mt; ++i)
-      if (y.tileIsLocal(i, 0)) {
-        const int64_t offset = (i % mt_node) * mb;
-        y.tileInsert(i, 0, local_bw + offset, lld);
-      }
-
-    MPI_Barrier(comm);
-
-    if (debug) {
-      slate::print("X_alias", X_alias, opts);
-      slate::print("y", y, opts);
-    }
-
-    // ---- g = X^T y   (read aw/bw; computed before anything is overwritten) ----
-    auto X_alias_T = transpose(X_alias);
-    slate::Matrix<double> g(n_active, 1, tileNb, tile1, tileRank, tileDevice, comm);
-    g.insertLocalTiles();
-    slate::set(0.0, g);
-    slate::gemm(1.0, X_alias_T, y, 0.0, g);
-    MPI_Barrier(comm);
-
-    // ---- Build SLATE-OWNED A_aug = [ X ; diag(sqrt(lambda/alpha)) ] ----
-    // Row tiling: data rows reuse the node-local block-row layout (so the copy below is a
-    // local, communication-free tile copy); the n regularizer rows follow, tiled by nb.
+    // Augmented row tiling: data rows [0,mt) keep the node-local block-row layout (so aw
+    // aliases tile-for-tile); the n regularizer rows [mt,mt+nt) follow, tiled by nb on rank 0.
     std::function<int64_t (int64_t)> tileMb_aug =
       [mt, mt_node, tile_row_last, tile_row_remainder, mb, nt, n_active, nb](int64_t i) -> int64_t {
         if (i < mt) {
@@ -615,24 +585,31 @@ double slate_ard_update_v2(double* local_aw_active, double* local_bw, double* lo
         if (jt == nt - 1) return n_active - (nt - 1) * nb;
         return nb;
       };
-    // Data rows keep their original rank; the (small) regularizer rows go to rank 0.
     std::function<int (slate::func::ij_tuple)> tileRank_aug =
       [mt, mt_node](slate::func::ij_tuple ij) {
         int64_t i = std::get<0>(ij);
         if (i < mt) return (int)(i / mt_node);
         return 0;
       };
+    std::function<int (slate::func::ij_tuple)> tileRank0 =
+      [](slate::func::ij_tuple) { return 0; };
 
+    // ---- A_aug: data tiles ALIAS aw (no copy); regularizer tiles are SLATE-owned ----
     slate::Matrix<double> A_aug(m + n_active, n_active,
                                 tileMb_aug, tileNb, tileRank_aug, tileDevice, comm);
-    A_aug.insertLocalTiles();   // SLATE owns ALL tiles (data + regularizer)
 
-    // Copy the weighted design block into the owned data block (matching node-local
-    // tiling => local copy, no redistribution). aw itself is left untouched.
-    auto A_data = A_aug.slice(0, m - 1, 0, n_active - 1);
-    slate::copy(X_alias, A_data);
+    for (int64_t i = 0; i < mt; ++i)            // data block aliases aw (col-major, ld = lld)
+      for (int64_t j = 0; j < nt; ++j)
+        if (A_aug.tileIsLocal(i, j)) {
+          const int64_t offset = (i % mt_node) * mb + j * nb * lld;
+          A_aug.tileInsert(i, j, local_aw_active + offset, lld);
+        }
 
-    // Regularizer block: zero, then sqrt(lambda/alpha) on its diagonal.
+    for (int64_t jt = 0; jt < nt; ++jt)         // regularizer block: SLATE-allocated tiles
+      for (int64_t j = 0; j < nt; ++j)
+        if (A_aug.tileIsLocal(mt + jt, j))
+          A_aug.tileInsert(mt + jt, j);
+
     auto A_reg = A_aug.slice(m, m + n_active - 1, 0, n_active - 1);
     slate::set(0.0, A_reg);
     const double inv_sqrt_alpha = 1.0 / std::sqrt(alpha);
@@ -644,58 +621,75 @@ double slate_ard_update_v2(double* local_aw_active, double* local_bw, double* lo
         tile.at(loc, loc) = std::sqrt(lambda_active[idx]) * inv_sqrt_alpha;
       }
     }
+
+    // ---- b_aug = [ bw ; 0 ]  (bw COPIED in via an aliased view; bw is preserved) ----
+    slate::Matrix<double> y_alias(m, 1, tileMb, tile1, tileRank, tileDevice, comm);
+    for (int64_t i = 0; i < mt; ++i)
+      if (y_alias.tileIsLocal(i, 0)) {
+        const int64_t offset = (i % mt_node) * mb;
+        y_alias.tileInsert(i, 0, local_bw + offset, lld);
+      }
+
+    slate::Matrix<double> b_aug(m + n_active, 1, tileMb_aug, tile1, tileRank_aug, tileDevice, comm);
+    b_aug.insertLocalTiles();
+    slate::set(0.0, b_aug);
+    auto b_top = b_aug.slice(0, m - 1, 0, 0);
+    slate::copy(y_alias, b_top);                // b_aug[0:m] = bw ; b_aug[m:m+n] = 0
+
     MPI_Barrier(comm);
 
-    if (debug)
+    if (debug) {
       slate::print("A_aug", A_aug, opts);
+      slate::print("b_aug", b_aug, opts);
+    }
 
-    // ---- A_aug = Q R   (in place on the COPY; aw stays intact) ----
+    // ---- A_aug = Q R  (in place; aliased aw tiles are destroyed -- safe, see above) ----
     slate::TriangularFactors<double> T;
     slate::qr_factor(A_aug, T);
     MPI_Barrier(comm);
 
-    // R = leading n x n upper-triangular factor. In the m >> n regime the leading n rows
-    // are full 512-row tiles, so slice() yields square diagonal tiles (mb == nb) and the
-    // TriangularMatrix view / triangular_solve are valid.
+    // R = leading n x n upper-triangular factor.
     auto R_sq = A_aug.slice(0, n_active - 1, 0, n_active - 1);
     auto R = slate::TriangularMatrix<double>(slate::Uplo::Upper, slate::Diag::NonUnit, R_sq);
 
-    // ---- Condition number of the REGULARIZED operator (~kappa(X), not kappa(X)^2) ----
-    // NOTE: this is the sqrt() of the cond(C) the old code reported; slate.py's
-    // cond_number > 1e15 guard now trips only on a genuinely singular operator.
+    // ---- cond(R) ~ kappa(X)  (sqrt of the cond(C) the normal-equations path reported) ----
     slate::Options cond_opts;
     double R_norm = slate::norm(slate::Norm::One, R);
     double rcond  = slate::trcondest(slate::Norm::One, R, R_norm, cond_opts);
     double cond_number = (rcond > 1e-300) ? (1.0 / rcond) : 1e300;
 
-    // ---- W = (R^T R)^-1 = R^-1 R^-T  via two triangular solves on the identity ----
+    // ---- W = (R^T R)^-1 = R^-1 R^-T  (sigma_diag = diag(C^-1) = diag(W)/alpha) ----
     slate::Matrix<double> W(n_active, n_active, tileNb, tileNb, tileRank, tileDevice, comm);
     W.insertLocalTiles();
-    slate::set(0.0, 1.0, W);                  // W = I
+    slate::set(0.0, 1.0, W);                    // W = I
     auto R_T = transpose(R);
-    slate::triangular_solve(1.0, R_T, W);     // W = R^-T
-    slate::triangular_solve(1.0, R, W);       // W = R^-1 R^-T = (R^T R)^-1 = alpha * C^-1
+    slate::triangular_solve(1.0, R_T, W);       // W = R^-T
+    slate::triangular_solve(1.0, R, W);         // W = R^-1 R^-T = (R^T R)^-1 = alpha * C^-1
     MPI_Barrier(comm);
 
-    // ---- coef = W g = alpha * C^-1 * X^T y ----
-    slate::Matrix<double> coef_vec(n_active, 1, tileNb, tile1, tileRank, tileDevice, comm);
-    coef_vec.insertLocalTiles();
-    slate::set(0.0, coef_vec);
-    slate::gemm(1.0, W, g, 0.0, coef_vec);
+    // ---- Q^T b_aug : tail d2 -> augmented residual ; head d1 -> coef = R^-1 d1 ----
+    slate::qr_multiply_by_q(slate::Side::Left, slate::Op::ConjTrans, A_aug, T, b_aug);
+    MPI_Barrier(comm);
+
+    // ||d2||^2 (d2 = trailing m rows of Q^T b_aug) = SSE + (1/alpha) sum lambda*coef^2
+    auto d2 = b_aug.slice(n_active, m + n_active - 1, 0, 0);   // named: slate::norm needs an lvalue
+    double d2_norm = slate::norm(slate::Norm::Fro, d2);
+    double aug_resid_sq = d2_norm * d2_norm;
+
+    // coef = R^-1 d1  (d1 = leading n rows of Q^T b_aug), in place in b_aug[0:n]
+    auto d1 = b_aug.slice(0, n_active - 1, 0, 0);
+    slate::triangular_solve(1.0, R, d1);
     MPI_Barrier(comm);
 
     if (debug) {
       slate::print("W", W, opts);
-      slate::print("coef", coef_vec, opts);
+      slate::print("coef", d1, opts);
     }
 
     // -------------------------------- GATHER & EXTRACT --------------------------------
-    std::function<int (slate::func::ij_tuple)> tileRank0 =
-      [](slate::func::ij_tuple) { return 0; };
-
     slate::Matrix<double> coef_loc(n_active, 1, tileNb, tile1, tileRank0, tileDevice, comm);
     coef_loc.insertLocalTiles();
-    slate::copy(coef_vec, coef_loc);
+    slate::copy(d1, coef_loc);
 
     slate::Matrix<double> W_loc(n_active, n_active, tileNb, tileNb, tileRank0, tileDevice, comm);
     W_loc.insertLocalTiles();
@@ -718,12 +712,21 @@ double slate_ard_update_v2(double* local_aw_active, double* local_bw, double* lo
         if (W_loc.tileIsLocal(tile_i, tile_i))
           local_sigma_diag[i] = W_loc(tile_i, tile_i).at(loc_i, loc_i) / alpha;
       }
+
+      // SSE = ||d2||^2 - (1/alpha) sum_i lambda_i coef_i^2   (clamp tiny negative roundoff)
+      double penalty = 0.0;
+      for (int64_t i = 0; i < n_active; ++i)
+        penalty += lambda_active[i] * local_coef_active[i] * local_coef_active[i];
+      penalty /= alpha;
+      double sse = aug_resid_sq - penalty;
+      *local_sse = (sse > 0.0) ? sse : 0.0;
     }
 
     // Broadcast results
     MPI_Bcast(local_coef_active, n_active, MPI_DOUBLE, 0, comm);
     MPI_Bcast(local_sigma_diag, n_active, MPI_DOUBLE, 0, comm);
-    MPI_Bcast(&cond_number, 1, MPI_DOUBLE, 0, comm);
+    MPI_Bcast(local_sse,        1,        MPI_DOUBLE, 0, comm);
+    MPI_Bcast(&cond_number,     1,        MPI_DOUBLE, 0, comm);
 
     return cond_number;
         
