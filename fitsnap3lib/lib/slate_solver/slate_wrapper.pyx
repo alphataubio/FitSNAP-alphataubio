@@ -23,6 +23,7 @@ cdef extern from *:
                                       
         double slate_ard_update(double* local_aw_active, double* local_bw, 
                                 double* local_sigma_diag, double* local_coef_active,
+                                double* local_sse,
                                 int64_t m, int64_t n_active, int64_t lld,
                                 double alpha, double* lambda_active, 
                                 MPI_Comm comm, int debug);
@@ -37,6 +38,7 @@ cdef extern from *:
     
     double slate_ard_update(double* local_aw_active, double* local_bw, 
                            double* local_sigma_diag, double* local_coef_active,
+                           double* local_sse,
                            int64_t m, int64_t n_active, int64_t lld,
                            double alpha, double* lambda_active, 
                            MPI_Comm comm, int debug) except +
@@ -67,16 +69,18 @@ def slate_ard_update_cython(double[::1, :] local_aw_active, double[::1] local_bw
                            int debug=0):
     
     if n_active == 0:
-        return np.zeros(0, dtype=np.float64), np.zeros(0, dtype=np.float64), 1.0
+        return np.zeros(0, dtype=np.float64), np.zeros(0, dtype=np.float64), 0.0, 1.0
     
     cdef np.ndarray[double, ndim=1] sigma_diag = np.zeros(n_active, dtype=np.float64)
     cdef np.ndarray[double, ndim=1] coef_active = np.zeros(n_active, dtype=np.float64)
+    cdef double sse = 0.0
     cdef double cond_number
     
     cdef MPI_Comm c_comm = comm_obj.ob_mpi
     
     cond_number = slate_ard_update(&local_aw_active[0, 0], &local_bw[0], 
                     <double*>np.PyArray_DATA(sigma_diag), <double*>np.PyArray_DATA(coef_active),
+                    &sse,
                     m, n_active, lld, alpha, &lambda_active[0], c_comm, debug)
     
-    return sigma_diag, coef_active, cond_number
+    return sigma_diag, coef_active, sse, cond_number
