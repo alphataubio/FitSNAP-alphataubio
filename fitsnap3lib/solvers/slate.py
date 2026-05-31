@@ -194,6 +194,7 @@ class SLATE(SlateValidation):
             sigma_diag = np.zeros(n_active, dtype=np.float64)
             coef_active_ = np.zeros(n_active, dtype=np.float64)
             cond_box = np.zeros(1, dtype=np.float64)
+            sse_box = np.zeros(1, dtype=np.float64)
 
             # 3. SOLVE (Head Rank Only)
             if pt._sub_rank == 0:
@@ -202,8 +203,8 @@ class SLATE(SlateValidation):
                 if pt._number_of_nodes > 1: comm = pt._head_group_comm
                 else: comm = pt.MPI.COMM_SELF
 
-                # Call C++ Wrapper
-                s_d, c_a, cn = slate_ard_update_cython(
+                # Call C++ Wrapper (SSE is computed in C++ from the QR residual)
+                s_d, c_a, sse_val, cn = slate_ard_update_cython(
                     aw, bw, lambda_active, alpha_, 
                     m, n_active, lld, comm, self.config.debug
                 )
@@ -212,6 +213,7 @@ class SLATE(SlateValidation):
                 sigma_diag[:] = s_d
                 coef_active_[:] = c_a
                 cond_box[0] = cn
+                sse_box[0] = sse_val
                 
             # sub ranks 1,...,N on each node wait in non-blocking "polite" barrier
             # while sub rank 0 on each node solves in SLATE using openmp intra-node
@@ -223,8 +225,10 @@ class SLATE(SlateValidation):
             pt._sub_comm.Bcast(sigma_diag, root=0)
             pt._sub_comm.Bcast(coef_active_, root=0)
             pt._sub_comm.Bcast(cond_box, root=0)
+            pt._sub_comm.Bcast(sse_box, root=0)
             
             cond_number = cond_box[0]
+            sse_ = sse_box[0]
             
             # --- UPDATE STATE (All Ranks) ---
             
@@ -232,17 +236,9 @@ class SLATE(SlateValidation):
             coef_ = np.zeros(n, dtype=np.float64)
             coef_[active_indices] = coef_active_
             
-            # Compute SSE (All Ranks)
-            # residual = bw - aw_active @ coef
-            with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
-                local_pred = aw[local_slice, :n_active] @ coef_active_
-                
-            local_residual = bw[local_slice] - local_pred
-            local_sse = np.sum(local_residual**2)
+            # SSE is now computed in C++ (slate_ard_update) from the augmented-QR residual,
+            # so no second pass over aw is needed here. sse_ was set above from sse_box.
             
-            # Global Reduction of SSE
-            sse_ = pt._comm.allreduce(local_sse, op=MPI.SUM)
-                        
             # Update Gamma/Lambda
             gamma_active = 1.0 - lambda_active * sigma_diag
             gamma_ = np.zeros(n, dtype=np.float64)
@@ -263,7 +259,7 @@ class SLATE(SlateValidation):
 
             # Prune features
             
-            if iteration >= 10 and iteration % 5 == 0:
+            if iteration >= 5 and iteration % 5 == 0:
                 log10_lambda = np.log10(lambda_ + 1e-9)
                 min, max = np.min(log10_lambda), np.max(log10_lambda)
                 #self.threshold_lambda = 10.0**(min + .99*(max-min))
