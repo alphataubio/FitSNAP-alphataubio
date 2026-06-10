@@ -81,7 +81,7 @@ class BondSpecification:
         self.lmax = 0
         self.nradbasemax = 0
         self.radbasename = "ACE.jl.base" 
-        self.radparameters = []
+        self.radparameters = [1.0]
         self.radcoefficients = [] 
         self.prehc = 0.0
         self.lambdahc = 0.0
@@ -456,7 +456,7 @@ def create_bbasis(potential_config):
             
         bs = BondSpecification()
         bs.radbasename = spec.get('radbase', 'ChebExpCos')
-        bs.radparameters = spec.get('radparameters', [])
+        bs.radparameters = spec.get('radparameters', [1.0])
         bs.rcut = spec.get('rcut', 5.0)
         bs.dcut = spec.get('dcut', 0.01)
         bs.rcut_in = spec.get('rcut_in', 0.0)
