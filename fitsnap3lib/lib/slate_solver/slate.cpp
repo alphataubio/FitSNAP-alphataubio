@@ -539,7 +539,21 @@ double slate_ard_update_v2(double* local_aw_active, double* local_bw, double* lo
   if (n_active == 0) return 1.0; // Perfect conditioning for empty matrix
     
   try {
-    
+
+    // R-view guard: the leading n x n factor R = A_aug.slice(0,n-1,0,n-1) is only well-formed
+    // when the first n_active rows are uniformly-tiled DATA rows, i.e. n_active <= m_node
+    // (nt <= mt_node). Holds single-node and whenever rows-per-node >= n_active; FAILS once an
+    // active set is split across a node boundary. Note m is only ~1.8x n here -- this is NOT the
+    // deep m >> n regime, so adding MPI ranks shrinks m_node quickly. Fail loudly, not silently.
+    if (nt > mt_node) {
+      if (mpi_rank == 0)
+        std::fprintf(stderr,
+          "slate_ard_update_v2: n_active=%" PRId64 " > rows-per-node=%" PRId64
+          "; augmented-QR R view invalid for this rank count (use v1, or fewer ranks).\n",
+          n_active, m_node);
+      MPI_Abort(comm, 2);
+    }
+
     // -------------------------------- AUGMENTED-QR ARD UPDATE (no aw copy; SSE in C++) --------------------------------
     // Stable ARD WITHOUT normal equations, WITHOUT copying the m x n design matrix, and with
     // the data-residual SSE computed here (slate.py no longer touches aw after this call).
@@ -658,15 +672,6 @@ double slate_ard_update_v2(double* local_aw_active, double* local_bw, double* lo
     double rcond  = slate::trcondest(slate::Norm::One, R, R_norm, cond_opts);
     double cond_number = (rcond > 1e-300) ? (1.0 / rcond) : 1e300;
 
-    // ---- W = (R^T R)^-1 = R^-1 R^-T  (sigma_diag = diag(C^-1) = diag(W)/alpha) ----
-    slate::Matrix<double> W(n_active, n_active, tileNb, tileNb, tileRank, tileDevice, comm);
-    W.insertLocalTiles();
-    slate::set(0.0, 1.0, W);                    // W = I
-    auto R_T = transpose(R);
-    slate::triangular_solve(1.0, R_T, W);       // W = R^-T
-    slate::triangular_solve(1.0, R, W);         // W = R^-1 R^-T = (R^T R)^-1 = alpha * C^-1
-    MPI_Barrier(comm);
-
     // ---- Q^T b_aug : tail d2 -> augmented residual ; head d1 -> coef = R^-1 d1 ----
     slate::qr_multiply_by_q(slate::Side::Left, slate::Op::ConjTrans, A_aug, T, b_aug);
     MPI_Barrier(comm);
@@ -681,20 +686,52 @@ double slate_ard_update_v2(double* local_aw_active, double* local_bw, double* lo
     slate::triangular_solve(1.0, R, d1);
     MPI_Barrier(comm);
 
-    if (debug) {
-      slate::print("W", W, opts);
+    if (debug)
       slate::print("coef", d1, opts);
-    }
 
-    // -------------------------------- GATHER & EXTRACT --------------------------------
+    // -------------------------------- sigma_diag (streamed; peak workspace n x nb, not n x n) --------------------------------
+    // sigma_diag[i] = diag(C^-1)_i = diag((R^T R)^-1)_i / alpha = || column i of R^-T ||^2 / alpha.
+    // Only the n diagonal entries are needed, so the full n x n R^-T is never materialized (that
+    // second ~n^2 matrix would sit on top of A_aug's regularizer block -- ~800 MB each at n~1e4).
+    // Instead solve R^T Zp = E_p one nb-wide block-column of the identity at a time, accumulate
+    // that block's column 2-norms, and reuse Zp. Same n^3/2 solve flops; peak inverse workspace
+    // drops from n x n to n x nb (~40 MB). A sum of squares is >= 0, so sigma_diag stays
+    // non-negative by construction. Result is global on every rank (one n-length Allreduce), so
+    // no rank-0 gather and no sigma_diag Bcast are needed.
+    auto R_T = transpose(R);
+    std::function<int64_t (int64_t)> tileNb_one = [nb](int64_t) { return nb; };
+    slate::Matrix<double> Zp(n_active, nb, tileNb, tileNb_one, tileRank, tileDevice, comm);
+    Zp.insertLocalTiles();
+
+    std::vector<double> sigma_acc(n_active, 0.0);
+    for (int64_t bj = 0; bj < nt; ++bj) {
+      const int64_t col0 = bj * nb;
+      const int64_t ncol = tileNb(bj);              // 512, or the remainder on the last block
+      slate::set(0.0, Zp);                          // Zp = 0
+      for (int64_t c = 0; c < ncol; ++c) {          // Zp[:, 0:ncol] = unit columns e_{col0+c}
+        const int64_t gi = col0 + c;
+        const int64_t it = gi / nb, li = gi % nb;
+        if (Zp.tileIsLocal(it, 0)) Zp(it, 0).at(li, c) = 1.0;
+      }
+      slate::triangular_solve(1.0, R_T, Zp);        // Zp[:, 0:ncol] = columns col0.. of R^-T
+      for (int64_t it = 0; it < nt; ++it)           // accumulate this block's column 2-norms
+        if (Zp.tileIsLocal(it, 0)) {
+          auto tile = Zp(it, 0);
+          const int64_t nrow = tileNb(it);
+          for (int64_t c = 0; c < ncol; ++c) {
+            double s = 0.0;
+            for (int64_t r = 0; r < nrow; ++r) { const double v = tile.at(r, c); s += v * v; }
+            sigma_acc[col0 + c] += s;
+          }
+        }
+    }
+    MPI_Allreduce(MPI_IN_PLACE, sigma_acc.data(), n_active, MPI_DOUBLE, MPI_SUM, comm);
+    for (int64_t i = 0; i < n_active; ++i) local_sigma_diag[i] = sigma_acc[i] / alpha;
+
+    // -------------------------------- coef + SSE (gather coef n-vector to rank 0) --------------------------------
     slate::Matrix<double> coef_loc(n_active, 1, tileNb, tile1, tileRank0, tileDevice, comm);
     coef_loc.insertLocalTiles();
     slate::copy(d1, coef_loc);
-
-    slate::Matrix<double> W_loc(n_active, n_active, tileNb, tileNb, tileRank0, tileDevice, comm);
-    W_loc.insertLocalTiles();
-    slate::copy(W, W_loc);
-
     MPI_Barrier(comm);
 
     if (mpi_rank == 0) {
@@ -703,14 +740,6 @@ double slate_ard_update_v2(double* local_aw_active, double* local_bw, double* lo
         int64_t loc_i  = i % nb;
         if (coef_loc.tileIsLocal(tile_i, 0))
           local_coef_active[i] = coef_loc(tile_i, 0).at(loc_i, 0);
-      }
-
-      // sigma_diag = diag(C^-1) = diag(W) / alpha
-      for (int64_t i = 0; i < n_active; ++i) {
-        int64_t tile_i = i / nb;
-        int64_t loc_i  = i % nb;
-        if (W_loc.tileIsLocal(tile_i, tile_i))
-          local_sigma_diag[i] = W_loc(tile_i, tile_i).at(loc_i, loc_i) / alpha;
       }
 
       // SSE = ||d2||^2 - (1/alpha) sum_i lambda_i coef_i^2   (clamp tiny negative roundoff)
@@ -722,11 +751,10 @@ double slate_ard_update_v2(double* local_aw_active, double* local_bw, double* lo
       *local_sse = (sse > 0.0) ? sse : 0.0;
     }
 
-    // Broadcast results
+    // Broadcast rank-0 results (sigma_diag is already global via the Allreduce above)
     MPI_Bcast(local_coef_active, n_active, MPI_DOUBLE, 0, comm);
-    MPI_Bcast(local_sigma_diag, n_active, MPI_DOUBLE, 0, comm);
-    MPI_Bcast(local_sse,        1,        MPI_DOUBLE, 0, comm);
-    MPI_Bcast(&cond_number,     1,        MPI_DOUBLE, 0, comm);
+    MPI_Bcast(local_sse,         1,        MPI_DOUBLE, 0, comm);
+    MPI_Bcast(&cond_number,      1,        MPI_DOUBLE, 0, comm);
 
     return cond_number;
         
