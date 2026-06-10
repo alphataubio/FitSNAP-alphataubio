@@ -35,7 +35,7 @@ def get_slurm_time_left():
     pass
   return float("inf")
 
-def mixed_relative_change(coef_old, coef_new, rtol=1e-3, atol=1e-6):
+def mixed_relative_change(coef_old, coef_new, rtol=1e-2, atol=1e-4):
   if coef_old is None: return False, False, None, None
   abs_change = np.linalg.norm(coef_new - coef_old)
   rel_change = abs_change / (np.linalg.norm(coef_old) + atol)
