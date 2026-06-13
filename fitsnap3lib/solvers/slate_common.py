@@ -105,6 +105,16 @@ class SlateCommon(Solver):
             stream.write_attribute('nconfigs', fs_dict["nconfigs"])
             stream.write_attribute("sorted_group_names", fs_dict["sorted_group_names"])
 
+            if "rdf" in fs_dict:
+                rdf = fs_dict["rdf"]
+                n_elem = len(rdf["elements"])
+                stream.write_attribute("rdf_elements", ",".join(rdf["elements"]))
+                stream.write_attribute("rdf_n_bins", int(rdf["n_bins"]))
+                stream.write_attribute("rdf_r_centers", np.asarray(rdf["r_centers"], dtype=np.float64))
+                stream.write_attribute("rdf_gr", np.asarray(rdf["gr"], dtype=np.float64).reshape(-1))
+                stream.write_attribute("rdf_rcut_in", np.asarray(rdf["rcut_in"], dtype=np.float64).reshape(-1))
+                stream.write_attribute("rdf_rcut", np.asarray(rdf["rcut"], dtype=np.float64).reshape(-1))
+
             # Get rank information from PYACE basis if available
             if "PYACE" in self.config.sections:
                 pyace_section = self.config.sections["PYACE"]

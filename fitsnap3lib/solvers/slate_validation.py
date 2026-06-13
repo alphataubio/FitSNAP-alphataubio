@@ -6,6 +6,7 @@ import pandas as pd
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.patches import Rectangle
 from matplotlib.ticker import MaxNLocator
+import matplotlib.patheffects as pe
 from collections import Counter, defaultdict
 import os, re, json, io, base64, adios2
 
@@ -14,7 +15,7 @@ matplotlib.use('Agg')  # Non-interactive backend
 
 CPK_COLORS = {
   "H":  "#FFFFFF", "He": "#D9FFFF",
-  "Li": "#CC80FF", "Be": "#C2FF00", "B": "#FFB5B5", "C": "#999999", "N": "#3050F8", "O": "#FF0D0D", "F": "#90E050", "Ne": "#B3E3F5",
+  "Li": "#CC80FF", "Be": "#C2FF00", "B": "#FFB5B5", "C": "#000000", "N": "#3050F8", "O": "#FF0D0D", "F": "#90E050", "Ne": "#B3E3F5",
   "Na": "#AB5CF2", "Mg": "#8AFF00", "Al": "#BFA6A6", "Si": "#F0C8A0", "P": "#FF8000", "S": "#FFFF30", "Cl": "#1FF01F", "Ar": "#80D1E3",
   "K":  "#8F40D4", "Ca": "#3DFF00",    "Fe": "#E06633",    "Ni": "#50D050",
   "Cu": "#C88033", "Zn": "#7D80B0",    "Br": "#A62929",    "Ag": "#C0C0C0",
@@ -106,7 +107,10 @@ class SlateValidation(SlateCommon):
   
     if self.pt._rank != 0 or not self.config.sections["OUTFILE"].validation: return
     output_prefix = self.config.sections['OUTFILE'].metrics.replace('.md', '')
-    notebook_file = f"{output_prefix}.ipynb"
+
+    if self.config.sections["CALCULATOR"].kokkos: notebook_file = f"{output_prefix}_kk.ipynb"
+    else: notebook_file = f"{output_prefix}.ipynb"
+
             
     # Create Jupyter notebook structure
     notebook = {
@@ -504,6 +508,8 @@ class SlateValidation(SlateCommon):
     except Exception as e:
       self.pt.single_print(f"Could not create scatterplots: {e}")
 
+    self.validation_notebook_rdf(notebook)
+
     if self.method == 'ARD':
       self.validation_notebook_ard(notebook)
 
@@ -512,6 +518,101 @@ class SlateValidation(SlateCommon):
 
     self.pt.debug_single_print(f"Created validation notebook: {notebook_file}")
 
+
+  def validation_notebook_rdf(self, notebook):
+    output_prefix = self.config.sections['OUTFILE'].metrics.replace('.md', '')
+    adios2_path = f"{output_prefix}.bp"
+
+    try:
+      with adios2.FileReader(adios2_path) as adios2_file:
+        available_attrs = adios2_file.available_attributes()
+        if 'rdf_gr' not in available_attrs:
+          return
+
+        elements = [
+          x.strip() for x in str(adios2_file.read_attribute('rdf_elements')).split(',') if x.strip()
+        ]
+        n_bins = int(np.asarray(adios2_file.read_attribute('rdf_n_bins')).reshape(-1)[0])
+        r_centers = np.asarray(adios2_file.read_attribute('rdf_r_centers'), dtype=np.float64).reshape(-1)
+        n_elem = len(elements)
+        gr = np.asarray(adios2_file.read_attribute('rdf_gr'), dtype=np.float64).reshape(
+          n_elem, n_elem, n_bins
+        )
+        rcut_in = np.asarray(adios2_file.read_attribute('rdf_rcut_in'), dtype=np.float64).reshape(
+          n_elem, n_elem
+        )
+        rcut = np.asarray(adios2_file.read_attribute('rdf_rcut'), dtype=np.float64).reshape(
+          n_elem, n_elem
+        )
+
+      notebook["cells"].append({
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": ["## Radial Distribution Functions\n"]
+      })
+
+      for i, elem_i in enumerate(elements):
+        fig, ax = plt.subplots(figsize=(9.0, 5.5), layout='constrained')
+        ymax = 0.0
+        series_rcut = []
+
+        for j, elem_j in enumerate(elements):
+          color = CPK_COLORS.get(elem_j, '#888888')
+          y = gr[i, j, :]
+          ymax = max(ymax, float(np.nanmax(y)) if y.size else 0.0)
+          series_rcut.append(float(rcut[i, j]))
+
+          (line,) = ax.plot(
+            r_centers, y, color=color, lw=2.2, label=f"{elem_i}-{elem_j}", zorder=3
+          )
+          line.set_path_effects([
+            pe.Stroke(linewidth=4.0, foreground='#222222'),
+            pe.Normal(),
+          ])
+
+          if rcut_in[i, j] > 0.0:
+            ax.axvline(
+              rcut_in[i, j], color=color, ls='--', lw=1.2, alpha=0.85, zorder=2
+            )
+          if rcut[i, j] > 0.0:
+            ax.axvline(
+              rcut[i, j], color=color, ls='--', lw=1.2, alpha=0.85, zorder=2
+            )
+
+        ax.axhline(1.0, color='k', ls=':', lw=1.0, alpha=0.5, zorder=1)
+        x_hi = (max(series_rcut) + 1.0) if series_rcut else r_centers[-1]
+        ax.set_xlim(0.0, x_hi)
+        ax.set_ylim(0.0, ymax * 1.08 if ymax > 0.0 else 1.0)
+        ax.set_xlabel('r (Angstrom)', fontsize=13, fontweight='bold')
+        ax.set_ylabel('g(r)', fontsize=13, fontweight='bold')
+        ax.set_title(f'{elem_i} RDF', fontsize=14, fontweight='bold')
+        ax.grid(True, alpha=0.25)
+        ax.legend(loc='best', fontsize=10, title='Pairs', title_fontsize=10)
+
+        notebook["cells"].append({
+          "cell_type": "markdown",
+          "metadata": {},
+          "source": [f"### {elem_i} RDF"]
+        })
+
+        buf = io.BytesIO()
+        plt.savefig(buf, format='svg', bbox_inches='tight')
+        plt.close()
+        buf.seek(0)
+        img_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+        buf.close()
+
+        notebook["cells"].append({
+          "cell_type": "markdown",
+          "metadata": {},
+          "source": [
+            f'<div align="center"><img src="data:image/svg+xml;base64,{img_base64}" '
+            'style="width:90%;height:auto;"></div>'
+          ]
+        })
+
+    except Exception as e:
+      self.pt.single_print(f"Could not create RDF plots: {e}")
 
   def validation_notebook_ard(self, notebook):
       
@@ -563,7 +664,15 @@ class SlateValidation(SlateCommon):
     for i, (r, f) in enumerate(zip(basis_ranks, blist)):
       blist_rank[r].append(re.split(split_pattern, f))
       rank_indices[r].append(i)
-          
+
+    gamma_env_html = _build_gamma_env_table_html(gamma_array[-1], blist, basis_ranks)
+    if gamma_env_html is not None:
+      notebook["cells"].append({
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": ["## Gamma by Atomic Environment\n\n", gamma_env_html]
+      })
+
     # Summary statistics with side-by-side gamma and lambda distributions
       
     n_iterations, n_features = gamma_array.shape
@@ -669,6 +778,7 @@ class SlateValidation(SlateCommon):
         'style="width:100%;height:auto;"></div>'
       ]
     })
+    
 
     # Create and display lambda heatmaps
       
@@ -682,7 +792,10 @@ class SlateValidation(SlateCommon):
           
     for rank in range(int(basis_ranks.min()), int(basis_ranks.max())+1):
       if len(blist_rank[rank]) == 0: continue
-      img_base64 = plot_rank_n(rank, blist_rank, rank_indices, 'Log10(Lambda)', lambda_array.T, threshold, 'max' )
+      img_base64 = plot_rank_n(rank, blist_rank, rank_indices, 'Gamma', gamma_array.T, 1e-8, 'min' )
+
+
+      #img_base64 = plot_rank_n(rank, blist_rank, rank_indices, 'Log10(Lambda)', lambda_array.T, threshold, 'max' )
       notebook["cells"].append({
         "cell_type": "markdown",
         "metadata": {},
@@ -691,6 +804,118 @@ class SlateValidation(SlateCommon):
 
 
 
+
+def _format_table_float(val):
+  if pd.isna(val) or (isinstance(val, float) and np.isnan(val)):
+    return "-"
+  if abs(val) < 1e-6 and val != 0:
+    return f"{val:.2e}"
+  return f"{val:.4f}"
+
+from collections import defaultdict
+
+def _build_gamma_env_table_html(gamma_final, blist, basis_ranks):
+    """Booktabs-style wide table of sum(|gamma|) per atomic environment.
+
+    Column pairs are laid out horizontally: cols 1-2 for 2-body, cols 3-4 for 3-body, etc.
+    The top-left header cell shows the grand-total sum(gamma) for ALL.
+    """
+    env_n = defaultdict(int)
+    env_sums = defaultdict(float)
+    body_n = defaultdict(int)
+    body_subtotal = defaultdict(float)
+
+    for i, (rank, feat) in enumerate(zip(basis_ranks, blist)):
+        rank = int(rank)
+        if rank < 1: continue
+        tokens = str(feat).split()
+        if len(tokens) < rank + 1: continue
+        env = " ".join(tokens[:rank + 1])
+        body = rank + 1
+        val = abs(float(gamma_final[i]))
+        env_n[(body, env)] += 1
+        env_sums[(body, env)] += val
+        body_n[body] += 1
+        body_subtotal[body] += val
+
+    if not env_sums: return None
+
+    grand_total = sum(body_subtotal.values())
+    body_orders = sorted(body_subtotal.keys())
+    envs_by_body = {}
+    for body in body_orders:
+        envs = [(env, val) for (b, env), val in env_sums.items() if b == body]
+        envs.sort(key=lambda x: x[1], reverse=True)
+        envs_by_body[body] = envs
+
+    n_pairs = len(body_orders)
+    n_env_rows = max((len(envs_by_body[b]) for b in body_orders), default=0)
+
+    html = '<table style="border-collapse: collapse; table-layout: auto; width: 100%; font-size: 12px;">\n'
+    fmt = "padding: 6px 10px; white-space: nowrap;"
+    fmt_left = fmt + " text-align: left;"
+    fmt_center = fmt + " text-align: center;"
+    fmt_right = fmt + " text-align: right;"
+    fmt_row = "padding: 1px 1.6px; font-family: monospace; white-space: nowrap; "
+    fmt_left_row = fmt_row + "text-align: right; overflow: hidden; text-overflow: ellipsis;"
+    fmt_center_row = fmt_row + "text-align: center;"
+    fmt_right_row = fmt_row + "text-align: right;"
+
+    html += '  <thead>\n'
+    html += '    <tr style="border-top: 2px solid black; border-bottom: 2px solid black;">\n'
+    for pair_idx, body in enumerate(body_orders):
+        # Fulfills docstring: Top-left header displays grand total summary
+        if pair_idx == 0:
+            html += f'      <th style="{fmt_left}">&sum;&gamma;<sub>all</sub> = {_format_table_float(grand_total)}</th>\n'
+        else:
+            html += f'      <th style="{fmt_left}"></th>\n'
+        html += f'      <th style="{fmt_center}">n<sub>{body}</sub></th>\n'
+        html += f'      <th style="{fmt_center}">&sum;&gamma;<sub>{body}</sub></th>\n'
+        html += f'      <th style="{fmt_center}"><&gamma;<sub>{body}</sub>></th>\n'
+
+    html += '    </tr>\n'
+    html += '  </thead>\n'
+    html += '  <tbody>\n'
+
+    # Subtotal row: "N body" label + subtotal per column pair
+    html += '    <tr style="font-style: bold;">\n'
+    for body in body_orders:
+        n, subtotal = body_n[body], body_subtotal[body]
+        mean = subtotal / n if n > 0 else 0.0
+        html += f'      <td style="{fmt_left_row}"></td>\n'
+        html += f'      <td style="{fmt_center_row}"><strong>{n}</strong></td>\n'
+        html += f'      <td style="{fmt_right_row}"><strong>{_format_table_float(subtotal)}</strong></td>\n'
+        html += f'      <td style="{fmt_right_row}"><strong>{_format_table_float(mean)}</strong>&nbsp;</td>\n'
+    html += '    </tr>\n'
+
+    # Environment rows (padded to equal height across body orders)
+    for row_idx in range(n_env_rows):
+        html += '    <tr>\n'
+        for body in body_orders:
+            envs_subtotal = envs_by_body[body]
+            if row_idx < len(envs_subtotal):
+                env, val = envs_subtotal[row_idx]
+                
+                # Fixed: Pulling environment-specific counts and calculating clean means
+                e_n = env_n[(body, env)]
+                e_mean = val / e_n if e_n > 0 else 0.0
+
+                html += f'      <td style="{fmt_left_row}">{env}</td>\n'
+                html += f'      <td style="{fmt_center_row}">{e_n}</td>\n'
+                html += f'      <td style="{fmt_right_row}">{_format_table_float(val)}</td>\n'
+                html += f'      <td style="{fmt_right_row}">{_format_table_float(e_mean)}&nbsp;</td>\n'
+            else:
+                html += f'      <td style="{fmt_left_row}"></td>\n'
+                html += f'      <td style="{fmt_right_row}"></td>\n'
+                html += f'      <td style="{fmt_right_row}"></td>\n'
+                html += f'      <td style="{fmt_right_row}"></td>\n'
+        html += '    </tr>\n'
+
+    html += f'    <tr style="border-bottom: 2px solid black;"><td colspan="{4 * n_pairs}"></td></tr>\n'
+    html += '  </tbody>\n'
+    html += '</table>\n\n'
+
+    return html
 
 def draw_labels(ax, y_positions, texts, x=-1):
   y_positions = np.array(y_positions)
