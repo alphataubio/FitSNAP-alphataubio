@@ -67,3 +67,6 @@ examples/AlNi_PYACE_SLATE_ARD/coupling_coefficients.yaml
 examples/AlNi_PYACE_SLATE_ARD/AlNi_PYACE_SLATE_ARD_jacobi.ipynb
 examples/AlNi_PYACE_SLATE_ARD/AlNi_PYACE_SLATE_ARD copy.ipynb
 fitsnap3lib/lib/sym_ACE/lib/wigner_rpi_rank5.json
+examples/AlNi_PYACE_SLATE_ARD/descriptors.csv
+examples/AlNi_PYACE_SLATE_ARD/descriptors_kk.csv
+examples/AlNi_PYACE_SLATE_ARD/lammps.log
