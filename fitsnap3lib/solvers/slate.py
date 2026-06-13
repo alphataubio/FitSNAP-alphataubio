@@ -196,36 +196,23 @@ class SLATE(SlateValidation):
             cond_box = np.zeros(1, dtype=np.float64)
             sse_box = np.zeros(1, dtype=np.float64)
 
-            # 3. SOLVE (Head Rank Only)
-            if pt._sub_rank == 0:
-                
-                # Determine Communicator (Single vs Multi-Node)
-                if pt._number_of_nodes > 1: comm = pt._head_group_comm
-                else: comm = pt.MPI.COMM_SELF
+            # Determine Communicator (Single vs Multi-Node)
+            #if pt._number_of_nodes > 1: comm = pt._head_group_comm
+            #else: comm = pt.MPI.COMM_SELF
+            comm = pt._comm
 
-                # Call C++ Wrapper (SSE is computed in C++ from the QR residual)
-                s_d, c_a, sse_val, cn = slate_ard_update_cython(
-                    aw, bw, lambda_active, alpha_, 
-                    m, n_active, lld, comm, self.config.debug
-                )
-                
-                # Copy results to buffers
-                sigma_diag[:] = s_d
-                coef_active_[:] = c_a
-                cond_box[0] = cn
-                sse_box[0] = sse_val
-                
-            # sub ranks 1,...,N on each node wait in non-blocking "polite" barrier
-            # while sub rank 0 on each node solves in SLATE using openmp intra-node
-            # and mpi across nodes.
-            pt.polite_barrier(pt._comm)
 
-            # 4. BROADCAST RESULTS (Intra-Node)
-            # Head shares results with sleeping workers so everyone has the updated model state
-            pt._sub_comm.Bcast(sigma_diag, root=0)
-            pt._sub_comm.Bcast(coef_active_, root=0)
-            pt._sub_comm.Bcast(cond_box, root=0)
-            pt._sub_comm.Bcast(sse_box, root=0)
+            # Call C++ Wrapper (SSE is computed in C++ from the QR residual)
+            s_d, c_a, sse_val, cn = slate_ard_update_cython(
+                aw, bw, lambda_active, alpha_,
+                m, n_active, lld, comm, self.config.debug
+            )
+                
+            # Copy results to buffers
+            sigma_diag[:] = s_d
+            coef_active_[:] = c_a
+            cond_box[0] = cn
+            sse_box[0] = sse_val
             
             cond_number = cond_box[0]
             sse_ = sse_box[0]
