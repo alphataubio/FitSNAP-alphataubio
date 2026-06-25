@@ -34,8 +34,25 @@ class LammpsPyace(LammpsPace):
   # --------------------------------------------------------------------------------------------
 
   def __del__(self):
-    """Finalize Kokkos before Python's GC releases C++ static state (macOS libomp race)."""
+    """Close LAMMPS *before* finalizing Kokkos.
+
+    The LAMMPS instance owns Kokkos Views (VerletKokkos::f_merge_copy, the
+    compute pace/kk device buffers, ...). Those must be freed while Kokkos is
+    still live. If Kokkos is finalized first, the still-open instance is torn
+    down later by Python GC and deallocates those Views *after* Kokkos::finalize,
+    which aborts with
+      "allocation ... is being deallocated after Kokkos::finalize was called".
+    This calculator keeps a single self._lmp open for the whole config loop, so
+    it is still alive here. Correct teardown order: close the instance first,
+    then finalize Kokkos exactly once.
+    """
     try:
+      if self._lmp is not None:
+        self._lmp.close()
+        self._lmp = None
+        # Clear ParallelTools' handle too, so a later close_lammps() is a no-op
+        # and never double-closes a destroyed instance.
+        self.pt._lmp = None
       lib = self._lmp_lib
       if lib is not None and hasattr(lib, 'lammps_kokkos_finalize'):
         lib.lammps_kokkos_finalize()
@@ -58,29 +75,24 @@ class LammpsPyace(LammpsPace):
     if num_threads is None: num_threads = os.getenv("OMP_NUM_THREADS", 4)
 
     if (kokkos := self.config.sections["CALCULATOR"].kokkos):
-      cmds = ["-screen", "none", "-k", "on", "t", num_threads, "-sf", "kk"]
+      cmds = ["-screen", "lammps_kk.log", "-k", "on", "t", num_threads, "-sf", "kk"]
     else:
       cmds = ["-screen", "lammps.log"]
 
     self._lmp = self.pt.initialize_lammps(self.config.args.lammpslog, printlammps=0, cmds=cmds)
     if self._lmp_lib is None: self._lmp_lib = self._lmp.lib
 
-    self._lmp.command("boundary p p p")
-    #self._lmp.command("boundary f f f")
-
-    if kokkos:
-      self._lmp.command("newton off")
-      self._lmp.command("package kokkos neigh full newton off")
+    self._lmp.command("newton off")
+    if kokkos: self._lmp.command("package kokkos neigh full newton off")
 
     reference_section = self.config.sections["REFERENCE"]
+    self._lmp.command("echo screen")
     self._lmp.command("units " + reference_section.units)
+    self._lmp.command("boundary " + reference_section.boundary)
     self._lmp.command("atom_style " + reference_section.atom_style)
     self._lmp.command("atom_modify map array sort 0 2.0")
-    #self._lmp.command("box tilt large")
 
     numtypes = len(self.config.sections["PYACE"].elements)
-    #self._lmp.command("region pybox block -99 99 -99 99 -99 99")
-
     self._lmp.command("region pybox prism 0 1 0 1 0 1 1 1 1")
     self._lmp.command(f"create_box {numtypes} pybox")
 
@@ -93,18 +105,16 @@ class LammpsPyace(LammpsPace):
         self._lmp.command(line.lower())
 
     self._lmp.command("mass * 1.0e-20")
-    self._lmp.command("neighbor 1.0e-20 bin")
+    self._lmp.command("neighbor 1.0e-20 bin") # bin needed for kokkos not nsq
     self._lmp.command("neigh_modify one 10000")
 
-    # Parsed once — do not re-declare in the config loop.
-    if (self._bikflag and self._dgradflag):
-      self._lmp.command("compute pace all pace coupling_coefficients.yace 1 1")
-    elif (self._bikflag and not self._dgradflag):
-      self._lmp.command("compute pace all pace coupling_coefficients.yace 1 0")
-    else:
-      self._lmp.command("compute pace all pace coupling_coefficients.yace 0 0")
+    flags = f"{int(self._bikflag)} {int(self._dgradflag)} {int(self.config.sections['CALCULATOR'].stress)}"
+    self._lmp.command(f"compute pace all pace coupling_coefficients.yace {flags}")
 
     self._lmp.command(f"kspace_style {reference_section.kspace_style}")
+
+    #self._lmp.command(f"fix 1 all acks2/reaxff 1 0 30 1e-6 omol25_hcno.acks2 maxiter 10000")
+
 
   # --------------------------------------------------------------------------------------------
 
@@ -157,7 +167,12 @@ class LammpsPyace(LammpsPace):
 
     atom_style = self.config.sections["REFERENCE"].atom_style
     if atom_style == "spin": self._create_spins()
-    if atom_style == "charge": self._create_charge()
+    #if atom_style == "charge": self._create_charge()
+
+    #q = self._lmp.extract_atom("q") # , dtype=None, nelem=None, dim=None
+    #num_atoms = self._data["NumAtoms"]
+    #self.pt.single_print(f"*** BEFORE q {q[:num_atoms]}")
+
 
   # --------------------------------------------------------------------------------------------
 
@@ -194,6 +209,13 @@ class LammpsPyace(LammpsPace):
     index = self.shared_index
     dindex = self.distributed_index
     lmp_pace = _extract_compute_np(self._lmp, "pace", 0, 2, (nrows_pace, ncols_pace))
+
+    np.set_printoptions(precision=3, suppress=True, floatmode='fixed', linewidth=np.inf)
+    np.set_printoptions(formatter={'float': '{:.3f}'.format})
+    #q = self._lmp.extract_atom("q") # , dtype=None, nelem=None, dim=None
+    #qnp = np.array(q[:num_atoms])
+    #self.pt.single_print(f"***\nnbo {self._data['Charges']}\nq {qnp}")
+
 
     if (np.isinf(lmp_pace)).any() or (np.isnan(lmp_pace)).any():
       self.pt.single_print("! WARNING! applying np.nan_to_num()")
@@ -251,7 +273,12 @@ class LammpsPyace(LammpsPace):
         db_atom_temp = np.concatenate([onehot_atoms, db_atom_temp], axis=1)
       self.pt.shared_arrays['a'].array[s] = db_atom_temp
       ref_forces = lmp_pace[irow:irow + nrows_force, icolref]
-      self.pt.shared_arrays['b'].array[s] = self._data["Forces"].ravel() - ref_forces
+      tmp = self._data["Forces"].ravel()
+      self.pt.shared_arrays['b'].array[s] =  tmp - ref_forces
+
+
+
+      #self.pt.single_print(f"*** tmp {tmp}\n ref_forces {ref_forces}\n\n")
       self.pt.shared_arrays['w'].array[s] = self._data["fweight"]
       self.pt.fitsnap_dict['Row_Type'][dindex:dindex + nrows_force] = ['Force'] * nrows_force
       self.pt.fitsnap_dict['Atom_I'][dindex:dindex + nrows_force] = [int(np.floor(i/3)) for i in range(nrows_force)]
@@ -261,7 +288,7 @@ class LammpsPyace(LammpsPace):
     irow += nrows_force
 
     if self.config.sections["CALCULATOR"].stress:
-      vb_sum_temp = 160.2176565 * lmp_pace[irow:irow + nrows_virial, :ncols_descriptors] / lmp_volume
+      vb_sum_temp = 1.6021765e6 * lmp_pace[irow:irow + nrows_virial, :ncols_descriptors] / lmp_volume
       vb_sum_temp.shape = (ndim_virial, self._ncoeff)
       if not self._bzeroflag:
         onehot_atoms = np.zeros((np.shape(vb_sum_temp)[0], self._numtypes))
@@ -269,9 +296,11 @@ class LammpsPyace(LammpsPace):
 
       self.pt.shared_arrays['a'].array[index:index+ndim_virial] = vb_sum_temp
       ref_stress = lmp_pace[irow:irow + nrows_virial, icolref]
-      tmp1 = 160.2176565 * self._data["Stress"][[0, 1, 2, 1, 0, 0], [0, 1, 2, 2, 2, 1]].ravel()
-      tmp2 = ref_stress/10000
-      self.pt.shared_arrays['b'].array[index:index+ndim_virial] = tmp1 - tmp2
+      tmp1 = self._data["Stress"][[0, 1, 2, 0, 0, 1], [0, 1, 2, 1, 2, 2]].ravel()
+      tmp2 = ref_stress
+      #self.pt.single_print(f"***\ntmp1 {tmp1}\ntmp2 {tmp2}")
+
+      self.pt.shared_arrays['b'].array[index:index+ndim_virial] = (tmp1 - tmp2)
 
       self.pt.shared_arrays['w'].array[index:index+ndim_virial] = self._data["vweight"]
       self.pt.fitsnap_dict['Row_Type'][dindex:dindex + ndim_virial] = ['Stress'] * ndim_virial
