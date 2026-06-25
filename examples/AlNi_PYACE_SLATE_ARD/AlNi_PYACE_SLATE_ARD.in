@@ -3,41 +3,92 @@
 [PYACE]
 
 elements = Al Ni
-bzeroflag = 0
+bzeroflag = 1
+deltaSplineBins = 0.001
 
 embeddings = {
-    "ALL": {"npot": "FinnisSinclairShiftedScaled", "fs_parameters": [1,1,1,.5], "ndensity": 2},
+    "ALL": {"npot": "FinnisSinclairShiftedScaled", "fs_parameters": [1,1], "ndensity": 1},
   }
 
 bonds = {
-    'Al Al': {"radbase": "ChebExpCos", "radparameters": [0.342], "rcut": 5.0, "dcut": 0.01, "core-repulsion": [0, 0.342], "rcut_in": 0.625, "dcut_in": 0.01},
-    'Al Ni': {"radbase": "ChebExpCos", "radparameters": [0.318], "rcut": 5.0, "dcut": 0.01, "core-repulsion": [0, 0.318], "rcut_in": 0.650, "dcut_in": 0.01},
-    'Ni Ni': {"radbase": "ChebExpCos", "radparameters": [0.281], "rcut": 5.0, "dcut": 0.01, "core-repulsion": [0, 0.281], "rcut_in": 0.540, "dcut_in": 0.01}
+
+    #'Al Al': {"radbase": "ChebExpCos", "radparameters": [0.342], "rcut": 5.0, "dcut": 0.01, "core-repulsion": [0, 0.342], "rcut_in": 0.625, "dcut_in": 0.01},
+    #'Al Ni': {"radbase": "ChebExpCos", "radparameters": [0.318], "rcut": 5.0, "dcut": 0.01, "core-repulsion": [0, 0.318], "rcut_in": 0.650, "dcut_in": 0.01},
+    #'Ni Ni': {"radbase": "ChebExpCos", "radparameters": [0.281], "rcut": 5.0, "dcut": 0.01, "core-repulsion": [0, 0.281], "rcut_in": 0.540, "dcut_in": 0.01}
+
+    #'Al Al': {"radbase": "Jacobi", "rcut_in": 1.5, "rcut": 5.5, "radparameters": [6]},
+    #'Al Ni': {"radbase": "Jacobi", "rcut_in": 1.5, "rcut": 5.5, "radparameters": [6]},
+    #'Ni Ni': {"radbase": "Jacobi", "rcut_in": 1.5, "rcut": 5.5, "radparameters": [6]},
+
+    'ALL': {"radbase": "Jacobi", "rcut_in": 1, "rcut": 6, "radparameters": [6]},
+
   }
 
 functions = {
 
-    'ALL':  { 'nmax_by_rank': [32,8,6,4,2], 'lmax_by_rank': [0,4,0,1,1] },
-    
-    #'Al Ni Ni Ni Ni Ni': { 'nmax': 1, 'lmax': 4 },
-    #'Ni Al Al Al Al Al': { 'nmax': 2, 'lmax': 4 },
-    #'Ni Ni Ni Ni Ni Ni': { 'nmax': 2, 'lmax': 4 },
+# cls; python -m fitsnap3 AlNi_PYACE_SLATE_ARD.in --overwrite --keyword CALCULATOR kokkos 0; python -m fitsnap3 AlNi_PYACE_SLATE_ARD.in --overwrite --keyword CALCULATOR kokkos 1; diff descriptors.csv descriptors_kk.csv
+
+# cls; mpirun -np 3 python -m fitsnap3 AlNi_PYACE_SLATE_ARD.in --overwrite --keyword CALCULATOR kokkos 0; mpirun -np 3 python -m fitsnap3 AlNi_PYACE_SLATE_ARD.in --overwrite --keyword CALCULATOR kokkos 1
+
+
+
+    #'ALL':  { 'nmax_by_rank': [1,1], 'lmax_by_rank': [0,0] }, # ok
+    #'ALL':  { 'nmax_by_rank': [3,2], 'lmax_by_rank': [0,4] }, # ok
+
+    #'ALL':  { 'nmax_by_rank': [1,1,1], 'lmax_by_rank': [0,0,0] }, # ok
+    #'ALL':  { 'nmax_by_rank': [16,3,2], 'lmax_by_rank': [0,3,2] }, # ok
+
+    #'ALL':  { 'nmax_by_rank': [1,1,1,1], 'lmax_by_rank': [0,0,0,0] }, # ok
+
+
+    'ALL':  { 'nmax_by_rank': [32,8,4,2], 'lmax_by_rank': [0,3,2,1] },
+
+
+    #'ALL':  { 'nmax_by_rank': [32,8,4,3,2], 'lmax_by_rank': [0,4,3,2,2] },
+
+
+    #'Al Al Al Ni': { 'nmax': 8, 'lmax': 3 },
+
+    #'Ni Al Al Al Al Al': { 'nmax': 2, 'lmax': 2 },
 
   }
   
 # -----------------------------------------------------------------------------
 [CALCULATOR]
 calculator = LAMMPSPYACE
+kokkos = 1
+
 energy = 1    # goal < 1.64 meV/atom
 force  = 1    # goal < 28 meV/A
-stress = 0    # goal < 0.09 GPa
+stress = 1    # goal < 0.09 GPa
 
 # -----------------------------------------------------------------------------
 [REFERENCE]
 units = metal
+boundary = p p p
 atom_style = atomic
-pair_style = zero 5.0
-pair_coeff = * *
+
+#pair_style = zero 6
+#pair_coeff = * *
+
+#pair_style = dispersion/d3 bjm pbe 15 15
+#pair_coeff = * * Al Ni
+
+#pair_style = hybrid/overlay zbl 1.0 1.1 zero 8
+#pair_coeff1 = 1 1 zbl 13 13
+#pair_coeff2 = 1 2 zbl 13 28
+#pair_coeff3 = 2 2 zbl 28 28
+#pair_coeff4 = * * zero
+
+pair_style = hybrid/overlay zbl 0.9 1.0 dispersion/d3 bjm pbe 15 15
+pair_coeff1 = 1 1 zbl 13 13
+pair_coeff2 = 1 2 zbl 13 28
+pair_coeff3 = 2 2 zbl 28 28
+pair_coeff4 = * * dispersion/d3 Al Ni
+
+
+
+
 
 # -----------------------------------------------------------------------------
 [SOLVER]
@@ -46,16 +97,30 @@ compute_testerrs = 1
 
 # -----------------------------------------------------------------------------
 [SLATE]
+#method = RIDGE
+alpha = 1e-13
+
 method = ARD
-scap = 1e-6
-scai = 1e-6
-max_iter = 10
-threshold_lambda = 1e6
+max_iter = 20
+
+#scap = 1e-3
+#scai = 1e-9
+
+directmethod = 1
+alphabig = 1e-9
+alphasmall = 1e-9
+lambdabig = 1e-9
+lambdasmall = 1e-9
+
+threshold_lambda = 1e99
+
 
 # -----------------------------------------------------------------------------
 [SCRAPER]
 scraper = ADIOS2
-#max_configs_per_rank = 10
+max_configs_per_rank = 1000
+auto_eshift = 1
+
 
 # -----------------------------------------------------------------------------
 [PATH]
@@ -68,17 +133,19 @@ dataPath = omat24_AlNi.bp
 # already provides training/validation split in separate train/val archives.
 # [https://huggingface.co/datasets/facebook/OMAT24]
 
+#boltz = 1
+smartweights = 1
+
 group_sections = name eweight fweight vweight
 group_types = str float float float float float
-smartweights = 1
-rattled-relax           =  1.0   100.0  10.0
-rattled-300             =  3.0   300.0  10.0
-rattled-500             =  5.0   500.0  10.0
-rattled-1000            = 10.0  1000.0  10.0
-aimd-from-PBE-1000-npt  =  1.0   100.0  10.0
-aimd-from-PBE-1000-nvt  =  1.0   100.0  10.0
-aimd-from-PBE-3000-npt  =  3.0   300.0  10.0
-aimd-from-PBE-3000-nvt  =  3.0   300.0  10.0
+rattled-relax           = 20.0  200.0  1e-1
+rattled-300             =  5.0   50.0  1e-1
+rattled-500             =  5.0   50.0  1e-1
+rattled-1000            = 20.0  200.0  1e-1
+aimd-from-PBE-1000-npt  =  5.0   50.0  1e-1
+aimd-from-PBE-1000-nvt  =  5.0   50.0  1e-1
+aimd-from-PBE-3000-npt  = 10.0  100.0  1e-1
+aimd-from-PBE-3000-nvt  =  5.0  100.0  1e-1
 
 # -----------------------------------------------------------------------------
 [OUTFILE]
