@@ -38,9 +38,7 @@ cdef extern from *:
                                   MPI_Comm comm, int debug);
     }
     """
-    
-    void slate_set_openmp_threads(int num_threads, int debug) except +
-    
+
     void slate_ridge_augmented_qr(double* local_aw, double* local_bw, 
                                   int64_t m, int64_t n, int64_t lld, 
                                   MPI_Comm comm, int debug) except +
@@ -65,9 +63,6 @@ cdef extern from *:
 # -----------------------------------------------------------------------------
 # PYTHON WRAPPERS
 # -----------------------------------------------------------------------------
-
-def set_openmp_threads(int num_threads, int debug=0):
-    slate_set_openmp_threads(num_threads, debug)
 
 def slate_ridge_augmented_qr_cython(double[::1, :] local_aw, double[::1] local_bw,
                                     int m, int lld, 
