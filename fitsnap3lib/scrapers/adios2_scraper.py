@@ -41,9 +41,10 @@ class ADIOS2(Scraper):
   """
   ADIOS2 scraper for reading .bp files created by fairchem_to_adios2.py.
 
-  MPI distribution uses the usual contiguous split of global config indices
-  ``[0, nconfigs)``. ``[SCRAPER] max_configs_per_rank`` caps how many configs each rank
-  **loads** from disk (arrays and ``self.data`` stay sized to that cap).
+  MPI distribution splits the global config index range ``[0, nconfigs)`` into contiguous
+  segments balanced by total atom count (not config count), so per-rank work—which scales with
+  atoms—is evenly distributed. ``[SCRAPER] max_configs_per_rank`` caps how many configs each
+  rank **loads** from disk (arrays and ``self.data`` stay sized to that cap).
 
   Array I/O uses explicit ``start`` / ``count`` subsets—never whole-file reads of
   million-row variables.
@@ -131,9 +132,40 @@ class ADIOS2(Scraper):
 
   # --------------------------------------------------------------------------------------------
 
+  def _atom_balanced_boundaries(self, position_offsets, total_atoms):
+    """
+    Partition global config indices ``[0, nconfigs)`` into ``self.size`` *contiguous* segments
+    with (near-)equal total atom counts, for better MPI load balancing than an equal config-count
+    split—per-config work (array reads, descriptor cost) scales with atoms, not config count.
+
+    ``position_offsets`` is the per-config prefix sum of ``NumAtoms`` (FitSNAP's ``PositionOffsets``),
+    so the atom count of segment ``[a, b)`` is ``cum[b] - cum[a]`` where ``cum`` is ``position_offsets``
+    extended by ``total_atoms``. Each interior boundary is the first config whose cumulative atom
+    count reaches that rank's even share of ``total_atoms``. Keeping segments contiguous means the
+    existing ``start``/``count`` block reads (PositionsFlat, ForcesFlat, ...) stay intact.
+
+    Returns an ``int64`` array of length ``size + 1`` with ``boundaries[0] == 0`` and
+    ``boundaries[size] == nconfigs``; rank ``r`` owns configs ``[boundaries[r], boundaries[r + 1])``.
+    """
+    nconfigs = int(self.all_nconfigs)
+    size = int(self.size)
+    boundaries = np.zeros(size + 1, dtype=np.int64)
+    boundaries[size] = nconfigs
+    if size > 1 and nconfigs > 0 and total_atoms > 0:
+      cum = np.append(np.asarray(position_offsets, dtype=np.int64), np.int64(total_atoms))
+      targets = (np.arange(1, size, dtype=np.float64) * float(total_atoms)) / size
+      interior = np.searchsorted(cum, targets, side='left').astype(np.int64)
+      np.clip(interior, 0, nconfigs, out=interior)
+      np.maximum.accumulate(interior, out=interior)  # keep boundaries non-decreasing
+      boundaries[1:size] = interior
+    return boundaries
+
+  # --------------------------------------------------------------------------------------------
+
   def scrape_groups(self, group_names=None):
     """Read global metadata on rank 0 and broadcast; set per-rank config index range and I/O cap."""
 
+    boundaries = None
     try:
       if self.rank == 0:
         with FileReader(self.dataPath, None) as s:
@@ -161,13 +193,29 @@ class ADIOS2(Scraper):
           if not self.unique_group_names:
             raise ValueError('unique_group_names is empty after parsing')
 
+          # Per-config atom counts drive an atom-balanced (not equal-count) split. PositionOffsets
+          # is the prefix sum of NumAtoms, so it is the cumulative atom count used to place the
+          # contiguous segment boundaries; only the last NumAtoms is needed for the file total.
+          if self.all_nconfigs > 0:
+            po_all = _read_rra(s, 'PositionOffsets', [0], [self.all_nconfigs], np.int64)
+            na_last = _read_rra(s, 'NumAtoms', [self.all_nconfigs - 1], [1], np.uint16)
+            total_atoms = int(po_all[-1]) + int(na_last[0])
+          else:
+            po_all = np.array([], dtype=np.int64)
+            total_atoms = 0
+
+        boundaries = self._atom_balanced_boundaries(po_all, total_atoms)
+        cum_ext = np.append(po_all, np.int64(total_atoms))
+        seg_atoms = cum_ext[boundaries[1:]] - cum_ext[boundaries[:-1]]
+
         self.pt.single_print(
           f"----------------------------------------------------------------\n"
           f"  ADIOS2 SCRAPER                                                \n"
           f"                                                                \n"
           f"    {self.dataPath}                                             \n"
-          f"    {self.all_nconfigs} configurations with [{' '.join(self.element_map)}]\n"
+          f"    {self.all_nconfigs} configurations, {total_atoms} atoms with [{' '.join(self.element_map)}]\n"
           f"    forces {self.has_forces}, stress {self.has_stress}, charge {self.has_charge}\n"
+          f"    atom-balanced across {self.size} rank(s): {int(seg_atoms.min())}-{int(seg_atoms.max())} atoms/rank\n"
         )
 
     except Exception as e:
@@ -181,10 +229,11 @@ class ADIOS2(Scraper):
       self.has_charge = self.comm.bcast(self.has_charge, root=0)
       self.has_nbo_charges = self.comm.bcast(self.has_nbo_charges, root=0)
       self.unique_group_names = self.comm.bcast(self.unique_group_names, root=0)
+      boundaries = self.comm.bcast(boundaries, root=0)
 
-    q, r = self.all_nconfigs // self.size, self.all_nconfigs % self.size
-    self._cfg_start = self.rank * q + min(self.rank, r)
-    self._cfg_end = self._cfg_start + q + (1 if self.rank < r else 0)
+    # Contiguous, atom-balanced segment for this rank (computed on rank 0 from PositionOffsets).
+    self._cfg_start = int(boundaries[self.rank])
+    self._cfg_end = int(boundaries[self.rank + 1])
     n_local = max(0, self._cfg_end - self._cfg_start)
 
     max_cap = self.config.sections["SCRAPER"].max_configs_per_rank
@@ -354,9 +403,190 @@ class ADIOS2(Scraper):
     else: n_tot = n_loc
     self.pt.add_2_fitsnap("nconfigs", n_tot)
 
+    self._compute_rdf()
+
     self.pt.single_print(f"----------------------------------------------------------------\n")
 
     return self.data
+
+  # --------------------------------------------------------------------------------------------
+
+  @staticmethod
+  def _resolve_bond_cutoffs(bonds, elem_a, elem_b, default_rcut=6.0, default_rcut_in=0.0):
+    """Look up (rcut_in, rcut) for an element pair from PYACE bonds dict."""
+    if not bonds:
+      return default_rcut_in, default_rcut
+    for key in (
+      f"{elem_a} {elem_b}", f"{elem_b} {elem_a}",
+      f"{elem_a}{elem_b}", f"{elem_b}{elem_a}",
+      "ALL",
+    ):
+      if key in bonds:
+        entry = bonds[key]
+        rcut = float(entry.get("rcut", default_rcut))
+        rcut_in = float(entry.get("rcut_in", default_rcut_in))
+        return rcut_in, rcut
+    return default_rcut_in, default_rcut
+
+  @staticmethod
+  def _cell_volume_and_periodic(qm_lattice):
+    """Return (volume, is_periodic) for column-vector lattice ``QMLattice``."""
+    cell = np.asarray(qm_lattice, dtype=np.float64).reshape(3, 3)
+    det = float(np.linalg.det(cell))
+    if not np.isfinite(det) or abs(det) < 1e-12:
+      return 0.0, False
+    return abs(det), True
+
+  @staticmethod
+  def _expand_periodic_images(positions, qm_lattice, r_max):
+    """
+    Replicate atoms over periodic images within ``r_max`` of the origin cell.
+    Returns (all_positions, atom_ids) where ``atom_ids`` maps each row to the
+  original atom index in ``positions``.
+    """
+    cell = np.asarray(qm_lattice, dtype=np.float64).reshape(3, 3)
+    axis_lengths = np.linalg.norm(cell, axis=0)
+    nrep = [max(0, int(np.ceil(r_max / max(al, 1e-12)))) for al in axis_lengths]
+    offsets = [
+      (ix, iy, iz)
+      for ix in range(-nrep[0], nrep[0] + 1)
+      for iy in range(-nrep[1], nrep[1] + 1)
+      for iz in range(-nrep[2], nrep[2] + 1)
+    ]
+    n_atoms = positions.shape[0]
+    n_images = len(offsets)
+    all_pos = np.empty((n_atoms * n_images, 3), dtype=np.float64)
+    atom_ids = np.empty(n_atoms * n_images, dtype=np.int32)
+    row = 0
+    for ix, iy, iz in offsets:
+      shift = ix * cell[:, 0] + iy * cell[:, 1] + iz * cell[:, 2]
+      all_pos[row:row + n_atoms] = positions + shift
+      atom_ids[row:row + n_atoms] = np.arange(n_atoms, dtype=np.int32)
+      row += n_atoms
+    return all_pos, atom_ids
+
+  def _compute_rdf(self, n_bins=50):
+    """Accumulate partial RDF g(r) numerators/denominators over loaded configs."""
+    elements = list(self.element_map)
+    n_elem = len(elements)
+    if n_elem == 0 or not self.data:
+      return
+
+    element_to_idx = {el: i for i, el in enumerate(elements)}
+    bonds = {}
+    default_rcut = 6.0
+    default_rcut_in = 0.0
+    if "PYACE" in self.config.sections:
+      pyace = self.config.sections["PYACE"]
+      bonds = getattr(pyace, "bonds", {}) or {}
+      default_rcut = float(getattr(pyace, "cutoff", default_rcut))
+
+    rcut_in = np.zeros((n_elem, n_elem), dtype=np.float64)
+    rcut = np.zeros((n_elem, n_elem), dtype=np.float64)
+    for ia, ea in enumerate(elements):
+      for ib, eb in enumerate(elements):
+        rin, rout = self._resolve_bond_cutoffs(
+          bonds, ea, eb, default_rcut=default_rcut, default_rcut_in=default_rcut_in
+        )
+        rcut_in[ia, ib] = rin
+        rcut[ia, ib] = rout
+
+    r_cut_max = float(np.max(rcut)) if rcut.size else default_rcut
+    r_max = r_cut_max + 1.0
+    if r_cut_max <= 0.0:
+      return
+
+    r_edges = np.linspace(0.0, r_max, n_bins + 1)
+    counts = np.zeros((n_elem, n_elem, n_bins), dtype=np.float64)
+    density = np.zeros((n_elem, n_elem), dtype=np.float64)
+    min_dist = 1e-8
+
+    for config in self.data:
+      positions = np.asarray(config["Positions"], dtype=np.float64).reshape(-1, 3)
+      if positions.shape[0] == 0:
+        continue
+      elem_idx = np.array(
+        [element_to_idx[t] for t in config["AtomTypes"]], dtype=np.int32
+      )
+      n_per_type = np.bincount(elem_idx, minlength=n_elem).astype(np.float64)
+
+      qm = config.get("QMLattice")
+      volume, periodic = self._cell_volume_and_periodic(qm) if qm is not None else (0.0, False)
+      if not periodic or volume <= 0.0:
+        continue
+
+      neigh_pos, neigh_ids = self._expand_periodic_images(positions, qm, r_max)
+      for ia in range(n_elem):
+        for ib in range(n_elem):
+          if ia == ib:
+            density[ia, ib] += n_per_type[ia] * max(n_per_type[ia] - 1.0, 0.0) / volume
+          else:
+            density[ia, ib] += n_per_type[ia] * n_per_type[ib] / volume
+
+      central_elem = elem_idx
+      central_ids = np.arange(positions.shape[0], dtype=np.int32)
+
+      for ia in range(n_elem):
+        c_mask = central_elem == ia
+        if not np.any(c_mask):
+          continue
+        cpos = positions[c_mask]
+        cids = central_ids[c_mask]
+
+        for ib in range(n_elem):
+          n_mask = elem_idx[neigh_ids] == ib
+          if not np.any(n_mask):
+            continue
+          npos = neigh_pos[n_mask]
+          nids = neigh_ids[n_mask]
+
+          pair_dists = []
+          for c_i, (cp, cid) in enumerate(zip(cpos, cids)):
+            diff = npos - cp
+            d = np.sqrt(np.sum(diff * diff, axis=1))
+            if ia == ib:
+              d = d[(nids != cid) | (d > min_dist)]
+            else:
+              d = d[d > min_dist]
+            d = d[d < r_max]
+            if d.size:
+              pair_dists.append(d)
+
+          if not pair_dists:
+            continue
+          all_d = np.concatenate(pair_dists)
+          hist, _ = np.histogram(all_d, bins=r_edges)
+          counts[ia, ib, :] += hist
+
+    if self.pt.stubs == 0:
+      from mpi4py import MPI
+      counts = self.comm.reduce(counts, op=MPI.SUM, root=0)
+      density = self.comm.reduce(density, op=MPI.SUM, root=0)
+    else:
+      counts = counts
+      density = density
+
+    if self.rank != 0:
+      return
+
+    shell_vol = (4.0 / 3.0) * np.pi * (r_edges[1:] ** 3 - r_edges[:-1] ** 3)
+    r_centers = 0.5 * (r_edges[:-1] + r_edges[1:])
+    gr = np.zeros_like(counts)
+    for ia in range(n_elem):
+      for ib in range(n_elem):
+        denom = density[ia, ib] * shell_vol
+        with np.errstate(divide="ignore", invalid="ignore"):
+          gr[ia, ib, :] = np.where(denom > 0.0, counts[ia, ib, :] / denom, 0.0)
+
+    self.pt.add_2_fitsnap("rdf", {
+      "elements": elements,
+      "n_bins": n_bins,
+      "r_centers": r_centers.astype(np.float64),
+      "r_edges": r_edges.astype(np.float64),
+      "gr": gr.astype(np.float64),
+      "rcut_in": rcut_in,
+      "rcut": rcut,
+    })
 
   # --------------------------------------------------------------------------------------------
 
