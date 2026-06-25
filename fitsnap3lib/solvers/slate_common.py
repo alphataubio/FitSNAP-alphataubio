@@ -17,7 +17,7 @@ slate_error_analysis_cython = None
 
 try:
     # Primary import method (after pip install -e .)
-    from slate_wrapper import set_openmp_threads, slate_ridge_augmented_qr_cython, slate_error_analysis_cython
+    from slate_wrapper import slate_ridge_augmented_qr_cython, slate_error_analysis_cython
     SLATE_AVAILABLE = True
 except ImportError as e:
     # Fallback: try direct path import for in-place builds
@@ -279,8 +279,6 @@ class SlateCommon(Solver):
             # Select the correct communicator (Single Node vs Multi-Node)
             if pt._number_of_nodes > 1: comm = pt._head_group_comm
             else: comm = pt.MPI.COMM_SELF
-            # Thread count = Total Ranks on Node (since other ranks are sleeping)
-            set_openmp_threads(pt._sub_size, self.config.debug)
             slate_ridge_augmented_qr_cython(aw, bw, m, lld, comm, debug_flag)
             # Broadcast solution from Node 0 to all nodes via head ranks
             pt._head_group_comm.Bcast(bw[:n], root=0)
