@@ -15,7 +15,6 @@ cdef extern from *:
     """
     #include <mpi.h> 
     extern "C" {
-        void slate_set_openmp_threads(int num_threads, int debug);
         
         void slate_ridge_augmented_qr(double* local_aw, double* local_bw,
                                       int64_t m, int64_t n, int64_t lld, 

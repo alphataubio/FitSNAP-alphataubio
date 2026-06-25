@@ -5,13 +5,13 @@ from mpi4py import MPI
 from sklearn.mixture import GaussianMixture
 
 try:
-    from slate_wrapper import set_openmp_threads, slate_ard_update_cython
+    from slate_wrapper import slate_ard_update_cython
 except ImportError:
     try:
         slate_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'lib', 'slate_solver')
         if slate_path not in sys.path:
             sys.path.insert(0, slate_path)
-        from slate_wrapper import slate_ridge_augmented_qr_cython, slate_ard_update_cython, set_openmp_threads
+        from slate_wrapper import slate_ridge_augmented_qr_cython, slate_ard_update_cython
     except ImportError as e:
         print(f"Warning: Could not import SLATE ARD functions: {e}")
         slate_ard_update_cython = None
@@ -164,12 +164,6 @@ class SLATE(SlateValidation):
         coef_ = np.zeros(n, dtype=np.float64)
         lambda_mask = np.ones(n, dtype=bool)
         coef_old_ = None
-        
-        # --- THREAD CONFIGURATION (ONCE) ---
-        # Only set OpenMP threads once, on the Head Ranks.
-        #if pt._sub_rank == 0:
-            # Thread count = Total Ranks on Node (since other ranks are sleeping)
-            #set_openmp_threads(pt._sub_size, self.config.debug)
 
         iteration = 1
         start_time_iteration = time.time()
