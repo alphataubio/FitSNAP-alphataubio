@@ -271,7 +271,7 @@ class SlateValidation(SlateCommon):
                   # Handle NaN values
                   if pd.isna(val) or (isinstance(val, float) and np.isnan(val)): return "-"
                   if abs(val) < 1e-6 and val != 0: return f"{val:.2e}"
-                  else: return f"{val:.6f}"
+                  else: return f"{val:.4f}"
 
                 # Data rows
                 for idx, row in df_combined.iterrows():
@@ -812,110 +812,95 @@ def _format_table_float(val):
     return f"{val:.2e}"
   return f"{val:.4f}"
 
-from collections import defaultdict
-
 def _build_gamma_env_table_html(gamma_final, blist, basis_ranks):
-    """Booktabs-style wide table of sum(|gamma|) per atomic environment.
+  """Booktabs-style table of sum(|gamma|) per atomic environment, grouped by body order."""
+  env_n = defaultdict(int)
+  env_sums = defaultdict(float)
+  body_n = defaultdict(int)
+  body_subtotal = defaultdict(float)
 
-    Column pairs are laid out horizontally: cols 1-2 for 2-body, cols 3-4 for 3-body, etc.
-    The top-left header cell shows the grand-total sum(gamma) for ALL.
-    """
-    env_n = defaultdict(int)
-    env_sums = defaultdict(float)
-    body_n = defaultdict(int)
-    body_subtotal = defaultdict(float)
+  for i, (rank, feat) in enumerate(zip(basis_ranks, blist)):
+    rank = int(rank)
+    if rank < 1: continue
+    tokens = str(feat).split()
+    if len(tokens) < rank + 1: continue
+    env = " ".join(tokens[:rank + 1])
+    body = rank + 1
+    val = abs(float(gamma_final[i]))
+    env_n[(body, env)] += 1
+    env_sums[(body, env)] += val
+    body_n[body] += 1
+    body_subtotal[body] += val
 
-    for i, (rank, feat) in enumerate(zip(basis_ranks, blist)):
-        rank = int(rank)
-        if rank < 1: continue
-        tokens = str(feat).split()
-        if len(tokens) < rank + 1: continue
-        env = " ".join(tokens[:rank + 1])
-        body = rank + 1
-        val = abs(float(gamma_final[i]))
-        env_n[(body, env)] += 1
-        env_sums[(body, env)] += val
-        body_n[body] += 1
-        body_subtotal[body] += val
+  if not env_sums: return None
 
-    if not env_sums: return None
+  grand_total = sum(body_subtotal.values())
+  grand_n = sum(body_n.values())
+  grand_avg = grand_total / grand_n if grand_n > 0 else 0.0
+  body_orders = sorted(body_subtotal.keys())
 
-    grand_total = sum(body_subtotal.values())
-    body_orders = sorted(body_subtotal.keys())
-    envs_by_body = {}
-    for body in body_orders:
-        envs = [(env, val) for (b, env), val in env_sums.items() if b == body]
-        envs.sort(key=lambda x: x[1], reverse=True)
-        envs_by_body[body] = envs
+  html = '<table style="border-collapse: collapse; table-layout: auto; width: 80%; font-size: 14px;">\n'
+  fmt = "padding: 6px 10px; white-space: nowrap;"
+  fmt_left = fmt + " text-align: left;"
+  fmt_center = fmt + " text-align: center;"
+  fmt_right = fmt + " text-align: right;"
+  fmt_row = "padding: 1px 1.6px; font-family: monospace; white-space: nowrap; "
+  fmt_left_row = fmt_row + "text-align: left; overflow: hidden; text-overflow: ellipsis;"
+  fmt_center_row = fmt_row + "text-align: center;"
+  fmt_right_row = fmt_row + "text-align: right;"
 
-    n_pairs = len(body_orders)
-    n_env_rows = max((len(envs_by_body[b]) for b in body_orders), default=0)
+  html += '  <thead>\n'
+  html += '    <tr style="border-top: 2px solid black; border-bottom: 2px solid black;">\n'
+  html += f'      <th style="{fmt_left}"></th>\n'
+  html += f'      <th style="{fmt_center}">n</th>\n'
+  html += f'      <th style="{fmt_right}">&sum;&gamma; (&darr;)</th>\n'
+  html += f'      <th style="{fmt_right}">&lt;&gamma;&gt;</th>\n'
+  html += '    </tr>\n'
+  html += '  </thead>\n'
+  html += '  <tbody>\n'
 
-    html = '<table style="border-collapse: collapse; table-layout: auto; width: 100%; font-size: 12px;">\n'
-    fmt = "padding: 6px 10px; white-space: nowrap;"
-    fmt_left = fmt + " text-align: left;"
-    fmt_center = fmt + " text-align: center;"
-    fmt_right = fmt + " text-align: right;"
-    fmt_row = "padding: 1px 1.6px; font-family: monospace; white-space: nowrap; "
-    fmt_left_row = fmt_row + "text-align: right; overflow: hidden; text-overflow: ellipsis;"
-    fmt_center_row = fmt_row + "text-align: center;"
-    fmt_right_row = fmt_row + "text-align: right;"
+  html += '    <tr style="font-weight: bold;">\n'
+  html += (
+    f'      <td style="{fmt_left_row}">'
+    f'&sum;&gamma;<sub>all</sub> = {_format_table_float(grand_total)}</td>\n'
+  )
+  html += f'      <td style="{fmt_center_row}"><strong>{grand_n}</strong></td>\n'
+  html += f'      <td style="{fmt_right_row}"><strong>{_format_table_float(grand_total)}</strong></td>\n'
+  html += f'      <td style="{fmt_right_row}"><strong>{_format_table_float(grand_avg)}</strong>&nbsp;</td>\n'
+  html += '    </tr>\n'
 
-    html += '  <thead>\n'
-    html += '    <tr style="border-top: 2px solid black; border-bottom: 2px solid black;">\n'
-    for pair_idx, body in enumerate(body_orders):
-        # Fulfills docstring: Top-left header displays grand total summary
-        if pair_idx == 0:
-            html += f'      <th style="{fmt_left}">&sum;&gamma;<sub>all</sub> = {_format_table_float(grand_total)}</th>\n'
-        else:
-            html += f'      <th style="{fmt_left}"></th>\n'
-        html += f'      <th style="{fmt_center}">n<sub>{body}</sub></th>\n'
-        html += f'      <th style="{fmt_center}">&sum;&gamma;<sub>{body}</sub></th>\n'
-        html += f'      <th style="{fmt_center}"><&gamma;<sub>{body}</sub>></th>\n'
+  for body in body_orders:
+    n = body_n[body]
+    subtotal = body_subtotal[body]
+    mean = subtotal / n if n > 0 else 0.0
 
-    html += '    </tr>\n'
-    html += '  </thead>\n'
-    html += '  <tbody>\n'
-
-    # Subtotal row: "N body" label + subtotal per column pair
-    html += '    <tr style="font-style: bold;">\n'
-    for body in body_orders:
-        n, subtotal = body_n[body], body_subtotal[body]
-        mean = subtotal / n if n > 0 else 0.0
-        html += f'      <td style="{fmt_left_row}"></td>\n'
-        html += f'      <td style="{fmt_center_row}"><strong>{n}</strong></td>\n'
-        html += f'      <td style="{fmt_right_row}"><strong>{_format_table_float(subtotal)}</strong></td>\n'
-        html += f'      <td style="{fmt_right_row}"><strong>{_format_table_float(mean)}</strong>&nbsp;</td>\n'
+    html += '    <tr style="font-weight: bold;">\n'
+    html += f'      <td style="{fmt_left_row}">&nbsp;&nbsp;{body} body</td>\n'
+    html += f'      <td style="{fmt_center_row}"><strong>{n}</strong></td>\n'
+    html += f'      <td style="{fmt_right_row}"><strong>{_format_table_float(subtotal)}</strong></td>\n'
+    html += f'      <td style="{fmt_right_row}"><strong>{_format_table_float(mean)}</strong>&nbsp;</td>\n'
     html += '    </tr>\n'
 
-    # Environment rows (padded to equal height across body orders)
-    for row_idx in range(n_env_rows):
-        html += '    <tr>\n'
-        for body in body_orders:
-            envs_subtotal = envs_by_body[body]
-            if row_idx < len(envs_subtotal):
-                env, val = envs_subtotal[row_idx]
-                
-                # Fixed: Pulling environment-specific counts and calculating clean means
-                e_n = env_n[(body, env)]
-                e_mean = val / e_n if e_n > 0 else 0.0
+    envs = [(env, val) for (b, env), val in env_sums.items() if b == body]
+    envs.sort(
+      key=lambda x: x[1] / env_n[(body, x[0])] if env_n[(body, x[0])] > 0 else 0.0,
+      reverse=True,
+    )
+    for env, val in envs:
+      e_n = env_n[(body, env)]
+      e_mean = val / e_n if e_n > 0 else 0.0
+      html += '    <tr>\n'
+      html += f'      <td style="{fmt_left_row}">&nbsp;&nbsp;&nbsp;&nbsp;{env}</td>\n'
+      html += f'      <td style="{fmt_center_row}">{e_n}</td>\n'
+      html += f'      <td style="{fmt_right_row}">{_format_table_float(val)}</td>\n'
+      html += f'      <td style="{fmt_right_row}">{_format_table_float(e_mean)}&nbsp;</td>\n'
+      html += '    </tr>\n'
 
-                html += f'      <td style="{fmt_left_row}">{env}</td>\n'
-                html += f'      <td style="{fmt_center_row}">{e_n}</td>\n'
-                html += f'      <td style="{fmt_right_row}">{_format_table_float(val)}</td>\n'
-                html += f'      <td style="{fmt_right_row}">{_format_table_float(e_mean)}&nbsp;</td>\n'
-            else:
-                html += f'      <td style="{fmt_left_row}"></td>\n'
-                html += f'      <td style="{fmt_right_row}"></td>\n'
-                html += f'      <td style="{fmt_right_row}"></td>\n'
-                html += f'      <td style="{fmt_right_row}"></td>\n'
-        html += '    </tr>\n'
+  html += '    <tr style="border-bottom: 2px solid black;"><td colspan="4"></td></tr>\n'
+  html += '  </tbody>\n'
+  html += '</table>\n\n'
 
-    html += f'    <tr style="border-bottom: 2px solid black;"><td colspan="{4 * n_pairs}"></td></tr>\n'
-    html += '  </tbody>\n'
-    html += '</table>\n\n'
-
-    return html
+  return html
 
 def draw_labels(ax, y_positions, texts, x=-1):
   y_positions = np.array(y_positions)

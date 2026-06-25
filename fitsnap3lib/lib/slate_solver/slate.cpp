@@ -206,8 +206,17 @@ void slate_ridge_augmented_qr(double* local_aw, double* local_bw,
 double slate_ard_update(double* local_aw_active, double* local_bw, double* local_sigma_diag, double* local_coef_active,
                      double* local_sse,
                      int64_t m, int64_t n_active, int64_t lld,
+                     int64_t row_offset, int64_t m_local,
                      double alpha, double* lambda_active,
                      MPI_Comm comm, int debug) {
+
+  // row_offset : this rank's first row WITHIN the node-shared aw buffer (= sub_a_indices start).
+  // m_local    : design rows this rank owns in that buffer (= a_end_idx - a_start_idx + 1).
+  // lld        : leading dimension / column stride of the shared buffer = aw.shape[0] (node rows).
+  //
+  // These decouple "this rank's row count" (m_local) from "the buffer column stride" (lld), which
+  // the old one-rank-per-node code conflated. With many ranks per node sharing one buffer, every
+  // rank gets the SAME base pointer, so each tile offset must add row_offset to reach its slice.
 
   // -------------------------------- HYBRID MPI/OPENMP --------------------------------
     
@@ -230,34 +239,55 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
   int64_t mb = 512;
   int64_t nb = 512;
   int64_t nt = ceil_div64(n_active, nb);
-  int64_t m_node = m / mpi_size;
-  int64_t mt_node = ceil_div64(m_node, mb);
-  int64_t mt = mt_node; // * mpi_size;
 
-  if (false && mpi_rank >= 0) {
-    const double memory_gb_total = static_cast<double>(m*n_active*sizeof(double))/static_cast<double>(1024*1024*1024);
-    const double memory_gb_per_node = memory_gb_total / mpi_size;
+  // -------------------------------- GLOBAL BLOCK-ROW MAP --------------------------------
+  // Build a tile-row -> (owner rank, tile height) map that EVERY rank agrees on, derived from
+  // each rank's true row count. The previous code set mt = mt_node (the "* mpi_size" was
+  // commented out), so tileRank = i/mt_node returned 0 for every tile -- the ENTIRE matrix
+  // landed on rank 0, which is exactly why only rank 0 was busy. It also assumed
+  // m/mpi_size == lld (one rank per node) and offset (i%mt_node)*mb measured from buffer row 0;
+  // both are false once 24 ranks per node share one buffer.
+  //
+  // Each rank owns ceil(m_local/mb) consecutive tile-rows. We Allgather m_local so the
+  // tileMb/tileRank closures are byte-identical on every rank (SLATE requires this), and it
+  // tolerates non-uniform or zero per-rank row counts.
+  std::vector<int64_t> rows_per_rank(mpi_size);
+  MPI_Allgather(&m_local, 1, MPI_INT64_T, rows_per_rank.data(), 1, MPI_INT64_T, comm);
 
-    fprintf(stderr, "*** [Rank %i/%i threads/rank %i] mt %i nt %i m_node %i mt_node %i\n", mpi_rank, mpi_size, num_threads, mt, nt, m_node, mt_node);
+  std::vector<int64_t> blk_first_tile(mpi_size);
+  int64_t mt = 0, m_total = 0;
+  //if (mpi_rank == 0) fprintf(stderr, "*** rows_per_rank");
 
-    //std::cerr << "    Rank: " << mpi_rank << " lld " << lld << std::endl;
-    //std::cerr << "    Matrix size: " << m << " x " << n_active << std::endl;
-    //std::cerr << "    Memory: " << memory_gb_total << " GB, " << memory_gb_per_node << " GB/node" << std::endl;
-    //std::cerr << "    Tile size: " << mb << " x " << nb << std::endl;
-    //std::cerr << "    Grid: " << mt << " x " << nt << std::endl;
+  for (int r = 0; r < mpi_size; ++r) {
+    blk_first_tile[r] = mt;
+    mt      += ceil_div64(rows_per_rank[r], mb);
+    m_total += rows_per_rank[r];
+    //if (mpi_rank == 0) fprintf(stderr, " %lli", rows_per_rank[r]);
   }
+  //if (mpi_rank == 0) fprintf(stderr, "\n");
 
+  // Flat lookups (mt ~ m/mb, small): global tile-row -> owner rank, and its height.
+  std::vector<int>     tile_owner(mt);
+  std::vector<int64_t> tile_height(mt);
+  for (int r = 0; r < mpi_size; ++r) {
+    int64_t mtr = ceil_div64(rows_per_rank[r], mb);
+    for (int64_t il = 0; il < mtr; ++il) {
+      int64_t i = blk_first_tile[r] + il;
+      tile_owner[i]  = r;
+      tile_height[i] = (il == mtr - 1) ? (rows_per_rank[r] - (mtr - 1) * mb) : mb;
+    }
+  }
+  const int64_t my_first_tile = blk_first_tile[mpi_rank];  // global index of this rank's first tile-row
 
+  if (debug && mpi_rank == 0)
+    std::fprintf(stderr, "*** SLATE ARD grid: %d rank(s), %" PRId64 " data tile-rows, n_active=%"
+                 PRId64 " (nt=%" PRId64 ")\n", mpi_size, mt, n_active, nt);
 
   std::function<int64_t (int64_t)> tile1 = [](int64_t) { return 1; };
-       
-  int64_t tile_row_last = mt_node - 1;
-  int64_t tile_row_remainder = lld - (mt_node-1)*mb;
-  std::function<int64_t (int64_t)> tileMb = [mt_node, tile_row_last, tile_row_remainder, mb](int64_t i) {
-    if (i % mt_node == tile_row_last) return tile_row_remainder;
-    else return mb;
-  };
-        
+
+  std::function<int64_t (int64_t)> tileMb =
+    [tile_height](int64_t i) { return tile_height[i]; };
+
   int64_t tile_col_last = nt - 1;
   int64_t tile_col_remainder = n_active - (nt-1)*nb;
   std::function<int64_t (int64_t)> tileNb = [tile_col_last, tile_col_remainder, nb](int64_t j) {
@@ -265,11 +295,8 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
     else return nb;
   };
 
-  std::function<int (slate::func::ij_tuple)> tileRank = [mt_node](slate::func::ij_tuple ij) {
-    int64_t i = std::get<0>(ij);
-    //return i / mt_node;
-    return i / mt_node;
-  };
+  std::function<int (slate::func::ij_tuple)> tileRank =
+    [tile_owner](slate::func::ij_tuple ij) { return tile_owner[std::get<0>(ij)]; };
 
   std::function<int (slate::func::ij_tuple)> tileDevice = [](slate::func::ij_tuple ij) {
     return slate::HostNum;
@@ -285,16 +312,17 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
   try {
 
     // R-view guard: the leading n x n factor R = A_aug.slice(0,n-1,0,n-1) is only well-formed
-    // when the first n_active rows are uniformly-tiled DATA rows, i.e. n_active <= m_node
-    // (nt <= mt_node). Holds single-node and whenever rows-per-node >= n_active; FAILS once an
-    // active set is split across a node boundary. Note m is only ~1.8x n here -- this is NOT the
-    // deep m >> n regime, so adding MPI ranks shrinks m_node quickly. Fail loudly, not silently.
-    if (nt > mt_node) {
+    // when the first n_active rows are uniformly mb-tiled DATA rows -- i.e. they fit entirely in
+    // rank 0's block, n_active <= rows_per_rank[0]. With one rank per node this was the whole
+    // node; with 24 ranks per node rank 0's block is ~24x smaller, so this guard is MUCH tighter
+    // now and can trip for large active sets. If it does, reduce ranks-per-node for the solve, or
+    // switch to an R factor that may span ranks. Fail loudly rather than return a wrong answer.
+    if (n_active > rows_per_rank[0]) {
       if (mpi_rank == 0)
         std::fprintf(stderr,
-          "slate_ard_update_v2: n_active=%" PRId64 " > rows-per-node=%" PRId64
-          "; augmented-QR R view invalid for this rank count (use v1, or fewer ranks).\n",
-          n_active, m_node);
+          "slate_ard_update: n_active=%" PRId64 " > rows-on-rank-0=%" PRId64
+          "; augmented-QR R view spans a rank boundary (use fewer ranks/node for the solve).\n",
+          n_active, rows_per_rank[0]);
       MPI_Abort(comm, 2);
     }
 
@@ -331,35 +359,33 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
     //   n_active <~ (rows-per-node - mb); holds with large margin in the m >> n regime. If
     //   violated, SLATE throws (caught below) rather than returning a wrong answer.
 
-    // Augmented row tiling: data rows [0,mt) keep the node-local block-row layout (so aw
-    // aliases tile-for-tile); the n regularizer rows [mt,mt+nt) follow, tiled by nb on rank 0.
+    // Augmented row tiling: data rows [0,mt) follow the global block-row map above (so aw
+    // aliases tile-for-tile); the n_active regularizer rows [mt,mt+nt) follow, tiled by nb on rank 0.
     std::function<int64_t (int64_t)> tileMb_aug =
-      [mt, mt_node, tile_row_last, tile_row_remainder, mb, nt, n_active, nb](int64_t i) -> int64_t {
-        if (i < mt) {
-          if (i % mt_node == tile_row_last) return tile_row_remainder;
-          else return mb;
-        }
+      [mt, tile_height, nt, n_active, nb](int64_t i) -> int64_t {
+        if (i < mt) return tile_height[i];
         int64_t jt = i - mt;
         if (jt == nt - 1) return n_active - (nt - 1) * nb;
         return nb;
       };
     std::function<int (slate::func::ij_tuple)> tileRank_aug =
-      [mt, mt_node](slate::func::ij_tuple ij) {
+      [mt, tile_owner](slate::func::ij_tuple ij) {
         int64_t i = std::get<0>(ij);
-        if (i < mt) return (int)(i / mt_node);
+        if (i < mt) return tile_owner[i];
         return 0;
       };
     std::function<int (slate::func::ij_tuple)> tileRank0 =
       [](slate::func::ij_tuple) { return 0; };
 
     // ---- A_aug: data tiles ALIAS aw (no copy); regularizer tiles are SLATE-owned ----
-    slate::Matrix<double> A_aug(m + n_active, n_active,
+    slate::Matrix<double> A_aug(m_total + n_active, n_active,
                                 tileMb_aug, tileNb, tileRank_aug, tileDevice, comm);
 
     for (int64_t i = 0; i < mt; ++i)            // data block aliases aw (col-major, ld = lld)
       for (int64_t j = 0; j < nt; ++j)
         if (A_aug.tileIsLocal(i, j)) {
-          const int64_t offset = (i % mt_node) * mb + j * nb * lld;
+          const int64_t il = i - my_first_tile;                       // local tile-row in this rank's block
+          const int64_t offset = row_offset + il * mb + j * nb * lld; // reach this rank's slice of the shared buffer
           A_aug.tileInsert(i, j, local_aw_active + offset, lld);
         }
 
@@ -368,7 +394,7 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
         if (A_aug.tileIsLocal(mt + jt, j))
           A_aug.tileInsert(mt + jt, j);
 
-    auto A_reg = A_aug.slice(m, m + n_active - 1, 0, n_active - 1);
+    auto A_reg = A_aug.slice(m_total, m_total + n_active - 1, 0, n_active - 1);
     slate::set(0.0, A_reg);
     const double inv_sqrt_alpha = 1.0 / std::sqrt(alpha);
     for (int64_t idx = 0; idx < n_active; ++idx) {
@@ -381,18 +407,19 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
     }
 
     // ---- b_aug = [ bw ; 0 ]  (bw COPIED in via an aliased view; bw is preserved) ----
-    slate::Matrix<double> y_alias(m, 1, tileMb, tile1, tileRank, tileDevice, comm);
+    slate::Matrix<double> y_alias(m_total, 1, tileMb, tile1, tileRank, tileDevice, comm);
     for (int64_t i = 0; i < mt; ++i)
       if (y_alias.tileIsLocal(i, 0)) {
-        const int64_t offset = (i % mt_node) * mb;
+        const int64_t il = i - my_first_tile;
+        const int64_t offset = row_offset + il * mb;
         y_alias.tileInsert(i, 0, local_bw + offset, lld);
       }
 
-    slate::Matrix<double> b_aug(m + n_active, 1, tileMb_aug, tile1, tileRank_aug, tileDevice, comm);
+    slate::Matrix<double> b_aug(m_total + n_active, 1, tileMb_aug, tile1, tileRank_aug, tileDevice, comm);
     b_aug.insertLocalTiles();
     slate::set(0.0, b_aug);
-    auto b_top = b_aug.slice(0, m - 1, 0, 0);
-    slate::copy(y_alias, b_top);                // b_aug[0:m] = bw ; b_aug[m:m+n] = 0
+    auto b_top = b_aug.slice(0, m_total - 1, 0, 0);
+    slate::copy(y_alias, b_top);                // b_aug[0:m_total] = bw ; b_aug[m_total:] = 0
 
     MPI_Barrier(comm);
 
@@ -421,7 +448,7 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
     MPI_Barrier(comm);
 
     // ||d2||^2 (d2 = trailing m rows of Q^T b_aug) = SSE + (1/alpha) sum lambda*coef^2
-    auto d2 = b_aug.slice(n_active, m + n_active - 1, 0, 0);   // named: slate::norm needs an lvalue
+    auto d2 = b_aug.slice(n_active, m_total + n_active - 1, 0, 0);   // named: slate::norm needs an lvalue
     double d2_norm = slate::norm(slate::Norm::Fro, d2);
     double aug_resid_sq = d2_norm * d2_norm;
 
@@ -507,6 +534,218 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
     MPI_Abort(comm, 1);
     return std::numeric_limits<double>::infinity(); // Return inf on error
   }
+}
+
+
+// -----------------------------------------------------------------------------
+// SLATE Error Analysis: predictions + per-group error statistics
+// -----------------------------------------------------------------------------
+//
+// Replaces the pandas-DataFrame / iterrows path in slate_common.error_analysis().
+// The old Python built a DataFrame from the entire m_local x n design matrix (a
+// multi-GB copy) and looped over every row in Python, then ran a
+// gather/merge/bcast/gather dance for the two-pass R^2. Here, in compiled code:
+//   1. preds = A @ fit via ONE distributed SLATE multiply (A ALIASES the
+//      node-shared design buffer -- no copy, read-only),
+//   2. per-group weighted/unweighted sums over local rows,
+//   3. MPI_Allreduce those sums so every rank holds the global means,
+//   4. a second pass accumulating per-group SS_tot about those global means,
+//   5. MPI_Allreduce SS_tot.
+// Each row is folded into TWO bins: its own (group,testing,row_type) bin and the
+// rolled-up ('*ALL',testing,row_type) bin, so the '*ALL' SS_tot is taken about
+// the '*ALL' mean (which is NOT the sum of the per-group SS_tot). Python is left
+// only O(n_groups) bookkeeping (MAE/RMSE/R^2 + DataFrame) and the optional
+// validation scatter, for which this rank's local preds are returned in out_preds.
+//
+// Layout (matches the ridge/ARD solvers): a/b/w are node-shared COLUMN-MAJOR
+// buffers; this rank owns rows [row_offset, row_offset+m_local) with column
+// stride lld (= a.shape[0], the node row count). fit is the replicated n-vector.
+// bin_specific[i]/bin_all[i] in [0,n_groups) are the global bins for local row i;
+// group_factor[g] is the unit-conversion factor for bin g (constant within a bin
+// since it depends only on Row_Type).
+void slate_error_analysis(
+    double* local_a, double* local_b, double* local_w, double* fit,
+    int32_t* bin_specific, int32_t* bin_all, double* group_factor, int n_groups,
+    int64_t n, int64_t lld, int64_t row_offset, int64_t m_local,
+    double* out_preds, int64_t* out_count,
+    double* out_sum_w, double* out_sum_truth_w, double* out_sum_ae_w, double* out_sum_se_w,
+    double* out_sum_truth_u, double* out_sum_ae_u, double* out_sum_se_u,
+    double* out_sstot_w, double* out_sstot_u,
+    MPI_Comm comm, int debug) {
+
+  int mpi_rank, mpi_size;
+  MPI_Comm_rank(comm, &mpi_rank);
+  MPI_Comm_size(comm, &mpi_size);
+
+  // -------------------------------- TILE SIZE --------------------------------
+  int64_t mb = 512;
+  int64_t nb = 512;
+  int64_t nt = ceil_div64(n, nb);
+
+  // -------------------------------- GLOBAL BLOCK-ROW MAP --------------------------------
+  // Same construction as slate_ard_update: Allgather each rank's true row count so the
+  // tileMb/tileRank closures are byte-identical on every rank, and each rank owns a
+  // contiguous run of tile-rows that aliases its own slice of the node-shared buffer.
+  std::vector<int64_t> rows_per_rank(mpi_size);
+  MPI_Allgather(&m_local, 1, MPI_INT64_T, rows_per_rank.data(), 1, MPI_INT64_T, comm);
+
+  std::vector<int64_t> blk_first_tile(mpi_size);
+  int64_t mt = 0, m_total = 0;
+  for (int r = 0; r < mpi_size; ++r) {
+    blk_first_tile[r] = mt;
+    mt      += ceil_div64(rows_per_rank[r], mb);
+    m_total += rows_per_rank[r];
+  }
+  std::vector<int>     tile_owner(mt);
+  std::vector<int64_t> tile_height(mt);
+  for (int r = 0; r < mpi_size; ++r) {
+    int64_t mtr = ceil_div64(rows_per_rank[r], mb);
+    for (int64_t il = 0; il < mtr; ++il) {
+      int64_t i = blk_first_tile[r] + il;
+      tile_owner[i]  = r;
+      tile_height[i] = (il == mtr - 1) ? (rows_per_rank[r] - (mtr - 1) * mb) : mb;
+    }
+  }
+  const int64_t my_first_tile = blk_first_tile[mpi_rank];
+
+  std::function<int64_t (int64_t)> tile1  = [](int64_t) { return 1; };
+  std::function<int64_t (int64_t)> tileMb = [tile_height](int64_t i) { return tile_height[i]; };
+  int64_t tile_col_last = nt - 1;
+  int64_t tile_col_remainder = n - (nt - 1) * nb;
+  std::function<int64_t (int64_t)> tileNb = [tile_col_last, tile_col_remainder, nb](int64_t j) {
+    return (j == tile_col_last) ? tile_col_remainder : nb;
+  };
+  std::function<int (slate::func::ij_tuple)> tileRank =
+    [tile_owner](slate::func::ij_tuple ij) { return tile_owner[std::get<0>(ij)]; };
+  std::function<int (slate::func::ij_tuple)> tileRank0 =
+    [](slate::func::ij_tuple) { return 0; };
+  std::function<int (slate::func::ij_tuple)> tileDevice =
+    [](slate::func::ij_tuple) { return slate::HostNum; };
+
+  if (debug && mpi_rank == 0)
+    std::fprintf(stderr, "*** SLATE error_analysis: %d rank(s), m_total=%" PRId64
+                 ", n=%" PRId64 ", n_groups=%d\n", mpi_size, m_total, n, n_groups);
+
+  std::vector<double> preds(m_local > 0 ? m_local : 0, 0.0);
+
+  try {
+    // ---------------------------- preds = A @ fit (distributed SLATE multiply) ----------------------------
+    // A aliases the node-shared design buffer (read-only; multiply never writes A).
+    slate::Matrix<double> A(m_total, n, tileMb, tileNb, tileRank, tileDevice, comm);
+    for (int64_t i = 0; i < mt; ++i)
+      for (int64_t j = 0; j < nt; ++j)
+        if (A.tileIsLocal(i, j)) {
+          const int64_t il = i - my_first_tile;
+          const int64_t offset = row_offset + il * mb + j * nb * lld;
+          A.tileInsert(i, j, local_a + offset, lld);
+        }
+
+    // X = fit (n x 1), all tiles owned by rank 0; multiply broadcasts it to every rank.
+    slate::Matrix<double> X(n, 1, tileNb, tile1, tileRank0, tileDevice, comm);
+    X.insertLocalTiles();
+    if (mpi_rank == 0)
+      for (int64_t jt = 0; jt < nt; ++jt)
+        if (X.tileIsLocal(jt, 0)) {
+          auto t = X(jt, 0);
+          const int64_t base = jt * nb;
+          const int64_t h = tileNb(jt);
+          for (int64_t r = 0; r < h; ++r) t.at(r, 0) = fit[base + r];
+        }
+
+    // C = preds (m_total x 1), row-distributed like A.
+    slate::Matrix<double> C(m_total, 1, tileMb, tile1, tileRank, tileDevice, comm);
+    C.insertLocalTiles();
+    slate::multiply(1.0, A, X, 0.0, C);   // C = A @ fit
+    MPI_Barrier(comm);
+
+    // Pull this rank's contiguous local rows of C into preds[0:m_local].
+    const int64_t my_ntiles = ceil_div64(m_local, mb);
+    for (int64_t il = 0; il < my_ntiles; ++il) {
+      const int64_t i = my_first_tile + il;
+      if (C.tileIsLocal(i, 0)) {
+        auto t = C(i, 0);
+        const int64_t h = tile_height[i];
+        const int64_t base = il * mb;
+        for (int64_t r = 0; r < h; ++r) preds[base + r] = t.at(r, 0);
+      }
+    }
+  } catch (const std::exception& e) {
+    std::cerr << "[Rank " << mpi_rank << "] SLATE error_analysis multiply error: " << e.what() << std::endl;
+    MPI_Abort(comm, 1);
+  }
+
+  for (int64_t i = 0; i < m_local; ++i) out_preds[i] = preds[i];
+
+  // -------------------------------- PASS 1: per-group sums (local) --------------------------------
+  std::vector<int64_t> cnt (n_groups, 0);
+  std::vector<double>  sw  (n_groups, 0.0), stw (n_groups, 0.0), sae (n_groups, 0.0), sse (n_groups, 0.0);
+  std::vector<double>  stu (n_groups, 0.0), saeu(n_groups, 0.0), sseu(n_groups, 0.0);
+
+  auto accumulate_sums = [&](int g, double w, double truth, double ae, double se) {
+    cnt [g] += 1;
+    sw  [g] += w;
+    stw [g] += w * truth;
+    sae [g] += w * ae;
+    sse [g] += w * se;
+    stu [g] += truth;
+    saeu[g] += ae;
+    sseu[g] += se;
+  };
+
+  for (int64_t i = 0; i < m_local; ++i) {
+    const int gs = bin_specific[i];
+    if (gs < 0 || gs >= n_groups) continue;
+    const int ga = bin_all[i];
+    const double f     = group_factor[gs];
+    const double w     = local_w[row_offset + i];
+    const double truth = f * local_b[row_offset + i];
+    double       pred  = f * preds[i];
+    if (!std::isfinite(pred)) pred = truth;   // mirror old code: bad pred -> zero error
+    const double diff  = truth - pred;
+    const double ae    = std::fabs(diff);
+    const double se    = diff * diff;
+    accumulate_sums(gs, w, truth, ae, se);
+    if (ga >= 0 && ga < n_groups && ga != gs) accumulate_sums(ga, w, truth, ae, se);
+  }
+
+  MPI_Allreduce(cnt.data(),  out_count,       n_groups, MPI_INT64_T, MPI_SUM, comm);
+  MPI_Allreduce(sw.data(),   out_sum_w,       n_groups, MPI_DOUBLE,  MPI_SUM, comm);
+  MPI_Allreduce(stw.data(),  out_sum_truth_w, n_groups, MPI_DOUBLE,  MPI_SUM, comm);
+  MPI_Allreduce(sae.data(),  out_sum_ae_w,    n_groups, MPI_DOUBLE,  MPI_SUM, comm);
+  MPI_Allreduce(sse.data(),  out_sum_se_w,    n_groups, MPI_DOUBLE,  MPI_SUM, comm);
+  MPI_Allreduce(stu.data(),  out_sum_truth_u, n_groups, MPI_DOUBLE,  MPI_SUM, comm);
+  MPI_Allreduce(saeu.data(), out_sum_ae_u,    n_groups, MPI_DOUBLE,  MPI_SUM, comm);
+  MPI_Allreduce(sseu.data(), out_sum_se_u,    n_groups, MPI_DOUBLE,  MPI_SUM, comm);
+
+  // Global means (identical on every rank).
+  std::vector<double> mean_w(n_groups, 0.0), mean_u(n_groups, 0.0);
+  for (int g = 0; g < n_groups; ++g) {
+    mean_w[g] = (out_sum_w[g] > 0.0) ? out_sum_truth_w[g] / out_sum_w[g]           : 0.0;
+    mean_u[g] = (out_count[g] > 0)   ? out_sum_truth_u[g] / (double) out_count[g]  : 0.0;
+  }
+
+  // -------------------------------- PASS 2: per-group SS_tot about the global mean (local) --------------------------------
+  std::vector<double> sstw(n_groups, 0.0), sstu(n_groups, 0.0);
+  for (int64_t i = 0; i < m_local; ++i) {
+    const int gs = bin_specific[i];
+    if (gs < 0 || gs >= n_groups) continue;
+    const int ga = bin_all[i];
+    const double f     = group_factor[gs];
+    const double w     = local_w[row_offset + i];
+    const double truth = f * local_b[row_offset + i];
+    const double dws = truth - mean_w[gs];
+    const double dus = truth - mean_u[gs];
+    sstw[gs] += w * dws * dws;
+    sstu[gs] += dus * dus;
+    if (ga >= 0 && ga < n_groups && ga != gs) {
+      const double dwa = truth - mean_w[ga];
+      const double dua = truth - mean_u[ga];
+      sstw[ga] += w * dwa * dwa;
+      sstu[ga] += dua * dua;
+    }
+  }
+  MPI_Allreduce(sstw.data(), out_sstot_w, n_groups, MPI_DOUBLE, MPI_SUM, comm);
+  MPI_Allreduce(sstu.data(), out_sstot_u, n_groups, MPI_DOUBLE, MPI_SUM, comm);
 }
 
 } // extern "C"

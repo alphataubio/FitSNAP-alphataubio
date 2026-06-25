@@ -83,11 +83,15 @@ class SLATE(SlateValidation):
         local_slice = slice(a_start_idx, a_end_idx+1)
         local_w = w[local_slice].copy()
         
-        # Hybrid Architecture: Data is distributed across nodes.
-        # m = Total Global Samples. lld = Samples on this Node.
+        # Hybrid Architecture: data is distributed across nodes AND across ranks within a node.
+        # m   = total global samples; lld = node-shared buffer leading dim (rows on this node).
+        # row_offset (a_start_idx) / m_local = THIS rank's contiguous slice of the node-shared
+        # buffer, so the C++ solver aliases each rank's own rows instead of piling every tile
+        # onto rank 0.
         m = aw.shape[0] * pt._number_of_nodes 
         n = aw.shape[1] 
         lld = aw.shape[0]
+        m_local = a_end_idx - a_start_idx + 1   # design rows owned by this rank within the node buffer
         
         assert m>n, f"SLATE ARD: m ({m}) < n ({n}), m > n needed for regression."
 
@@ -205,7 +209,7 @@ class SLATE(SlateValidation):
             # Call C++ Wrapper (SSE is computed in C++ from the QR residual)
             s_d, c_a, sse_val, cn = slate_ard_update_cython(
                 aw, bw, lambda_active, alpha_,
-                m, n_active, lld, comm, self.config.debug
+                m, n_active, lld, a_start_idx, m_local, comm, self.config.debug
             )
                 
             # Copy results to buffers
