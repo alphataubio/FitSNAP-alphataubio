@@ -24,50 +24,6 @@ using slate::func::ij_tuple;
 constexpr int64_t ceil_div64(int64_t a, int64_t b) { return (a + b - 1) / b; }
 
 // -----------------------------------------------------------------------------
-// Helper: Configure OpenMP (Affinity + Threads)
-// -----------------------------------------------------------------------------
-void slate_set_openmp_threads(int num_threads, int debug) {
-#ifdef __linux__
-    int ncpus = sysconf(_SC_NPROCESSORS_ONLN);
-    if (ncpus <= 0) ncpus = 64;
-    // Open full CPU mask on calling thread so OpenMP can spawn workers anywhere
-    cpu_set_t full_mask;
-    CPU_ZERO(&full_mask);
-    for (int i = 0; i < ncpus; i++) CPU_SET(i, &full_mask);
-    sched_setaffinity(0, sizeof(full_mask), &full_mask);
-#endif // __linux__
-    // BLAS must be single-threaded so SLATE task parallelism isn't over-subscribed.
-    // Without this, all 192 cores rush into each tile GEMM sequentially instead of
-    // running 192 concurrent single-threaded tile tasks.
-    setenv("BLIS_NUM_THREADS",    "1", 1);  // AOCL/BLIS
-    setenv("BLIS_JC_NT",          "1", 1);
-    setenv("BLIS_IC_NT",          "1", 1);
-    setenv("BLIS_JR_NT",          "1", 1);
-    setenv("BLIS_IR_NT",          "1", 1);
-    setenv("OPENBLAS_NUM_THREADS","1", 1);  // fallback
-    setenv("MKL_NUM_THREADS",     "1", 1);  // fallback
-
-    omp_set_num_threads(num_threads);
-#ifdef __linux__
-    // OMP_PROC_BIND was initialized with OMP_NUM_THREADS=1, so its binding
-    // table only has 1 place — all threads collapse onto core 0.
-    // Fix: call sched_setaffinity *inside* the parallel region to pin each
-    // thread to its own core via OS syscall, bypassing OMP_PROC_BIND entirely.
-    #pragma omp parallel shared(ncpus)
-    {
-        int tid = omp_get_thread_num();
-        cpu_set_t tmask;
-        CPU_ZERO(&tmask);
-        CPU_SET(tid % ncpus, &tmask);
-        sched_setaffinity(0, sizeof(tmask), &tmask);
-    }
-#endif // __linux__
-    if (debug)
-    std::cerr << "SLATE_CPP: Set OpenMP threads to " << num_threads
-                         << ", pinned threads 0.." << num_threads-1 << " to cores" << std::endl;
-}
-
-// -----------------------------------------------------------------------------
 // SLATE Ridge Solver
 // -----------------------------------------------------------------------------
 void slate_ridge_augmented_qr(double* local_aw, double* local_bw, 
@@ -84,8 +40,8 @@ void slate_ridge_augmented_qr(double* local_aw, double* local_bw,
   // -------------------------------- TILE SIZE --------------------------------
   // FIXME: find optimal tile size based on cache size
     
-  int64_t mb = 512;
-  int64_t nb = 512;
+  int64_t mb = 256;
+  int64_t nb = 256;
   int64_t nt = ceil_div64(n, nb);
   int64_t m_node = m / mpi_size;
   int64_t mt_node = ceil_div64(m_node, mb);
@@ -236,8 +192,8 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
   // -------------------------------- TILE SIZE --------------------------------
   // FIXME: find optimal tile size based on cache size
     
-  int64_t mb = 512;
-  int64_t nb = 512;
+  int64_t mb = 256;
+  int64_t nb = 256;
   int64_t nt = ceil_div64(n_active, nb);
 
   // -------------------------------- GLOBAL BLOCK-ROW MAP --------------------------------
@@ -477,7 +433,7 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
     std::vector<double> sigma_acc(n_active, 0.0);
     for (int64_t bj = 0; bj < nt; ++bj) {
       const int64_t col0 = bj * nb;
-      const int64_t ncol = tileNb(bj);              // 512, or the remainder on the last block
+      const int64_t ncol = tileNb(bj);              // 256, or the remainder on the last block
       slate::set(0.0, Zp);                          // Zp = 0
       for (int64_t c = 0; c < ncol; ++c) {          // Zp[:, 0:ncol] = unit columns e_{col0+c}
         const int64_t gi = col0 + c;
@@ -578,8 +534,8 @@ void slate_error_analysis(
   MPI_Comm_size(comm, &mpi_size);
 
   // -------------------------------- TILE SIZE --------------------------------
-  int64_t mb = 512;
-  int64_t nb = 512;
+  int64_t mb = 256;
+  int64_t nb = 256;
   int64_t nt = ceil_div64(n, nb);
 
   // -------------------------------- GLOBAL BLOCK-ROW MAP --------------------------------
