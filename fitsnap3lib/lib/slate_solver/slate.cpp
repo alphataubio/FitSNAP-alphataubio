@@ -11,6 +11,7 @@
 #include <functional>
 #include <algorithm> 
 #include <cinttypes> 
+#include <limits>
 
 #ifdef __linux__
 #include <sched.h>
@@ -180,6 +181,17 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
   MPI_Comm_rank(comm, &mpi_rank);
   MPI_Comm_size(comm, &mpi_size);
   int num_threads = omp_get_max_threads();
+
+  // DIAGNOSTIC: SLATE requires MPI_THREAD_MULTIPLE (its OpenMP threads make MPI calls).
+  // If the provided level is lower, threaded qr_factor races -> garbage/NaN in R.
+  {
+    int provided = 0;
+    MPI_Query_thread(&provided);
+    if (mpi_rank == 0 && (provided < MPI_THREAD_MULTIPLE || debug))
+      std::fprintf(stderr,
+        "*** SLATE ARD: MPI thread level provided=%d (need MPI_THREAD_MULTIPLE=%d), omp_threads=%d, ranks=%d\n",
+        provided, MPI_THREAD_MULTIPLE, num_threads, mpi_size);
+  }
 
   // --------------------------------PRINT OPTS --------------------------------
 
@@ -384,6 +396,46 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
       slate::print("b_aug", b_aug, opts);
     }
 
+    // ---- DIAGNOSTIC: scan the actual input to qr_factor (A_aug data+reg tiles, b_aug)
+    //      for non-finite values. Reads SLATE-local tiles, so it sees exactly what QR sees,
+    //      including the aliased aw block and the SLATE-owned regularizer block. Prints only
+    //      if something is wrong (or under debug), so it is silent on healthy runs. ----
+    {
+      int64_t bad_A = 0, bad_b = 0;
+      double  amax = 0.0;
+      for (int64_t i = 0; i < A_aug.mt(); ++i)
+        for (int64_t j = 0; j < A_aug.nt(); ++j)
+          if (A_aug.tileIsLocal(i, j)) {
+            auto t = A_aug(i, j);
+            for (int64_t c = 0; c < t.nb(); ++c)
+              for (int64_t r = 0; r < t.mb(); ++r) {
+                const double v = t.at(r, c);
+                if (!std::isfinite(v)) ++bad_A;
+                else { const double av = std::fabs(v); if (av > amax) amax = av; }
+              }
+          }
+      for (int64_t i = 0; i < b_aug.mt(); ++i)
+        if (b_aug.tileIsLocal(i, 0)) {
+          auto t = b_aug(i, 0);
+          for (int64_t r = 0; r < t.mb(); ++r)
+            if (!std::isfinite(t.at(r, 0))) ++bad_b;
+        }
+      // Per-rank report so we can see WHICH rank/node owns the bad tiles.
+      if (bad_A || bad_b || debug)
+        std::fprintf(stderr,
+          "*** SLATE ARD pre-QR [rank %d]: non-finite A_aug=%" PRId64 ", b_aug=%" PRId64
+          ", max|A_aug|=%.3e, m_local=%" PRId64 ", row_offset=%" PRId64 ", lld=%" PRId64 "\n",
+          mpi_rank, bad_A, bad_b, amax, m_local, row_offset, lld);
+      int64_t tot_bad_A = 0, tot_bad_b = 0;
+      MPI_Reduce(&bad_A, &tot_bad_A, 1, MPI_INT64_T, MPI_SUM, 0, comm);
+      MPI_Reduce(&bad_b, &tot_bad_b, 1, MPI_INT64_T, MPI_SUM, 0, comm);
+      if (mpi_rank == 0 && (tot_bad_A || tot_bad_b || debug))
+        std::fprintf(stderr,
+          "*** SLATE ARD pre-QR TOTAL: non-finite A_aug=%" PRId64 ", b_aug=%" PRId64
+          " (m_total=%" PRId64 ", mt=%" PRId64 ", n_active=%" PRId64 ", alpha=%.3e)\n",
+          tot_bad_A, tot_bad_b, m_total, mt, n_active, alpha);
+    }
+
     // ---- A_aug = Q R  (in place; aliased aw tiles are destroyed -- safe, see above) ----
     slate::TriangularFactors<double> T;
     slate::qr_factor(A_aug, T);
@@ -392,6 +444,39 @@ double slate_ard_update(double* local_aw_active, double* local_bw, double* local
     // R = leading n x n upper-triangular factor.
     auto R_sq = A_aug.slice(0, n_active - 1, 0, n_active - 1);
     auto R = slate::TriangularMatrix<double>(slate::Uplo::Upper, slate::Diag::NonUnit, R_sq);
+
+    // ---- DIAGNOSTIC: scan R's diagonal for non-finite / zero pivots. With reg=diag(sqrt(l/a))
+    //      every singular value of A_aug is >= min sqrt(l/a) > 0, so on a correct factorization R
+    //      CANNOT have a zero/NaN pivot. If this fires while the pre-QR scan was clean, qr_factor
+    //      itself produced the bad R (SLATE-level failure on this distribution, not bad input).
+    //      R's diagonal sits in tiles (idx/nb, idx/nb): valid because n_active <= rows_per_rank[0]
+    //      (guarded above) and those leading data tiles are uniformly mb=nb tall. ----
+    {
+      int64_t bad_diag = 0, zero_diag = 0, first_bad = -1;
+      double  min_abs = std::numeric_limits<double>::infinity();
+      for (int64_t idx = 0; idx < n_active; ++idx) {
+        const int64_t it = idx / nb, li = idx % nb;
+        if (A_aug.tileIsLocal(it, it)) {
+          const double d = A_aug(it, it).at(li, li);
+          if (!std::isfinite(d)) { ++bad_diag; if (first_bad < 0) first_bad = idx; }
+          else {
+            if (d == 0.0) { ++zero_diag; if (first_bad < 0) first_bad = idx; }
+            const double ad = std::fabs(d); if (ad < min_abs) min_abs = ad;
+          }
+        }
+      }
+      int64_t g_bad = 0, g_zero = 0, g_first = -1;
+      double  g_min = 0.0;
+      MPI_Reduce(&bad_diag,  &g_bad,  1, MPI_INT64_T, MPI_SUM, 0, comm);
+      MPI_Reduce(&zero_diag, &g_zero, 1, MPI_INT64_T, MPI_SUM, 0, comm);
+      MPI_Reduce(&first_bad, &g_first, 1, MPI_INT64_T, MPI_MAX, 0, comm);
+      MPI_Reduce(&min_abs,  &g_min,  1, MPI_DOUBLE,  MPI_MIN, 0, comm);
+      if (mpi_rank == 0 && (g_bad || g_zero || debug))
+        std::fprintf(stderr,
+          "*** SLATE ARD post-QR R-diag: non-finite=%" PRId64 ", zero=%" PRId64
+          ", first-bad-index=%" PRId64 ", min|R_ii|=%.3e\n",
+          g_bad, g_zero, g_first, g_min);
+    }
 
     // ---- cond(R) ~ kappa(X)  (sqrt of the cond(C) the normal-equations path reported) ----
     slate::Options cond_opts;
