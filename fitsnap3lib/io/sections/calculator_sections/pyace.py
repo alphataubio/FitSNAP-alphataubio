@@ -121,7 +121,7 @@ class PyAce(Section):
     """
     try:
             
-      self.bbasis = create_bbasis(self.ace_config)
+      #self.bbasis = create_bbasis(self.ace_config)
       self.ctilde_basis = create_ctilde_basis(self.ace_config)
       self.ncoeff = self.ctilde_basis.ncoeff
 
@@ -266,7 +266,7 @@ class PyAce(Section):
     @self.pt.rank_zero
     def _write_yace():
       try:
-        self.bbasis.save_yaml(f"{output_filename}.yaml")
+        #self.bbasis.save_yaml(f"{output_filename}.yaml")
         self.ctilde_basis.save_yaml(f"{output_filename}.yace")
       except Exception as e:
         self.pt.single_print(f"Error creating .yace file: {e}")

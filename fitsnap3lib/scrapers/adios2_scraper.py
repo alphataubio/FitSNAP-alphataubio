@@ -645,7 +645,7 @@ class ADIOS2(Scraper):
     if "PYACE" in self.config.sections:
       pyace_section = self.config.sections["PYACE"]
       eshift_values = [float(v) for v in eshift_dict.values()]
-      pyace_section.bbasis.E0vals = eshift_values
+      #pyace_section.bbasis.E0vals = eshift_values
       pyace_section.ctilde_basis.E0vals = eshift_values
       pyace_section.create_coupling_coefficients_yace()
 
