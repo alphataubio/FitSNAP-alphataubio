@@ -71,10 +71,8 @@ class LammpsPyace(LammpsPace):
   def _initialize_lammps(self, printlammps=0):
     """One-time setup: open LAMMPS, declare pair/compute/neighbor (YAML read here)."""
 
-    num_threads = os.getenv("SLURM_CPUS_PER_TASK")
-    if num_threads is None: num_threads = os.getenv("OMP_NUM_THREADS", 4)
-
     if (kokkos := self.config.sections["CALCULATOR"].kokkos):
+      num_threads = os.getenv("OMP_NUM_THREADS", 4)
       cmds = ["-screen", "lammps_kk.log", "-k", "on", "t", num_threads, "-sf", "kk"]
     else:
       cmds = ["-screen", "lammps.log"]
