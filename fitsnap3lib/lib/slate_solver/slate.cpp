@@ -182,6 +182,24 @@ double slate_ard_update(double* local_aw_active, double* local_bw,
   double* Xp = local_aw_active + row_offset;   // &aw[row_offset,0], col-major, ld=lld
   double* yp = local_bw       + row_offset;    // &bw[row_offset]
 
+  if (debug) {
+  double xf2 = 0.0;
+  if (m_local > 0)
+    for (int64_t j = 0; j < n_active; ++j)
+      for (int64_t i = 0; i < m_local; ++i) { double v = (local_aw_active + row_offset)[i + j*lld]; xf2 += v*v; }
+  double yn2 = (m_local > 0) ? blas::dot(m_local, local_bw + row_offset, 1, local_bw + row_offset, 1) : 0.0;
+  std::vector<long long> off(mpi_size), mlo(mpi_size), ld(mpi_size);
+  long long a = row_offset, b = m_local, c = lld;
+  MPI_Gather(&a,1,MPI_LONG_LONG,off.data(),1,MPI_LONG_LONG,0,comm);
+  MPI_Gather(&b,1,MPI_LONG_LONG,mlo.data(),1,MPI_LONG_LONG,0,comm);
+  MPI_Gather(&c,1,MPI_LONG_LONG,ld.data(), 1,MPI_LONG_LONG,0,comm);
+  std::fprintf(stderr,"[rank %d] off=%lld m_local=%lld lld=%lld ||Xp||_F^2=%.6e ||yp||^2=%.6e\n",
+               mpi_rank,(long long)row_offset,(long long)m_local,(long long)lld,xf2,yn2);
+  if (mpi_rank==0) for (int r=0;r<mpi_size;++r)
+    std::fprintf(stderr,"  PART rank %2d: off=%lld m_local=%lld end=%lld lld=%lld\n",
+                 r,off[r],mlo[r],off[r]+mlo[r],ld[r]);
+}
+
   // ---- h = X^T y  and  ynorm2 = ||y||^2   (gemv reads aw BEFORE any geqrf overwrite) ----
   std::vector<double> h(n, 0.0);
   double ynorm2_local = 0.0;
