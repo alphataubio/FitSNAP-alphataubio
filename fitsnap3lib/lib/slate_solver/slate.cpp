@@ -161,10 +161,8 @@ void slate_ridge_augmented_qr(double* local_aw, double* local_bw,
 // -----------------------------------------------------------------------------
 
 // active set is monotone => n_active identifies it (see note); per-process cache
-static int64_t            g_ard_cached_n   = -1;
-static std::vector<double> g_ard_cached_Rx;    // n x n col-major upper-tri (replicated)
-static std::vector<double> g_ard_cached_d1x;   // n   (= Q_x^T y, first n entries)
-static double             g_ard_cached_rho2 = 0.0;
+static int64_t            g_ard_cached_n = -1;
+static std::vector<double> g_ard_cached_Rx;   // n x n col-major upper-tri (replicated)
 
 double slate_ard_update(double* local_aw_active, double* local_bw,
                         double* local_sigma_diag, double* local_coef_active,
@@ -173,8 +171,7 @@ double slate_ard_update(double* local_aw_active, double* local_bw,
                         int64_t row_offset, int64_t m_local,
                         double alpha, double* lambda_active,
                         MPI_Comm comm, int debug) {
-  (void)m;  // global m is informational; sizing is per-rank (m_local) now
-
+  (void)m;
   int mpi_rank = 0, mpi_size = 1;
   MPI_Comm_rank(comm, &mpi_rank);
   MPI_Comm_size(comm, &mpi_size);
@@ -182,114 +179,87 @@ double slate_ard_update(double* local_aw_active, double* local_bw,
 
   const int64_t n = n_active, nn = n * n;
   const blas::Layout CM = blas::Layout::ColMajor;
-
-  // this rank's contiguous slice of the node-shared COLUMN-MAJOR buffers (ld = lld)
-  double* Xp = local_aw_active + row_offset;   // &aw[row_offset, 0]
+  double* Xp = local_aw_active + row_offset;   // &aw[row_offset,0], col-major, ld=lld
   double* yp = local_bw       + row_offset;    // &bw[row_offset]
 
-  std::vector<double> Rx, d1x;
-  double rho2 = 0.0;
-  const bool have_cache = (n == g_ard_cached_n) &&
-                          ((int64_t)g_ard_cached_Rx.size()  == nn) &&
-                          ((int64_t)g_ard_cached_d1x.size() == n);
+  // ---- h = X^T y  and  ynorm2 = ||y||^2   (gemv reads aw BEFORE any geqrf overwrite) ----
+  std::vector<double> h(n, 0.0);
+  double ynorm2_local = 0.0;
+  if (m_local > 0) {
+    blas::gemv(CM, blas::Op::Trans, m_local, n, 1.0, Xp, lld, yp, 1, 0.0, h.data(), 1);
+    ynorm2_local = blas::dot(m_local, yp, 1, yp, 1);
+  }
+  MPI_Allreduce(MPI_IN_PLACE, h.data(), (int)n, MPI_DOUBLE, MPI_SUM, comm);
+  double ynorm2 = 0.0;
+  MPI_Allreduce(&ynorm2_local, &ynorm2, 1, MPI_DOUBLE, MPI_SUM, comm);
 
+  // ---- R_x : R_x^T R_x = X^T X  via local QR + TSQR tree (R only; cached) ----
+  std::vector<double> Rx;
+  const bool have_cache = (n == g_ard_cached_n) && ((int64_t)g_ard_cached_Rx.size() == nn);
   if (have_cache) {
-    Rx = g_ard_cached_Rx;  d1x = g_ard_cached_d1x;  rho2 = g_ard_cached_rho2;
+    Rx = g_ard_cached_Rx;
   } else {
-    // (1) LOCAL thin QR  X^(p)=Q_p R_p  and  d1_p=(Q_p^T y^(p))_{1:n}
-    std::vector<double> Rloc(nn, 0.0), d1(n, 0.0);
-    double tail2_local = 0.0;
+    std::vector<double> Rloc(nn, 0.0);
     if (m_local > 0) {
       const int64_t k = std::min<int64_t>(m_local, n);
       std::vector<double> tau(k);
-      lapack::geqrf(m_local, n, Xp, lld, tau.data());
+      lapack::geqrf(m_local, n, Xp, lld, tau.data());          // R in upper(Xp)
       for (int64_t j = 0; j < n; ++j)
         for (int64_t i = 0; i <= std::min<int64_t>(j, k - 1); ++i)
-          Rloc[i + j*n] = Xp[i + j*lld];               // upper triangle -> Rloc
-      std::vector<double> yw(m_local);
-      for (int64_t i = 0; i < m_local; ++i) yw[i] = yp[i];      // y must persist; work on copy
-      lapack::ormqr(blas::Side::Left, blas::Op::Trans, m_local, 1, k,
-                    Xp, lld, tau.data(), yw.data(), m_local);   // yw <- Q_p^T y^(p)
-      for (int64_t i = 0; i < n && i < m_local; ++i) d1[i] = yw[i];
-      for (int64_t i = n; i < m_local; ++i) tail2_local += yw[i]*yw[i];  // direct, no cancellation
+          Rloc[i + j*n] = Xp[i + j*lld];
     }
-
-    // (2) TSQR binomial tree of (R_p, d1_p); accrue dropped tails
-    double tree_tail2_local = 0.0;
-    std::vector<double> Rrecv(nn), d1recv(n), stack(2*nn), d1stk(2*n);
+    std::vector<double> Rrecv(nn), stack(2*nn);
     for (int64_t mask = 1; mask < mpi_size; mask <<= 1) {
       if (mpi_rank & mask) {
-        int dst = mpi_rank - (int)mask;
-        MPI_Send(Rloc.data(), (int)nn, MPI_DOUBLE, dst, 0, comm);
-        MPI_Send(d1.data(),   (int)n,  MPI_DOUBLE, dst, 1, comm);
+        MPI_Send(Rloc.data(), (int)nn, MPI_DOUBLE, mpi_rank - (int)mask, 0, comm);
         break;
       }
       int src = mpi_rank + (int)mask;
       if (src >= mpi_size) continue;
-      MPI_Recv(Rrecv.data(),  (int)nn, MPI_DOUBLE, src, 0, comm, MPI_STATUS_IGNORE);
-      MPI_Recv(d1recv.data(), (int)n,  MPI_DOUBLE, src, 1, comm, MPI_STATUS_IGNORE);
-      for (int64_t j = 0; j < n; ++j) {                 // [Rloc; Rrecv] (2n x n, ld 2n)
+      MPI_Recv(Rrecv.data(), (int)nn, MPI_DOUBLE, src, 0, comm, MPI_STATUS_IGNORE);
+      for (int64_t j = 0; j < n; ++j) {
         for (int64_t i = 0; i < n; ++i) stack[i     + j*2*n] = Rloc[i  + j*n];
         for (int64_t i = 0; i < n; ++i) stack[(n+i) + j*2*n] = Rrecv[i + j*n];
       }
-      for (int64_t i = 0; i < n; ++i) { d1stk[i] = d1[i]; d1stk[n+i] = d1recv[i]; }
       std::vector<double> tau(n);
       lapack::geqrf(2*n, n, stack.data(), 2*n, tau.data());
-      lapack::ormqr(blas::Side::Left, blas::Op::Trans, 2*n, 1, n,
-                    stack.data(), 2*n, tau.data(), d1stk.data(), 2*n);
       std::fill(Rloc.begin(), Rloc.end(), 0.0);
       for (int64_t j = 0; j < n; ++j)
         for (int64_t i = 0; i <= j; ++i) Rloc[i + j*n] = stack[i + j*2*n];
-      for (int64_t i = 0; i < n; ++i)   d1[i] = d1stk[i];
-      for (int64_t i = n; i < 2*n; ++i) tree_tail2_local += d1stk[i]*d1stk[i];
     }
-
-    MPI_Bcast(Rloc.data(), (int)nn, MPI_DOUBLE, 0, comm);   // replicate global R_x, d1x
-    MPI_Bcast(d1.data(),   (int)n,  MPI_DOUBLE, 0, comm);
-    double t1 = 0.0, t2 = 0.0;
-    MPI_Allreduce(&tail2_local,      &t1, 1, MPI_DOUBLE, MPI_SUM, comm);
-    MPI_Allreduce(&tree_tail2_local, &t2, 1, MPI_DOUBLE, MPI_SUM, comm);
-    rho2 = t1 + t2;                                         // ||y||^2 - ||d1x||^2, all nonneg
-
-    Rx = std::move(Rloc);  d1x = std::move(d1);
-    g_ard_cached_n = n;  g_ard_cached_Rx = Rx;  g_ard_cached_d1x = d1x;  g_ard_cached_rho2 = rho2;
+    MPI_Bcast(Rloc.data(), (int)nn, MPI_DOUBLE, 0, comm);
+    Rx = std::move(Rloc);
+    g_ard_cached_n = n;  g_ard_cached_Rx = Rx;
   }
 
-  // (3) append regularizer: R = QR([ R_x ; diag(sqrt(lambda/alpha)) ])
+  // ---- final R: QR([ R_x ; diag(sqrt(lambda/alpha)) ]);  R^T R = X^T X + diag(lambda/alpha) ----
   const double inv_sqrt_alpha = 1.0 / std::sqrt(alpha);
   std::vector<double> aug(2*nn, 0.0);
   for (int64_t j = 0; j < n; ++j) {
     for (int64_t i = 0; i <= j; ++i) aug[i + j*2*n] = Rx[i + j*n];
     aug[(n + j) + j*2*n] = std::sqrt(lambda_active[j]) * inv_sqrt_alpha;
   }
-  std::vector<double> tau_a(n);
-  lapack::geqrf(2*n, n, aug.data(), 2*n, tau_a.data());
+  { std::vector<double> tau(n); lapack::geqrf(2*n, n, aug.data(), 2*n, tau.data()); }
   std::vector<double> R(nn, 0.0);
   for (int64_t j = 0; j < n; ++j)
     for (int64_t i = 0; i <= j; ++i) R[i + j*n] = aug[i + j*2*n];
 
-  std::vector<double> g(2*n, 0.0);                          // [g1;g2] = Q_s^T [d1x;0]
-  for (int64_t i = 0; i < n; ++i) g[i] = d1x[i];
-  lapack::ormqr(blas::Side::Left, blas::Op::Trans, 2*n, 1, n,
-                aug.data(), 2*n, tau_a.data(), g.data(), 2*n);
-  double g2norm2 = 0.0;
-  for (int64_t i = n; i < 2*n; ++i) g2norm2 += g[i]*g[i];
-
-  // (4) R^{-1}; then coef / sigma_diag / cond  (replicated, O(n^3/3))
+  // ---- R^{-1};  coef = R^{-1} R^{-T} h;  sigma_diag;  cond ----
   std::vector<double> Rinv = R;
   lapack::trtri(lapack::Uplo::Upper, lapack::Diag::NonUnit, n, Rinv.data(), n);
 
-  std::vector<double> coef(n, 0.0);                         // coef = R^{-1} g1 = (R^T R)^{-1} X^T y
-  blas::gemv(CM, blas::Op::NoTrans, n, n, 1.0, Rinv.data(), n, g.data(), 1, 0.0, coef.data(), 1);
+  std::vector<double> t(n, 0.0), coef(n, 0.0);
+  blas::gemv(CM, blas::Op::Trans,   n, n, 1.0, Rinv.data(), n, h.data(), 1, 0.0, t.data(),    1); // t = R^{-T} h
+  blas::gemv(CM, blas::Op::NoTrans, n, n, 1.0, Rinv.data(), n, t.data(), 1, 0.0, coef.data(), 1); // c = R^{-1} t
   for (int64_t i = 0; i < n; ++i) local_coef_active[i] = coef[i];
 
-  for (int64_t i = 0; i < n; ++i) {                         // sigma_ii = (1/alpha)||row i of R^{-1}||^2
+  for (int64_t i = 0; i < n; ++i) {                          // sigma_ii = (1/alpha)||row i of R^{-1}||^2
     double s = 0.0;
     for (int64_t j = i; j < n; ++j) { double v = Rinv[i + j*n]; s += v*v; }
     local_sigma_diag[i] = s / alpha;
   }
 
-  double R_inf = 0.0, Ri_inf = 0.0;                         // cond_inf(R) = ||R||_inf ||R^{-1}||_inf
+  double R_inf = 0.0, Ri_inf = 0.0;                          // cond_inf(R) = ||R||_inf ||R^{-1}||_inf
   for (int64_t i = 0; i < n; ++i) {
     double sR = 0.0, sI = 0.0;
     for (int64_t j = i; j < n; ++j) { sR += std::fabs(R[i+j*n]); sI += std::fabs(Rinv[i+j*n]); }
@@ -298,17 +268,17 @@ double slate_ard_update(double* local_aw_active, double* local_bw,
   }
   double cond_number = R_inf * Ri_inf;
 
-  // (5) SSE = rho^2 + ||g2||^2 - (1/alpha) sum lambda*coef^2   (nonneg pieces; only -penalty subtracts)
+  // ---- SSE = ||y||^2 - ||t||^2 - (1/alpha) sum lambda*coef^2 ----
+  double tnorm2 = blas::dot(n, t.data(), 1, t.data(), 1);
   double penalty = 0.0;
   for (int64_t i = 0; i < n; ++i) penalty += lambda_active[i] * coef[i] * coef[i];
   penalty /= alpha;
-  double sse = rho2 + g2norm2 - penalty;
+  double sse = ynorm2 - tnorm2 - penalty;
   if (local_sse) *local_sse = (sse > 0.0) ? sse : 0.0;
 
   if (debug && mpi_rank == 0)
-    std::fprintf(stderr, "*** SLATE ARD n_active=%lld %s cond_inf=%.3e ||g2||^2=%.3e rho^2=%.3e\n",
-                 (long long)n, have_cache ? "(cached Rx)" : "(recomputed Rx)",
-                 cond_number, g2norm2, rho2);
+    std::fprintf(stderr, "*** ARD n=%lld %s cond=%.3e ||y||^2=%.3e ||t||^2=%.3e penalty=%.3e sse=%.3e\n",
+                 (long long)n, have_cache?"(cached)":"(recomp)", cond_number, ynorm2, tnorm2, penalty, sse);
   return cond_number;
 }
 
