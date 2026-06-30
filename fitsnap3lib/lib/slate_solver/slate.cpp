@@ -161,8 +161,8 @@ void slate_ridge_augmented_qr(double* local_aw, double* local_bw,
 // -----------------------------------------------------------------------------
 
 // active set is monotone => n_active identifies it (see note); per-process cache
-static int64_t            g_ard_cached_n = -1;
-static std::vector<double> g_ard_cached_Rx;   // n x n col-major upper-tri (replicated)
+// static int64_t            g_ard_cached_n = -1;
+// static std::vector<double> g_ard_cached_Rx;   // n x n col-major upper-tri (replicated)
 
 double slate_ard_update(double* local_aw_active, double* local_bw,
                         double* local_sigma_diag, double* local_coef_active,
@@ -213,10 +213,12 @@ double slate_ard_update(double* local_aw_active, double* local_bw,
 
   // ---- R_x : R_x^T R_x = X^T X  via local QR + TSQR tree (R only; cached) ----
   std::vector<double> Rx;
-  const bool have_cache = (n == g_ard_cached_n) && ((int64_t)g_ard_cached_Rx.size() == nn);
-  if (have_cache) {
-    Rx = g_ard_cached_Rx;
-  } else {
+  //const bool have_cache = (n == g_ard_cached_n) && ((int64_t)g_ard_cached_Rx.size() == nn);
+  //if (have_cache) {
+  //  Rx = g_ard_cached_Rx;
+  //} else
+
+  {
     std::vector<double> Rloc(nn, 0.0);
     if (m_local > 0) {
       const int64_t k = std::min<int64_t>(m_local, n);
@@ -263,7 +265,7 @@ double slate_ard_update(double* local_aw_active, double* local_bw,
     }
     MPI_Bcast(Rloc.data(), (int)nn, MPI_DOUBLE, 0, comm);
     Rx = std::move(Rloc);
-    g_ard_cached_n = n;  g_ard_cached_Rx = Rx;
+    //g_ard_cached_n = n;  g_ard_cached_Rx = Rx;
   }
 
   // ---- final R: QR([ R_x ; diag(sqrt(lambda/alpha)) ]);  R^T R = X^T X + diag(lambda/alpha) ----
@@ -327,8 +329,8 @@ double slate_ard_update(double* local_aw_active, double* local_bw,
   if (local_sse) *local_sse = (sse > 0.0) ? sse : 0.0;
 
   if (debug && mpi_rank == 0)
-    std::fprintf(stderr, "*** ARD n=%lld %s cond=%.3e (||R||_inf=%.3e ||Rinv||_inf=%.3e) ||y||^2=%.3e ||t||^2=%.3e penalty=%.3e sse=%.3e\n",
-                 (long long)n, have_cache?"(cached)":"(recomp)", cond_number, R_inf, Ri_inf, ynorm2, tnorm2, penalty, sse);
+    std::fprintf(stderr, "*** ARD n=%lld cond=%.3e (||R||_inf=%.3e ||Rinv||_inf=%.3e) ||y||^2=%.3e ||t||^2=%.3e penalty=%.3e sse=%.3e\n",
+                 (long long)n, cond_number, R_inf, Ri_inf, ynorm2, tnorm2, penalty, sse);
   return cond_number;
 }
 
