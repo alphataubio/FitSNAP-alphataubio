@@ -225,6 +225,13 @@ double slate_ard_update(double* local_aw_active, double* local_bw,
       for (int64_t j = 0; j < n; ++j)
         for (int64_t i = 0; i <= std::min<int64_t>(j, k - 1); ++i)
           Rloc[i + j*n] = Xp[i + j*lld];
+      // A rank-deficient / all-zero block has X^(p)^T X^(p) = R_p^T R_p with R_p = 0, so its
+      // exact contribution to sum_p R_p^T R_p is zero. geqrf on a zero (or rank-deficient)
+      // block can leave NaN/Inf in the trapezoid (zero Householder norm); replacing any
+      // non-finite entry with 0 restores the correct (zero) contribution and stops the TSQR
+      // tree + Bcast from poisoning every rank's R_x with NaN. (Seen with under-filled tail
+      // ranks whose entire config range was charge-filtered out -- see note below.)
+      for (double& v : Rloc) if (!std::isfinite(v)) v = 0.0;
     }
     std::vector<double> Rrecv(nn), stack(2*nn);
     for (int64_t mask = 1; mask < mpi_size; mask <<= 1) {
