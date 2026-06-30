@@ -242,6 +242,12 @@ double slate_ard_update(double* local_aw_active, double* local_bw,
       int src = mpi_rank + (int)mask;
       if (src >= mpi_size) continue;
       MPI_Recv(Rrecv.data(), (int)nn, MPI_DOUBLE, src, 0, comm, MPI_STATUS_IGNORE);
+      // A zero partner contributes nothing to sum_p R_p^T R_p, so skip the combine entirely.
+      // (Running geqrf on a zero/rank-deficient panel is what produced finite-but-huge junk.)
+      double rrecv2 = 0.0; for (double v : Rrecv) rrecv2 += v*v;
+      if (!(rrecv2 > 0.0)) continue;        // partner all-zero (or non-finite scrubbed to 0): keep Rloc
+      double rloc2 = 0.0; for (double v : Rloc) rloc2 += v*v;
+      if (!(rloc2 > 0.0)) { Rloc = Rrecv; continue; }   // I was all-zero: adopt partner, no geqrf
       for (int64_t j = 0; j < n; ++j) {
         for (int64_t i = 0; i < n; ++i) stack[i     + j*2*n] = Rloc[i  + j*n];
         for (int64_t i = 0; i < n; ++i) stack[(n+i) + j*2*n] = Rrecv[i + j*n];
@@ -251,6 +257,9 @@ double slate_ard_update(double* local_aw_active, double* local_bw,
       std::fill(Rloc.begin(), Rloc.end(), 0.0);
       for (int64_t j = 0; j < n; ++j)
         for (int64_t i = 0; i <= j; ++i) Rloc[i + j*n] = stack[i + j*2*n];
+      // Scrub this combine's output too -- a rank-deficient stacked panel can leave non-finite
+      // entries that would compound up the tree (the leaf-only guard above does not reach here).
+      for (double& v : Rloc) if (!std::isfinite(v)) v = 0.0;
     }
     MPI_Bcast(Rloc.data(), (int)nn, MPI_DOUBLE, 0, comm);
     Rx = std::move(Rloc);
