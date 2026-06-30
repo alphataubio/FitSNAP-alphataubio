@@ -193,19 +193,39 @@ class ADIOS2(Scraper):
           if not self.unique_group_names:
             raise ValueError('unique_group_names is empty after parsing')
 
-          # Per-config atom counts drive an atom-balanced (not equal-count) split. PositionOffsets
-          # is the prefix sum of NumAtoms, so it is the cumulative atom count used to place the
-          # contiguous segment boundaries; only the last NumAtoms is needed for the file total.
+          # Per-config atom counts drive an atom-balanced (not equal-count) split. We balance by
+          # *training* atoms only: validation configs are weight-zeroed by the solver and charge!=0
+          # configs are dropped by the scraper, so neither contributes a nonzero design row. The old
+          # all-atom balance counted them, which -- because validation/charged configs cluster at the
+          # end of the file -- handed the tail ranks segments that are entirely zero-weight, i.e. the
+          # all-zero / rank-deficient design blocks the SLATE QR then chokes on. Feeding the training
+          # prefix sum + training total to the (unchanged) contiguous boundary routine balances the
+          # rows that actually enter the fit, so every rank gets full-rank training data.
           if self.all_nconfigs > 0:
             po_all = _read_rra(s, 'PositionOffsets', [0], [self.all_nconfigs], np.int64)
             na_last = _read_rra(s, 'NumAtoms', [self.all_nconfigs - 1], [1], np.uint16)
             total_atoms = int(po_all[-1]) + int(na_last[0])
+            # NumAtoms per config, reconstructed from the PositionOffsets prefix sum.
+            na_all = np.diff(np.append(po_all.astype(np.int64), np.int64(total_atoms)))
+            tb_all = _read_rra(s, 'test_bool', [0], [self.all_nconfigs], np.int32)
+            train_mask = (tb_all == 0)
+            if self.has_charge:
+              charge_all = _read_rra(s, 'Charge', [0], [self.all_nconfigs], np.int8)
+              train_mask &= (charge_all == 0)
+            train_atoms = (na_all * train_mask).astype(np.int64)
+            # exclusive prefix sum of training atoms (cumulative training atoms in configs [0, i))
+            train_prefix = np.concatenate(([np.int64(0)], np.cumsum(train_atoms)[:-1])).astype(np.int64)
+            total_train_atoms = int(train_atoms.sum())
           else:
             po_all = np.array([], dtype=np.int64)
             total_atoms = 0
+            train_prefix = np.array([], dtype=np.int64)
+            total_train_atoms = 0
 
-        boundaries = self._atom_balanced_boundaries(po_all, total_atoms)
-        cum_ext = np.append(po_all, np.int64(total_atoms))
+        # Reuse the contiguous boundary routine unchanged: it balances cum[boundaries] over a total,
+        # so passing the training prefix + training total balances *training* atoms per rank.
+        boundaries = self._atom_balanced_boundaries(train_prefix, total_train_atoms)
+        cum_ext = np.append(train_prefix, np.int64(total_train_atoms))
         seg_atoms = cum_ext[boundaries[1:]] - cum_ext[boundaries[:-1]]
 
         self.pt.single_print(
@@ -215,7 +235,7 @@ class ADIOS2(Scraper):
           f"    {self.dataPath}                                             \n"
           f"    {self.all_nconfigs} configurations, {total_atoms} atoms with [{' '.join(self.element_map)}]\n"
           f"    forces {self.has_forces}, stress {self.has_stress}, charge {self.has_charge}\n"
-          f"    atom-balanced across {self.size} rank(s): {int(seg_atoms.min())}-{int(seg_atoms.max())} atoms/rank\n"
+          f"    training-atom-balanced across {self.size} rank(s): {int(seg_atoms.min())}-{int(seg_atoms.max())} training atoms/rank\n"
         )
 
     except Exception as e:
