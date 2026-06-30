@@ -269,9 +269,25 @@ double slate_ard_update(double* local_aw_active, double* local_bw,
   for (int64_t j = 0; j < n; ++j)
     for (int64_t i = 0; i <= j; ++i) R[i + j*n] = aug[i + j*2*n];
 
+  // DIAGNOSTIC: with D=diag(sqrt(lambda/alpha)), R^T R = X^T X + diag(lambda/alpha) >= min(lambda/alpha) I.
+  // => every Cholesky pivot |R_jj| >= sqrt(min_j lambda_j/alpha), and cond_inf(R) <= n*||R||_F/sqrt(min lambda/alpha).
+  // If the reported cond violates this bound, the cause is numerical (trtri / non-finite Rx), not the data.
+  if (debug && mpi_rank == 0) {
+    double rxF = 0.0; for (double v : Rx) rxF += v*v; rxF = std::sqrt(rxF);
+    double dmin = std::numeric_limits<double>::infinity(), dmax = 0.0;
+    for (int64_t j = 0; j < n; ++j) { double d = std::fabs(R[j + j*n]); if (d < dmin) dmin = d; if (d > dmax) dmax = d; }
+    double lmin = std::numeric_limits<double>::infinity(), lmax = 0.0;
+    for (int64_t j = 0; j < n; ++j) { double l = lambda_active[j]; if (l < lmin) lmin = l; if (l > lmax) lmax = l; }
+    std::fprintf(stderr, "*** ARD diag: ||Rx||_F=%.3e  |R_jj| in [%.3e, %.3e]  lambda in [%.3e, %.3e]  alpha=%.3e\n",
+                 rxF, dmin, dmax, lmin, lmax, alpha);
+  }
+
   // ---- R^{-1};  coef = R^{-1} R^{-T} h;  sigma_diag;  cond ----
   std::vector<double> Rinv = R;
-  lapack::trtri(lapack::Uplo::Upper, lapack::Diag::NonUnit, n, Rinv.data(), n);
+  int64_t trtri_info = lapack::trtri(lapack::Uplo::Upper, lapack::Diag::NonUnit, n, Rinv.data(), n);
+  if (debug && mpi_rank == 0 && trtri_info != 0)
+    std::fprintf(stderr, "*** ARD diag: trtri info=%lld (zero/singular pivot at that 1-based index)\n",
+                 (long long)trtri_info);
 
   std::vector<double> t(n, 0.0), coef(n, 0.0);
   blas::gemv(CM, blas::Op::Trans,   n, n, 1.0, Rinv.data(), n, h.data(), 1, 0.0, t.data(),    1); // t = R^{-T} h
@@ -302,8 +318,8 @@ double slate_ard_update(double* local_aw_active, double* local_bw,
   if (local_sse) *local_sse = (sse > 0.0) ? sse : 0.0;
 
   if (debug && mpi_rank == 0)
-    std::fprintf(stderr, "*** ARD n=%lld %s cond=%.3e ||y||^2=%.3e ||t||^2=%.3e penalty=%.3e sse=%.3e\n",
-                 (long long)n, have_cache?"(cached)":"(recomp)", cond_number, ynorm2, tnorm2, penalty, sse);
+    std::fprintf(stderr, "*** ARD n=%lld %s cond=%.3e (||R||_inf=%.3e ||Rinv||_inf=%.3e) ||y||^2=%.3e ||t||^2=%.3e penalty=%.3e sse=%.3e\n",
+                 (long long)n, have_cache?"(cached)":"(recomp)", cond_number, R_inf, Ri_inf, ynorm2, tnorm2, penalty, sse);
   return cond_number;
 }
 
