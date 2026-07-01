@@ -17,16 +17,6 @@
 #include <unistd.h>
 #endif
 
-// slate::redistribute (defined in SLATE's src/redistribute.cc, explicitly instantiated for double,
-// but NOT declared in any public SLATE header) moves tiles between two matrices that share the
-// same tile grid but have DIFFERENT process distributions -- performing the MPI send/recv that
-// slate::copy does NOT (copy dereferences A(i,j) on non-owning ranks -> map::at throw). Forward-
-// declare the compiled symbol here so we can call it.
-namespace slate {
-template <typename scalar_t>
-void redistribute(Matrix<scalar_t>& A, Matrix<scalar_t>& B, Options const& opts);
-}
-
 extern "C" {
 
 using slate::func::ij_tuple;
@@ -190,9 +180,9 @@ double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
   // m_local    : design rows this rank owns in that buffer (= a_end_idx - a_start_idx + 1).
   // lld        : column stride of the shared buffer = a.shape[0] (node rows).
   //
-  // The working matrix 'aw' built below is a SEPARATE, SLATE-owned, 2D block-cyclic matrix -- it
-  // is NOT an alias of 'a'. qr_factor destroys aw in place; 'a' is left byte-identical for the
-  // next iteration. That is the whole reason aw is materialized here instead of in numpy.
+  // The working matrix 'aw' built below is a SEPARATE, SLATE-owned, block-row matrix -- it is NOT
+  // an alias of 'a'. qr_factor destroys aw in place; 'a' is left byte-identical for the next
+  // iteration. That is the whole reason aw is materialized here instead of in numpy.
 
   // -------------------------------- HYBRID MPI/OPENMP --------------------------------
 
@@ -254,36 +244,31 @@ double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
   const int64_t my_first_tile = blk_first_tile[mpi_rank];
   const int64_t my_ntiles     = (m_local > 0) ? ceil_div64(m_local, mb) : 0;
 
-  // -------------------------------- 2D BLOCK-CYCLIC PROCESS GRID --------------------------------
-  // Near-square p x q over ALL ranks so the distributed QR panels are load-balanced -- the point
-  // of this refactor. process_2d_grid assigns tile (i,j) -> (i % p) + (j % q) * p (proper 2D
-  // block-cyclic). The old code mapped tiles by row only (a 1 x q layout), serializing the QR and
-  // pinning the R factor to one rank.
-  int p = 1, q = mpi_size;
-  for (int pp = (int) std::floor(std::sqrt((double) mpi_size)); pp >= 1; --pp)
-    if (mpi_size % pp == 0) { p = pp; q = mpi_size / pp; break; }
-
-  auto tileRank2D = slate::func::process_2d_grid(slate::GridOrder::Col, p, q);
-
+  // -------------------------------- 1D BLOCK-ROW DISTRIBUTION --------------------------------
+  // aw is distributed BLOCK-ROW: rank r owns its own contiguous physical rows (tile_owner), so it
+  // fills them LOCALLY from the node-shared 'a' with zero MPI -- no redistribution, no staging.
+  // For a tall-skinny matrix (m >> n_active) this is the right layout: SLATE's geqrf still spreads
+  // the O(m n^2) panel work across all ranks (every rank holds rows in every column), while the
+  // small O(n^3) R-space tail (trcondest, triangular_solve, R^-T sweep) lands on rank 0 -- which
+  // is exactly where the leading n_active rows live, since n_active <= rows-on-rank-0 (guarded
+  // below). A 2D block-cyclic layout was tried first, but its per-tile redistribution of the
+  // m x n_active design (~mt*nt point-to-point messages per iteration, mt ~ m/mb) dominated
+  // everything; block-row removes that entire communication phase.
   std::function<int64_t (int64_t)> tile1 = [](int64_t) { return 1; };
   std::function<int (slate::func::ij_tuple)> tileDevice =
     [](slate::func::ij_tuple) { return slate::HostNum; };
+  std::function<int (slate::func::ij_tuple)> tileRank0 =
+    [](slate::func::ij_tuple) { return 0; };
 
-  // Column tiling (shared by aw, staging panels, and the R-space matrices).
+  // Column tiling (shared by aw and the R-space matrices).
   int64_t tile_col_last = nt - 1;
   int64_t tile_col_remainder = n_active - (nt - 1) * nb;
   std::function<int64_t (int64_t)> tileNb = [tile_col_last, tile_col_remainder, nb](int64_t j) {
     return (j == tile_col_last) ? tile_col_remainder : nb;
   };
 
-  // Physical row tiling + ownership for the STAGING panels (local-gather targets).
-  std::function<int64_t (int64_t)> tileMb_data =
-    [tile_height](int64_t i) { return tile_height[i]; };
-  std::function<int (slate::func::ij_tuple)> tileRank_phys =
-    [tile_owner](slate::func::ij_tuple ij) { return tile_owner[std::get<0>(ij)]; };
-
-  // Augmented row tiling: data rows [0,mt) follow the physical map (so staging<->aw tile grids
-  // match for the redistribution); the n_active regularizer rows [mt,mt+nt) follow, tiled by nb.
+  // Augmented row tiling: data rows [0,mt) keep their physical mb-tiling; the n_active regularizer
+  // rows [mt,mt+nt) follow, tiled by nb.
   std::function<int64_t (int64_t)> tileMb_aug =
     [mt, tile_height, nt, n_active, nb](int64_t i) -> int64_t {
       if (i < mt) return tile_height[i];
@@ -291,8 +276,16 @@ double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
       return (jt == nt - 1) ? (n_active - (nt - 1) * nb) : nb;
     };
 
+  // Augmented row OWNERSHIP: data rows -> their physical owner (block-row, so each rank fills its
+  // own rows locally); the n_active regularizer rows -> rank 0 (a tiny tail co-located with R).
+  std::function<int (slate::func::ij_tuple)> tileRank_aug =
+    [mt, tile_owner](slate::func::ij_tuple ij) -> int {
+      int64_t i = std::get<0>(ij);
+      return (i < mt) ? tile_owner[i] : 0;
+    };
+
   if (mpi_rank == 0 && debug) {
-    std::fprintf(stderr, "\n=== slate_ard_update (augmented-QR, 2D %dx%d grid) ===\n", p, q);
+    std::fprintf(stderr, "\n=== slate_ard_update (augmented-QR, 1D block-row, %d ranks) ===\n", mpi_size);
     std::fprintf(stderr, "  m=%" PRId64 ", n_active=%" PRId64 ", alpha=%.6e, data tile-rows=%"
                  PRId64 " (nt=%" PRId64 ")\n", m_total, n_active, alpha, mt, nt);
   }
@@ -301,12 +294,11 @@ double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
     
   try {
 
-    // R-space uniform-tiling requirement: R is sliced from aw's leading n_active rows, which are
-    // 2D-distributed across the whole grid (good). For the R-space helpers (trcondest,
-    // triangular_solve, the R^-T column-norm sweep) to share clean nb-aligned tiles with R, no
-    // rank-boundary "short tile" may fall inside the first n_active rows -- i.e.
-    // n_active <= rows-on-rank-0. With m >> n this holds with wide margin (rank 0 owns
-    // ~m/num_ranks rows >> n_active). If violated, fail loudly rather than return a wrong answer.
+    // R-space locality requirement: with block-row aw, the leading n_active rows (hence the R
+    // factor and the whole R-space tail: trcondest, triangular_solve, the R^-T column-norm sweep)
+    // live entirely in rank 0's block PROVIDED n_active <= rows-on-rank-0. With m >> n this holds
+    // with wide margin (rank 0 owns ~m/num_ranks rows >> n_active). If violated, R would straddle a
+    // rank boundary and the R-space ops below would be wrong -- so fail loudly instead.
     if (n_active > rows_per_rank[0]) {
       if (mpi_rank == 0)
         std::fprintf(stderr,
@@ -317,7 +309,7 @@ double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
     }
 
     // ----------------------------------------------------------------------------------------
-    // BUILD  aw = [ w . a[:,active] ; diag(sqrt(lambda/alpha)) ]  as a SLATE-owned 2D matrix.
+    // BUILD  aw = [ w . a[:,active] ; diag(sqrt(lambda/alpha)) ]  as a SLATE-owned block-row matrix.
     //
     //     aw = [        w . X         ]  (m_total  x n_active)    b_aug = [ w . y ]
     //          [ diag(sqrt(lambda/a)) ]  (n_active x n_active)            [   0   ]
@@ -336,30 +328,22 @@ double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
     // survives for the next ARD iteration.
     // ----------------------------------------------------------------------------------------
     slate::Matrix<double> aw(m_total + n_active, n_active,
-                             tileMb_aug, tileNb, tileRank2D, tileDevice, comm);
+                             tileMb_aug, tileNb, tileRank_aug, tileDevice, comm);
     aw.insertLocalTiles();
 
     const double inv_sqrt_alpha = 1.0 / std::sqrt(alpha);
 
-    // ---- data block (rows [0,m_total)): per block-column, do a purely LOCAL gather+weight of
-    //      this rank's physical rows into a 1D row-distributed staging panel, then ONE global
-    //      slate::copy redistributes it into aw's 2D tiles (SLATE moves the tiles across nodes).
-    //      Transient memory is a single m x nb panel, freed before the next block-column -- never
-    //      a second m x n copy of 'a'. ----
-    for (int64_t jt = 0; jt < nt; ++jt) {
-      const int64_t col0 = jt * nb;
-      const int64_t ncol = tileNb(jt);
-      std::function<int64_t (int64_t)> tileNb_panel = [ncol](int64_t) { return ncol; };
-
-      slate::Matrix<double> panel(m_total, ncol,
-                                  tileMb_data, tileNb_panel, tileRank_phys, tileDevice, comm);
-      panel.insertLocalTiles();
-
-      for (int64_t il = 0; il < my_ntiles; ++il) {       // fill only physically-owned tile-rows
-        const int64_t i = my_first_tile + il;
-        if (!panel.tileIsLocal(i, 0)) continue;
-        auto tile = panel(i, 0);
-        const int64_t h = tile_height[i];
+    // ---- data block (rows [0,m_total)): each rank fills its OWN physical row-tiles directly from
+    //      the node-shared 'a' -- gather the active columns, scale by the row weight. Purely local,
+    //      zero MPI, and 'a' is only read. This is the whole payoff of the block-row layout. ----
+    for (int64_t il = 0; il < my_ntiles; ++il) {
+      const int64_t i = my_first_tile + il;
+      const int64_t h = tile_height[i];
+      for (int64_t jt = 0; jt < nt; ++jt) {
+        if (!aw.tileIsLocal(i, jt)) continue;
+        auto tile = aw(i, jt);
+        const int64_t col0 = jt * nb;
+        const int64_t ncol = tileNb(jt);
         for (int64_t r = 0; r < h; ++r) {
           const int64_t k  = il * mb + r;                // rank-local row in [0, m_local)
           const int64_t br = row_offset + k;             // row within the node-shared buffer
@@ -368,14 +352,10 @@ double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
             tile.at(r, c) = wk * local_a[br + active_indices[col0 + c] * lld];
         }
       }
+    }
 
-      auto aw_panel = aw.sub(0, mt - 1, jt, jt);         // aw data block, this block-column
-      slate::redistribute(panel, aw_panel, slate::Options());  // MPI send/recv: physical 1D -> 2D cyclic
-      MPI_Barrier(comm);
-    }                                                    // panel freed here
-
-    // ---- regularizer block (rows [m_total, m_total+n_active)): diag(sqrt(lambda/alpha)) on the
-    //      2D tile that owns each diagonal entry. ----
+    // ---- regularizer block (rows [m_total, m_total+n_active)): diag(sqrt(lambda/alpha)); these
+    //      rows live on rank 0, so only rank 0 has local tiles here. ----
     auto A_reg = aw.slice(m_total, m_total + n_active - 1, 0, n_active - 1);
     slate::set(0.0, A_reg);
     for (int64_t idx = 0; idx < n_active; ++idx) {
@@ -384,26 +364,20 @@ double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
         aw(it, jc).at(loc, loc) = std::sqrt(lambda_active[idx]) * inv_sqrt_alpha;
     }
 
-    // ---- b_aug = [ w . b ; 0 ] : data rows redistributed like aw, regularizer rows zero. ----
-    slate::Matrix<double> b_aug(m_total + n_active, 1, tileMb_aug, tile1, tileRank2D, tileDevice, comm);
+    // ---- b_aug = [ w . b ; 0 ] : data rows filled locally like aw, regularizer rows zero. ----
+    slate::Matrix<double> b_aug(m_total + n_active, 1, tileMb_aug, tile1, tileRank_aug, tileDevice, comm);
     b_aug.insertLocalTiles();
     slate::set(0.0, b_aug);
-    {
-      slate::Matrix<double> b_src(m_total, 1, tileMb_data, tile1, tileRank_phys, tileDevice, comm);
-      b_src.insertLocalTiles();
-      for (int64_t il = 0; il < my_ntiles; ++il) {
-        const int64_t i = my_first_tile + il;
-        if (!b_src.tileIsLocal(i, 0)) continue;
-        auto tile = b_src(i, 0);
-        const int64_t h = tile_height[i];
-        for (int64_t r = 0; r < h; ++r) {
-          const int64_t k = il * mb + r;
-          tile.at(r, 0) = local_w_eff[k] * local_b[row_offset + k];
-        }
+    for (int64_t il = 0; il < my_ntiles; ++il) {
+      const int64_t i = my_first_tile + il;
+      if (!b_aug.tileIsLocal(i, 0)) continue;
+      auto tile = b_aug(i, 0);
+      const int64_t h = tile_height[i];
+      for (int64_t r = 0; r < h; ++r) {
+        const int64_t k = il * mb + r;
+        tile.at(r, 0) = local_w_eff[k] * local_b[row_offset + k];
       }
-      auto b_top = b_aug.sub(0, mt - 1, 0, 0);
-      slate::redistribute(b_src, b_top, slate::Options());     // MPI send/recv: b's data rows -> 2D
-    }                                                    // b_src freed here
+    }
 
     MPI_Barrier(comm);
 
@@ -417,7 +391,7 @@ double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
     slate::qr_factor(aw, T);
     MPI_Barrier(comm);
 
-    // R = leading n_active x n_active upper-triangular factor (2D-distributed).
+    // R = leading n_active x n_active upper-triangular factor (lives on rank 0; see guard above).
     auto R_sq = aw.slice(0, n_active - 1, 0, n_active - 1);
     auto R = slate::TriangularMatrix<double>(slate::Uplo::Upper, slate::Diag::NonUnit, R_sq);
 
@@ -455,7 +429,7 @@ double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
     // no rank-0 gather and no sigma_diag Bcast are needed.
     auto R_T = transpose(R);
     std::function<int64_t (int64_t)> tileNb_one = [nb](int64_t) { return nb; };
-    slate::Matrix<double> Zp(n_active, nb, tileNb, tileNb_one, tileRank2D, tileDevice, comm);
+    slate::Matrix<double> Zp(n_active, nb, tileNb, tileNb_one, tileRank0, tileDevice, comm);
     Zp.insertLocalTiles();
 
     std::vector<double> sigma_acc(n_active, 0.0);
