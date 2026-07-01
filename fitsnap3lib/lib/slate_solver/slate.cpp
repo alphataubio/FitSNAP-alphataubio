@@ -382,7 +382,7 @@ double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
 
       if (debug) slate::print("C", C, opts);
 
-      // cond(C) via pocondest: need ||C||_1 BEFORE factoring.
+      // ||C||_1 for the exact condition number below (taken BEFORE factoring overwrites C).
       double Cnorm = slate::norm(slate::Norm::One, C);
 
       int64_t info = slate::chol_factor(C);                 // C -> L (potrf)
@@ -392,10 +392,6 @@ double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
                        " (normal matrix not SPD -- raise alpha or use QR)\n", info);
         MPI_Abort(comm, 3);
       }
-
-      double rcond = slate::chol_rcondest_using_factor(slate::Norm::One, C, Cnorm);
-      double condC = (rcond > 1e-300) ? (1.0 / rcond) : 1e300;
-      double cond_number = std::sqrt(condC);                // kappa(X) units (C ~ X^T X)
 
       // g = Xw^T bw  (n_active x 1, on C's 2D grid).
       slate::Matrix<double> g(n_active, 1, tileNb, tile1, tileRank2D, tileDevice, comm);
@@ -427,6 +423,14 @@ double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
 
       // sigma_diag = diag(C^-1) / alpha  (potri, then read the diagonal tiles).
       slate::chol_inverse_using_factor(C);                  // C -> C^-1
+
+      // Exact 1-norm condition number kappa_1(C) = ||C||_1 * ||C^-1||_1, from the inverse we
+      // already form for sigma. Replaces SLATE's pocondest, whose iterative DATA-DEPENDENT 1-norm
+      // estimator (norm1est) tripped a map::at on the 2D-grid single-column workspace on later
+      // iterations. Reported in kappa(X) units as sqrt(kappa(C)) since C ~ X^T X.
+      double Cinv_norm = slate::norm(slate::Norm::One, C);
+      double cond_number = std::sqrt(Cnorm * Cinv_norm);
+
       std::vector<double> sig_host(n_active, 0.0);
       for (int64_t it = 0; it < nt; ++it)
         if (C.tileIsLocal(it, it)) {
