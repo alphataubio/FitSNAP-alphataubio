@@ -20,7 +20,8 @@ cdef extern from *:
                                       int64_t m, int64_t n, int64_t lld, 
                                       MPI_Comm comm, int debug);
                                       
-        double slate_ard_update(double* local_aw_active, double* local_bw, 
+        double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
+                                int64_t* active_indices,
                                 double* local_sigma_diag, double* local_coef_active,
                                 double* local_sse,
                                 int64_t m, int64_t n_active, int64_t lld,
@@ -43,7 +44,8 @@ cdef extern from *:
                                   int64_t m, int64_t n, int64_t lld, 
                                   MPI_Comm comm, int debug) except +
     
-    double slate_ard_update(double* local_aw_active, double* local_bw, 
+    double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
+                           int64_t* active_indices,
                            double* local_sigma_diag, double* local_coef_active,
                            double* local_sse,
                            int64_t m, int64_t n_active, int64_t lld,
@@ -76,7 +78,8 @@ def slate_ridge_augmented_qr_cython(double[::1, :] local_aw, double[::1] local_b
     
     slate_ridge_augmented_qr(&local_aw[0, 0], &local_bw[0], m, n, lld, c_comm, debug)
 
-def slate_ard_update_cython(double[::1, :] local_aw_active, double[::1] local_bw,
+def slate_ard_update_cython(double[::1, :] local_a, double[::1] local_b,
+                           double[::1] local_w_eff, int64_t[::1] active_indices,
                            double[::1] lambda_active, double alpha,
                            int m, int n_active, int lld, 
                            int row_offset, int m_local,
@@ -90,10 +93,12 @@ def slate_ard_update_cython(double[::1, :] local_aw_active, double[::1] local_bw
     cdef np.ndarray[double, ndim=1] coef_active = np.zeros(n_active, dtype=np.float64)
     cdef double sse = 0.0
     cdef double cond_number
-    
+
     cdef MPI_Comm c_comm = comm_obj.ob_mpi
-    
-    cond_number = slate_ard_update(&local_aw_active[0, 0], &local_bw[0], 
+    cdef double* w_ptr = &local_w_eff[0] if m_local > 0 else NULL
+
+    cond_number = slate_ard_update(&local_a[0, 0], &local_b[0], w_ptr,
+                    &active_indices[0],
                     <double*>np.PyArray_DATA(sigma_diag), <double*>np.PyArray_DATA(coef_active),
                     &sse,
                     m, n_active, lld, row_offset, m_local, alpha, &lambda_active[0], c_comm, debug)

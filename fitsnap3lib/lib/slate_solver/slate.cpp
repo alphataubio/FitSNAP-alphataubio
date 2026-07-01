@@ -11,12 +11,21 @@
 #include <functional>
 #include <algorithm> 
 #include <cinttypes> 
-#include <limits>
 
 #ifdef __linux__
 #include <sched.h>
 #include <unistd.h>
 #endif
+
+// slate::redistribute (defined in SLATE's src/redistribute.cc, explicitly instantiated for double,
+// but NOT declared in any public SLATE header) moves tiles between two matrices that share the
+// same tile grid but have DIFFERENT process distributions -- performing the MPI send/recv that
+// slate::copy does NOT (copy dereferences A(i,j) on non-owning ranks -> map::at throw). Forward-
+// declare the compiled symbol here so we can call it.
+namespace slate {
+template <typename scalar_t>
+void redistribute(Matrix<scalar_t>& A, Matrix<scalar_t>& B, Options const& opts);
+}
 
 extern "C" {
 
@@ -160,178 +169,356 @@ void slate_ridge_augmented_qr(double* local_aw, double* local_bw,
 // SLATE ARD Update
 // -----------------------------------------------------------------------------
 
-// active set is monotone => n_active identifies it (see note); per-process cache
-// static int64_t            g_ard_cached_n = -1;
-// static std::vector<double> g_ard_cached_Rx;   // n x n col-major upper-tri (replicated)
+double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
+                     int64_t* active_indices,
+                     double* local_sigma_diag, double* local_coef_active,
+                     double* local_sse,
+                     int64_t m, int64_t n_active, int64_t lld,
+                     int64_t row_offset, int64_t m_local,
+                     double alpha, double* lambda_active,
+                     MPI_Comm comm, int debug) {
 
-double slate_ard_update(double* local_aw_active, double* local_bw,
-                        double* local_sigma_diag, double* local_coef_active,
-                        double* local_sse,
-                        int64_t m, int64_t n_active, int64_t lld,
-                        int64_t row_offset, int64_t m_local,
-                        double alpha, double* lambda_active,
-                        MPI_Comm comm, int debug) {
-  (void)m;
-  int mpi_rank = 0, mpi_size = 1;
+  // INPUT (read-only, NEVER written): local_a is this rank's slice of the node-shared,
+  // COLUMN-MAJOR FitSNAP design buffer 'a' -- ALL n columns, column stride lld = a.shape[0]
+  // (= node rows). ARD rebuilds the working matrix every iteration from this pristine buffer
+  // with the current active set + weights, and error_analysis reads it again afterwards, so it
+  // must NOT be mutated. local_b is the matching node-shared target slice; local_w_eff[k] is the
+  // effective weight (testing rows pre-zeroed by Python) for this rank's local row k in
+  // [0, m_local); active_indices[c] is the GLOBAL column of the c-th active feature.
+  //
+  // row_offset : this rank's first row WITHIN the node-shared buffer (= sub_a_indices start).
+  // m_local    : design rows this rank owns in that buffer (= a_end_idx - a_start_idx + 1).
+  // lld        : column stride of the shared buffer = a.shape[0] (node rows).
+  //
+  // The working matrix 'aw' built below is a SEPARATE, SLATE-owned, 2D block-cyclic matrix -- it
+  // is NOT an alias of 'a'. qr_factor destroys aw in place; 'a' is left byte-identical for the
+  // next iteration. That is the whole reason aw is materialized here instead of in numpy.
+
+  // -------------------------------- HYBRID MPI/OPENMP --------------------------------
+
+  int mpi_rank, mpi_size;
   MPI_Comm_rank(comm, &mpi_rank);
   MPI_Comm_size(comm, &mpi_size);
-  if (n_active == 0) { if (local_sse) *local_sse = 0.0; return 1.0; }
+  int num_threads = omp_get_max_threads();
+  (void) m; (void) num_threads;
 
-  const int64_t n = n_active, nn = n * n;
-  const blas::Layout CM = blas::Layout::ColMajor;
-  double* Xp = local_aw_active + row_offset;   // &aw[row_offset,0], col-major, ld=lld
-  double* yp = local_bw       + row_offset;    // &bw[row_offset]
+  // -------------------------------- PRINT OPTS --------------------------------
 
-  if (debug) {
-  double xf2 = 0.0;
-  if (m_local > 0)
-    for (int64_t j = 0; j < n_active; ++j)
-      for (int64_t i = 0; i < m_local; ++i) { double v = (local_aw_active + row_offset)[i + j*lld]; xf2 += v*v; }
-  double yn2 = (m_local > 0) ? blas::dot(m_local, local_bw + row_offset, 1, local_bw + row_offset, 1) : 0.0;
-  std::vector<long long> off(mpi_size), mlo(mpi_size), ld(mpi_size);
-  long long a = row_offset, b = m_local, c = lld;
-  MPI_Gather(&a,1,MPI_LONG_LONG,off.data(),1,MPI_LONG_LONG,0,comm);
-  MPI_Gather(&b,1,MPI_LONG_LONG,mlo.data(),1,MPI_LONG_LONG,0,comm);
-  MPI_Gather(&c,1,MPI_LONG_LONG,ld.data(), 1,MPI_LONG_LONG,0,comm);
-  std::fprintf(stderr,"[rank %d] off=%lld m_local=%lld lld=%lld ||Xp||_F^2=%.6e ||yp||^2=%.6e\n",
-               mpi_rank,(long long)row_offset,(long long)m_local,(long long)lld,xf2,yn2);
-  if (mpi_rank==0) for (int r=0;r<mpi_size;++r)
-    std::fprintf(stderr,"  PART rank %2d: off=%lld m_local=%lld end=%lld lld=%lld\n",
-                 r,off[r],mlo[r],off[r]+mlo[r],ld[r]);
-}
+  slate::Options opts = {
+    {slate::Option::PrintVerbose, 4},
+    {slate::Option::PrintPrecision, 1},
+    {slate::Option::PrintWidth, 4}
+  };
 
-  // ---- h = X^T y  and  ynorm2 = ||y||^2   (gemv reads aw BEFORE any geqrf overwrite) ----
-  std::vector<double> h(n, 0.0);
-  double ynorm2_local = 0.0;
-  if (m_local > 0) {
-    blas::gemv(CM, blas::Op::Trans, m_local, n, 1.0, Xp, lld, yp, 1, 0.0, h.data(), 1);
-    ynorm2_local = blas::dot(m_local, yp, 1, yp, 1);
+  // -------------------------------- TILE SIZE --------------------------------
+  // FIXME: find optimal tile size based on cache size
+
+  int64_t mb = 256;
+  int64_t nb = 256;
+  int64_t nt = ceil_div64(n_active, nb);
+
+  // -------------------------------- GLOBAL BLOCK-ROW MAP (physical layout of 'a') --------------------------------
+  // Allgather each rank's true row count so the closures below are byte-identical on every rank
+  // (SLATE requires this). Each rank owns ceil(m_local/mb) consecutive mb-sized tile-rows (last
+  // one short) mapping to its own contiguous slice of the node-shared buffer. This map says WHERE
+  // THE DATA PHYSICALLY LIVES and drives only the LOCAL gather into the staging panels below; aw
+  // itself is 2D block-cyclic (next block), NOT distributed by this map.
+  std::vector<int64_t> rows_per_rank(mpi_size);
+  MPI_Allgather(&m_local, 1, MPI_INT64_T, rows_per_rank.data(), 1, MPI_INT64_T, comm);
+
+  std::vector<int64_t> blk_first_tile(mpi_size);
+  int64_t mt = 0, m_total = 0;
+  for (int r = 0; r < mpi_size; ++r) {
+    blk_first_tile[r] = mt;
+    mt      += ceil_div64(rows_per_rank[r], mb);
+    m_total += rows_per_rank[r];
   }
-  MPI_Allreduce(MPI_IN_PLACE, h.data(), (int)n, MPI_DOUBLE, MPI_SUM, comm);
-  double ynorm2 = 0.0;
-  MPI_Allreduce(&ynorm2_local, &ynorm2, 1, MPI_DOUBLE, MPI_SUM, comm);
 
-  // ---- R_x : R_x^T R_x = X^T X  via local QR + TSQR tree (R only; cached) ----
-  std::vector<double> Rx;
-  //const bool have_cache = (n == g_ard_cached_n) && ((int64_t)g_ard_cached_Rx.size() == nn);
-  //if (have_cache) {
-  //  Rx = g_ard_cached_Rx;
-  //} else
-
+  // Per data tile-row: physical owner rank, tile height, and global first row.
+  std::vector<int>     tile_owner(mt);
+  std::vector<int64_t> tile_height(mt);
+  std::vector<int64_t> tile_row0(mt);
   {
-    std::vector<double> Rloc(nn, 0.0);
-    if (m_local > 0) {
-      const int64_t k = std::min<int64_t>(m_local, n);
-      std::vector<double> tau(k);
-      lapack::geqrf(m_local, n, Xp, lld, tau.data());          // R in upper(Xp)
-      for (int64_t j = 0; j < n; ++j)
-        for (int64_t i = 0; i <= std::min<int64_t>(j, k - 1); ++i)
-          Rloc[i + j*n] = Xp[i + j*lld];
-      // A rank-deficient / all-zero block has X^(p)^T X^(p) = R_p^T R_p with R_p = 0, so its
-      // exact contribution to sum_p R_p^T R_p is zero. geqrf on a zero (or rank-deficient)
-      // block can leave NaN/Inf in the trapezoid (zero Householder norm); replacing any
-      // non-finite entry with 0 restores the correct (zero) contribution and stops the TSQR
-      // tree + Bcast from poisoning every rank's R_x with NaN. (Seen with under-filled tail
-      // ranks whose entire config range was charge-filtered out -- see note below.)
-      for (double& v : Rloc) if (!std::isfinite(v)) v = 0.0;
-    }
-    std::vector<double> Rrecv(nn), stack(2*nn);
-    for (int64_t mask = 1; mask < mpi_size; mask <<= 1) {
-      if (mpi_rank & mask) {
-        MPI_Send(Rloc.data(), (int)nn, MPI_DOUBLE, mpi_rank - (int)mask, 0, comm);
-        break;
+    int64_t row = 0;
+    for (int r = 0; r < mpi_size; ++r) {
+      int64_t mtr = ceil_div64(rows_per_rank[r], mb);
+      for (int64_t il = 0; il < mtr; ++il) {
+        int64_t i = blk_first_tile[r] + il;
+        tile_owner[i]  = r;
+        tile_height[i] = (il == mtr - 1) ? (rows_per_rank[r] - (mtr - 1) * mb) : mb;
+        tile_row0[i]   = row;
+        row += tile_height[i];
       }
-      int src = mpi_rank + (int)mask;
-      if (src >= mpi_size) continue;
-      MPI_Recv(Rrecv.data(), (int)nn, MPI_DOUBLE, src, 0, comm, MPI_STATUS_IGNORE);
-      // A zero partner contributes nothing to sum_p R_p^T R_p, so skip the combine entirely.
-      // (Running geqrf on a zero/rank-deficient panel is what produced finite-but-huge junk.)
-      double rrecv2 = 0.0; for (double v : Rrecv) rrecv2 += v*v;
-      if (!(rrecv2 > 0.0)) continue;        // partner all-zero (or non-finite scrubbed to 0): keep Rloc
-      double rloc2 = 0.0; for (double v : Rloc) rloc2 += v*v;
-      if (!(rloc2 > 0.0)) { Rloc = Rrecv; continue; }   // I was all-zero: adopt partner, no geqrf
-      for (int64_t j = 0; j < n; ++j) {
-        for (int64_t i = 0; i < n; ++i) stack[i     + j*2*n] = Rloc[i  + j*n];
-        for (int64_t i = 0; i < n; ++i) stack[(n+i) + j*2*n] = Rrecv[i + j*n];
-      }
-      std::vector<double> tau(n);
-      lapack::geqrf(2*n, n, stack.data(), 2*n, tau.data());
-      std::fill(Rloc.begin(), Rloc.end(), 0.0);
-      for (int64_t j = 0; j < n; ++j)
-        for (int64_t i = 0; i <= j; ++i) Rloc[i + j*n] = stack[i + j*2*n];
-      // Scrub this combine's output too -- a rank-deficient stacked panel can leave non-finite
-      // entries that would compound up the tree (the leaf-only guard above does not reach here).
-      for (double& v : Rloc) if (!std::isfinite(v)) v = 0.0;
     }
-    MPI_Bcast(Rloc.data(), (int)nn, MPI_DOUBLE, 0, comm);
-    Rx = std::move(Rloc);
-    //g_ard_cached_n = n;  g_ard_cached_Rx = Rx;
+  }
+  const int64_t my_first_tile = blk_first_tile[mpi_rank];
+  const int64_t my_ntiles     = (m_local > 0) ? ceil_div64(m_local, mb) : 0;
+
+  // -------------------------------- 2D BLOCK-CYCLIC PROCESS GRID --------------------------------
+  // Near-square p x q over ALL ranks so the distributed QR panels are load-balanced -- the point
+  // of this refactor. process_2d_grid assigns tile (i,j) -> (i % p) + (j % q) * p (proper 2D
+  // block-cyclic). The old code mapped tiles by row only (a 1 x q layout), serializing the QR and
+  // pinning the R factor to one rank.
+  int p = 1, q = mpi_size;
+  for (int pp = (int) std::floor(std::sqrt((double) mpi_size)); pp >= 1; --pp)
+    if (mpi_size % pp == 0) { p = pp; q = mpi_size / pp; break; }
+
+  auto tileRank2D = slate::func::process_2d_grid(slate::GridOrder::Col, p, q);
+
+  std::function<int64_t (int64_t)> tile1 = [](int64_t) { return 1; };
+  std::function<int (slate::func::ij_tuple)> tileDevice =
+    [](slate::func::ij_tuple) { return slate::HostNum; };
+
+  // Column tiling (shared by aw, staging panels, and the R-space matrices).
+  int64_t tile_col_last = nt - 1;
+  int64_t tile_col_remainder = n_active - (nt - 1) * nb;
+  std::function<int64_t (int64_t)> tileNb = [tile_col_last, tile_col_remainder, nb](int64_t j) {
+    return (j == tile_col_last) ? tile_col_remainder : nb;
+  };
+
+  // Physical row tiling + ownership for the STAGING panels (local-gather targets).
+  std::function<int64_t (int64_t)> tileMb_data =
+    [tile_height](int64_t i) { return tile_height[i]; };
+  std::function<int (slate::func::ij_tuple)> tileRank_phys =
+    [tile_owner](slate::func::ij_tuple ij) { return tile_owner[std::get<0>(ij)]; };
+
+  // Augmented row tiling: data rows [0,mt) follow the physical map (so staging<->aw tile grids
+  // match for the redistribution); the n_active regularizer rows [mt,mt+nt) follow, tiled by nb.
+  std::function<int64_t (int64_t)> tileMb_aug =
+    [mt, tile_height, nt, n_active, nb](int64_t i) -> int64_t {
+      if (i < mt) return tile_height[i];
+      int64_t jt = i - mt;
+      return (jt == nt - 1) ? (n_active - (nt - 1) * nb) : nb;
+    };
+
+  if (mpi_rank == 0 && debug) {
+    std::fprintf(stderr, "\n=== slate_ard_update (augmented-QR, 2D %dx%d grid) ===\n", p, q);
+    std::fprintf(stderr, "  m=%" PRId64 ", n_active=%" PRId64 ", alpha=%.6e, data tile-rows=%"
+                 PRId64 " (nt=%" PRId64 ")\n", m_total, n_active, alpha, mt, nt);
   }
 
-  // ---- final R: QR([ R_x ; diag(sqrt(lambda/alpha)) ]);  R^T R = X^T X + diag(lambda/alpha) ----
-  const double inv_sqrt_alpha = 1.0 / std::sqrt(alpha);
-  std::vector<double> aug(2*nn, 0.0);
-  for (int64_t j = 0; j < n; ++j) {
-    for (int64_t i = 0; i <= j; ++i) aug[i + j*2*n] = Rx[i + j*n];
-    aug[(n + j) + j*2*n] = std::sqrt(lambda_active[j]) * inv_sqrt_alpha;
+  if (n_active == 0) return 1.0; // Perfect conditioning for empty matrix
+    
+  try {
+
+    // R-space uniform-tiling requirement: R is sliced from aw's leading n_active rows, which are
+    // 2D-distributed across the whole grid (good). For the R-space helpers (trcondest,
+    // triangular_solve, the R^-T column-norm sweep) to share clean nb-aligned tiles with R, no
+    // rank-boundary "short tile" may fall inside the first n_active rows -- i.e.
+    // n_active <= rows-on-rank-0. With m >> n this holds with wide margin (rank 0 owns
+    // ~m/num_ranks rows >> n_active). If violated, fail loudly rather than return a wrong answer.
+    if (n_active > rows_per_rank[0]) {
+      if (mpi_rank == 0)
+        std::fprintf(stderr,
+          "slate_ard_update: n_active=%" PRId64 " > rows-on-rank-0=%" PRId64
+          "; R-space tiling would be irregular (use fewer ranks/node for the solve).\n",
+          n_active, rows_per_rank[0]);
+      MPI_Abort(comm, 2);
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // BUILD  aw = [ w . a[:,active] ; diag(sqrt(lambda/alpha)) ]  as a SLATE-owned 2D matrix.
+    //
+    //     aw = [        w . X         ]  (m_total  x n_active)    b_aug = [ w . y ]
+    //          [ diag(sqrt(lambda/a)) ]  (n_active x n_active)            [   0   ]
+    //
+    //     aw = Q R   =>   R^T R = X^T X + diag(lambda/alpha) = C / alpha
+    //
+    // Augmented QR (NOT Cholesky on the normal equations): kappa(R) = kappa(X), so precision is
+    // retained. The normal-equations form squares the condition number (kappa(X)^2), which in
+    // double precision floors achievable SSE near 1e-8.
+    //
+    //   coef       = R^-1 (Q^T b_aug)[0:n] = alpha C^-1 X^T y          (ARD MAP estimate)
+    //   ||d2||^2   = ||(Q^T b_aug)[n:]||^2 = SSE + (1/alpha) sum_i lambda_i coef_i^2
+    //   sigma_diag = diag(C^-1) = ||col_i of R^-T||^2 / alpha
+    //
+    // 'a' is the INPUT and is never written; qr_factor destroys aw (separate memory), so 'a'
+    // survives for the next ARD iteration.
+    // ----------------------------------------------------------------------------------------
+    slate::Matrix<double> aw(m_total + n_active, n_active,
+                             tileMb_aug, tileNb, tileRank2D, tileDevice, comm);
+    aw.insertLocalTiles();
+
+    const double inv_sqrt_alpha = 1.0 / std::sqrt(alpha);
+
+    // ---- data block (rows [0,m_total)): per block-column, do a purely LOCAL gather+weight of
+    //      this rank's physical rows into a 1D row-distributed staging panel, then ONE global
+    //      slate::copy redistributes it into aw's 2D tiles (SLATE moves the tiles across nodes).
+    //      Transient memory is a single m x nb panel, freed before the next block-column -- never
+    //      a second m x n copy of 'a'. ----
+    for (int64_t jt = 0; jt < nt; ++jt) {
+      const int64_t col0 = jt * nb;
+      const int64_t ncol = tileNb(jt);
+      std::function<int64_t (int64_t)> tileNb_panel = [ncol](int64_t) { return ncol; };
+
+      slate::Matrix<double> panel(m_total, ncol,
+                                  tileMb_data, tileNb_panel, tileRank_phys, tileDevice, comm);
+      panel.insertLocalTiles();
+
+      for (int64_t il = 0; il < my_ntiles; ++il) {       // fill only physically-owned tile-rows
+        const int64_t i = my_first_tile + il;
+        if (!panel.tileIsLocal(i, 0)) continue;
+        auto tile = panel(i, 0);
+        const int64_t h = tile_height[i];
+        for (int64_t r = 0; r < h; ++r) {
+          const int64_t k  = il * mb + r;                // rank-local row in [0, m_local)
+          const int64_t br = row_offset + k;             // row within the node-shared buffer
+          const double  wk = local_w_eff[k];
+          for (int64_t c = 0; c < ncol; ++c)             // gather active cols, scale by weight
+            tile.at(r, c) = wk * local_a[br + active_indices[col0 + c] * lld];
+        }
+      }
+
+      auto aw_panel = aw.sub(0, mt - 1, jt, jt);         // aw data block, this block-column
+      slate::redistribute(panel, aw_panel, slate::Options());  // MPI send/recv: physical 1D -> 2D cyclic
+      MPI_Barrier(comm);
+    }                                                    // panel freed here
+
+    // ---- regularizer block (rows [m_total, m_total+n_active)): diag(sqrt(lambda/alpha)) on the
+    //      2D tile that owns each diagonal entry. ----
+    auto A_reg = aw.slice(m_total, m_total + n_active - 1, 0, n_active - 1);
+    slate::set(0.0, A_reg);
+    for (int64_t idx = 0; idx < n_active; ++idx) {
+      const int64_t it = mt + idx / nb, jc = idx / nb, loc = idx % nb;
+      if (aw.tileIsLocal(it, jc))
+        aw(it, jc).at(loc, loc) = std::sqrt(lambda_active[idx]) * inv_sqrt_alpha;
+    }
+
+    // ---- b_aug = [ w . b ; 0 ] : data rows redistributed like aw, regularizer rows zero. ----
+    slate::Matrix<double> b_aug(m_total + n_active, 1, tileMb_aug, tile1, tileRank2D, tileDevice, comm);
+    b_aug.insertLocalTiles();
+    slate::set(0.0, b_aug);
+    {
+      slate::Matrix<double> b_src(m_total, 1, tileMb_data, tile1, tileRank_phys, tileDevice, comm);
+      b_src.insertLocalTiles();
+      for (int64_t il = 0; il < my_ntiles; ++il) {
+        const int64_t i = my_first_tile + il;
+        if (!b_src.tileIsLocal(i, 0)) continue;
+        auto tile = b_src(i, 0);
+        const int64_t h = tile_height[i];
+        for (int64_t r = 0; r < h; ++r) {
+          const int64_t k = il * mb + r;
+          tile.at(r, 0) = local_w_eff[k] * local_b[row_offset + k];
+        }
+      }
+      auto b_top = b_aug.sub(0, mt - 1, 0, 0);
+      slate::redistribute(b_src, b_top, slate::Options());     // MPI send/recv: b's data rows -> 2D
+    }                                                    // b_src freed here
+
+    MPI_Barrier(comm);
+
+    if (debug) {
+      slate::print("aw", aw, opts);
+      slate::print("b_aug", b_aug, opts);
+    }
+
+    // ---- aw = Q R  (in place; aw is SLATE scratch, 'a' untouched) ----
+    slate::TriangularFactors<double> T;
+    slate::qr_factor(aw, T);
+    MPI_Barrier(comm);
+
+    // R = leading n_active x n_active upper-triangular factor (2D-distributed).
+    auto R_sq = aw.slice(0, n_active - 1, 0, n_active - 1);
+    auto R = slate::TriangularMatrix<double>(slate::Uplo::Upper, slate::Diag::NonUnit, R_sq);
+
+    // ---- cond(R) ~ kappa(X)  (sqrt of the cond(C) a normal-equations path would report) ----
+    slate::Options cond_opts;
+    double R_norm = slate::norm(slate::Norm::One, R);
+    double rcond  = slate::trcondest(slate::Norm::One, R, R_norm, cond_opts);
+    double cond_number = (rcond > 1e-300) ? (1.0 / rcond) : 1e300;
+
+    // ---- Q^T b_aug : tail d2 -> augmented residual ; head d1 -> coef = R^-1 d1 ----
+    slate::qr_multiply_by_q(slate::Side::Left, slate::Op::ConjTrans, aw, T, b_aug);
+    MPI_Barrier(comm);
+
+    // ||d2||^2 (d2 = trailing m_total rows of Q^T b_aug) = SSE + (1/alpha) sum lambda*coef^2
+    auto d2 = b_aug.slice(n_active, m_total + n_active - 1, 0, 0);   // named: slate::norm needs an lvalue
+    double d2_norm = slate::norm(slate::Norm::Fro, d2);
+    double aug_resid_sq = d2_norm * d2_norm;
+
+    // coef = R^-1 d1  (d1 = leading n rows of Q^T b_aug), in place in b_aug[0:n]
+    auto d1 = b_aug.slice(0, n_active - 1, 0, 0);
+    slate::triangular_solve(1.0, R, d1);
+    MPI_Barrier(comm);
+
+    if (debug)
+      slate::print("coef", d1, opts);
+
+    // -------------------------------- sigma_diag (streamed; peak workspace n x nb, not n x n) --------------------------------
+    // sigma_diag[i] = diag(C^-1)_i = diag((R^T R)^-1)_i / alpha = || column i of R^-T ||^2 / alpha.
+    // Only the n diagonal entries are needed, so the full n x n R^-T is never materialized (that
+    // second ~n^2 matrix would sit on top of aw's regularizer block -- ~800 MB each at n~1e4).
+    // Instead solve R^T Zp = E_p one nb-wide block-column of the identity at a time, accumulate
+    // that block's column 2-norms, and reuse Zp. Same n^3/2 solve flops; peak inverse workspace
+    // drops from n x n to n x nb (~40 MB). A sum of squares is >= 0, so sigma_diag stays
+    // non-negative by construction. Result is global on every rank (one n-length Allreduce), so
+    // no rank-0 gather and no sigma_diag Bcast are needed.
+    auto R_T = transpose(R);
+    std::function<int64_t (int64_t)> tileNb_one = [nb](int64_t) { return nb; };
+    slate::Matrix<double> Zp(n_active, nb, tileNb, tileNb_one, tileRank2D, tileDevice, comm);
+    Zp.insertLocalTiles();
+
+    std::vector<double> sigma_acc(n_active, 0.0);
+    for (int64_t bj = 0; bj < nt; ++bj) {
+      const int64_t col0 = bj * nb;
+      const int64_t ncol = tileNb(bj);              // 256, or the remainder on the last block
+      slate::set(0.0, Zp);                          // Zp = 0
+      for (int64_t c = 0; c < ncol; ++c) {          // Zp[:, 0:ncol] = unit columns e_{col0+c}
+        const int64_t gi = col0 + c;
+        const int64_t it = gi / nb, li = gi % nb;
+        if (Zp.tileIsLocal(it, 0)) Zp(it, 0).at(li, c) = 1.0;
+      }
+      slate::triangular_solve(1.0, R_T, Zp);        // Zp[:, 0:ncol] = columns col0.. of R^-T
+      for (int64_t it = 0; it < nt; ++it)           // accumulate this block's column 2-norms
+        if (Zp.tileIsLocal(it, 0)) {
+          auto tile = Zp(it, 0);
+          const int64_t nrow = tileNb(it);
+          for (int64_t c = 0; c < ncol; ++c) {
+            double s = 0.0;
+            for (int64_t r = 0; r < nrow; ++r) { const double v = tile.at(r, c); s += v * v; }
+            sigma_acc[col0 + c] += s;
+          }
+        }
+    }
+    MPI_Allreduce(MPI_IN_PLACE, sigma_acc.data(), n_active, MPI_DOUBLE, MPI_SUM, comm);
+    for (int64_t i = 0; i < n_active; ++i) local_sigma_diag[i] = sigma_acc[i] / alpha;
+
+    // -------------------------------- coef (local-tile read + Allreduce; global on all ranks) --------------------------------
+    // coef occupies the leading n_active rows of b_aug, 2D-distributed. Each such tile has a
+    // unique owner, so reading local tiles and summing recovers the full vector on every rank
+    // with no rank-0 gather and no Bcast.
+    std::vector<double> coef_buf(n_active, 0.0);
+    for (int64_t i = 0; i < mt; ++i) {
+      if (tile_row0[i] >= n_active) break;
+      if (!b_aug.tileIsLocal(i, 0)) continue;
+      auto tile = b_aug(i, 0);
+      const int64_t h = tile_height[i];
+      for (int64_t r = 0; r < h; ++r) {
+        const int64_t gi = tile_row0[i] + r;
+        if (gi < n_active) coef_buf[gi] = tile.at(r, 0);
+      }
+    }
+    MPI_Allreduce(MPI_IN_PLACE, coef_buf.data(), n_active, MPI_DOUBLE, MPI_SUM, comm);
+    for (int64_t i = 0; i < n_active; ++i) local_coef_active[i] = coef_buf[i];
+
+    // -------------------------------- SSE --------------------------------
+    // SSE = ||d2||^2 - (1/alpha) sum_i lambda_i coef_i^2  (penalty <= ||d2||^2; clamp roundoff).
+    double penalty = 0.0;
+    for (int64_t i = 0; i < n_active; ++i)
+      penalty += lambda_active[i] * local_coef_active[i] * local_coef_active[i];
+    penalty /= alpha;
+    double sse = aug_resid_sq - penalty;
+    *local_sse = (sse > 0.0) ? sse : 0.0;
+
+    // cond_number, sigma_diag, coef, sse are all global (collective norms / Allreduce), so every
+    // rank returns identical values -- no MPI_Bcast needed.
+    return cond_number;
+
+  } catch (const std::exception& e) {
+    std::cerr << "[Rank " << mpi_rank << "] SLATE ARD error: " << e.what() << std::endl;
+    MPI_Abort(comm, 1);
+    return std::numeric_limits<double>::infinity(); // Return inf on error
   }
-  { std::vector<double> tau(n); lapack::geqrf(2*n, n, aug.data(), 2*n, tau.data()); }
-  std::vector<double> R(nn, 0.0);
-  for (int64_t j = 0; j < n; ++j)
-    for (int64_t i = 0; i <= j; ++i) R[i + j*n] = aug[i + j*2*n];
-
-  // DIAGNOSTIC: with D=diag(sqrt(lambda/alpha)), R^T R = X^T X + diag(lambda/alpha) >= min(lambda/alpha) I.
-  // => every Cholesky pivot |R_jj| >= sqrt(min_j lambda_j/alpha), and cond_inf(R) <= n*||R||_F/sqrt(min lambda/alpha).
-  // If the reported cond violates this bound, the cause is numerical (trtri / non-finite Rx), not the data.
-  if (debug && mpi_rank == 0) {
-    double rxF = 0.0; for (double v : Rx) rxF += v*v; rxF = std::sqrt(rxF);
-    double dmin = std::numeric_limits<double>::infinity(), dmax = 0.0;
-    for (int64_t j = 0; j < n; ++j) { double d = std::fabs(R[j + j*n]); if (d < dmin) dmin = d; if (d > dmax) dmax = d; }
-    double lmin = std::numeric_limits<double>::infinity(), lmax = 0.0;
-    for (int64_t j = 0; j < n; ++j) { double l = lambda_active[j]; if (l < lmin) lmin = l; if (l > lmax) lmax = l; }
-    std::fprintf(stderr, "*** ARD diag: ||Rx||_F=%.3e  |R_jj| in [%.3e, %.3e]  lambda in [%.3e, %.3e]  alpha=%.3e\n",
-                 rxF, dmin, dmax, lmin, lmax, alpha);
-  }
-
-  // ---- R^{-1};  coef = R^{-1} R^{-T} h;  sigma_diag;  cond ----
-  std::vector<double> Rinv = R;
-  int64_t trtri_info = lapack::trtri(lapack::Uplo::Upper, lapack::Diag::NonUnit, n, Rinv.data(), n);
-  if (debug && mpi_rank == 0 && trtri_info != 0)
-    std::fprintf(stderr, "*** ARD diag: trtri info=%lld (zero/singular pivot at that 1-based index)\n",
-                 (long long)trtri_info);
-
-  std::vector<double> t(n, 0.0), coef(n, 0.0);
-  blas::gemv(CM, blas::Op::Trans,   n, n, 1.0, Rinv.data(), n, h.data(), 1, 0.0, t.data(),    1); // t = R^{-T} h
-  blas::gemv(CM, blas::Op::NoTrans, n, n, 1.0, Rinv.data(), n, t.data(), 1, 0.0, coef.data(), 1); // c = R^{-1} t
-  for (int64_t i = 0; i < n; ++i) local_coef_active[i] = coef[i];
-
-  for (int64_t i = 0; i < n; ++i) {                          // sigma_ii = (1/alpha)||row i of R^{-1}||^2
-    double s = 0.0;
-    for (int64_t j = i; j < n; ++j) { double v = Rinv[i + j*n]; s += v*v; }
-    local_sigma_diag[i] = s / alpha;
-  }
-
-  double R_inf = 0.0, Ri_inf = 0.0;                          // cond_inf(R) = ||R||_inf ||R^{-1}||_inf
-  for (int64_t i = 0; i < n; ++i) {
-    double sR = 0.0, sI = 0.0;
-    for (int64_t j = i; j < n; ++j) { sR += std::fabs(R[i+j*n]); sI += std::fabs(Rinv[i+j*n]); }
-    if (sR > R_inf)  R_inf  = sR;
-    if (sI > Ri_inf) Ri_inf = sI;
-  }
-  double cond_number = R_inf * Ri_inf;
-
-  // ---- SSE = ||y||^2 - ||t||^2 - (1/alpha) sum lambda*coef^2 ----
-  double tnorm2 = blas::dot(n, t.data(), 1, t.data(), 1);
-  double penalty = 0.0;
-  for (int64_t i = 0; i < n; ++i) penalty += lambda_active[i] * coef[i] * coef[i];
-  penalty /= alpha;
-  double sse = ynorm2 - tnorm2 - penalty;
-  if (local_sse) *local_sse = (sse > 0.0) ? sse : 0.0;
-
-  if (debug && mpi_rank == 0)
-    std::fprintf(stderr, "*** ARD n=%lld cond=%.3e (||R||_inf=%.3e ||Rinv||_inf=%.3e) ||y||^2=%.3e ||t||^2=%.3e penalty=%.3e sse=%.3e\n",
-                 (long long)n, cond_number, R_inf, Ri_inf, ynorm2, tnorm2, penalty, sse);
-  return cond_number;
 }
 
 

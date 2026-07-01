@@ -71,26 +71,26 @@ class SLATE(SlateValidation):
         
         pt = self.pt
 
-        # Note: a, b, w remain unchanged - only aw, bw get modified
-        a = pt.shared_arrays['a'].array  # X: design matrix (local portion)
-        b = pt.shared_arrays['b'].array  # y: target vector (local portion)
-        w = pt.shared_arrays['w'].array  # weights
-        aw = pt.shared_arrays['aw'].array
-        bw = pt.shared_arrays['bw'].array
+        # a, b, w are the pristine node-shared buffers; ARD never mutates them. The weighted
+        # active design the solve needs is now built inside slate.cpp as a SLATE-owned 2D matrix,
+        # so this path no longer touches the shared aw/bw scratch (still used by the ridge path).
+        a = pt.shared_arrays['a'].array  # X: design matrix (node-shared, column-major)
+        b = pt.shared_arrays['b'].array  # y: target vector (node-shared)
+        w = pt.shared_arrays['w'].array  # weights (node-shared)
 
         # Get dimensions
         a_start_idx, a_end_idx = pt.fitsnap_dict["sub_a_indices"]
         local_slice = slice(a_start_idx, a_end_idx+1)
         local_w = w[local_slice].copy()
         
-        # Hybrid Architecture: data is distributed across nodes AND across ranks within a node.
-        # m   = total global samples; lld = node-shared buffer leading dim (rows on this node).
+        # Hybrid architecture: data is distributed across nodes AND across ranks within a node.
+        # m   = total global design rows; lld = node-shared buffer leading dim (rows on this node).
         # row_offset (a_start_idx) / m_local = THIS rank's contiguous slice of the node-shared
-        # buffer, so the C++ solver aliases each rank's own rows instead of piling every tile
-        # onto rank 0.
-        m = aw.shape[0] * pt._number_of_nodes 
-        n = aw.shape[1] 
-        lld = aw.shape[0]
+        # buffer, so the C++ solver gathers each rank's own rows into the 2D-cyclic working matrix
+        # instead of piling every tile onto rank 0.
+        m = a.shape[0] * pt._number_of_nodes    # total global design rows
+        n = a.shape[1]                          # number of features
+        lld = a.shape[0]                        # node-shared buffer leading dim (rows on this node)
         m_local = a_end_idx - a_start_idx + 1   # design rows owned by this rank within the node buffer
         
         assert m>n, f"SLATE ARD: m ({m}) < n ({n}), m > n needed for regression."
@@ -107,12 +107,11 @@ class SLATE(SlateValidation):
         # -------- IN-PLACE WEIGHTING/CENTERING/SCALING --------
         eps = np.finfo(np.float64).eps
         
-        # Apply weights to a and b (All ranks do this to their slice)
-        aw[local_slice] = local_w[:, np.newaxis] * a[local_slice]
-        bw[local_slice] = local_w * b[local_slice]
-        
+        # Weighted-b stats for the adaptive noise prior (local temporary; no shared bw write).
+        bw_local = local_w * b[local_slice]
+
         # Compute mean/std of weighted b across MPI
-        local_sum_bw, local_sum_bw2 = np.sum(bw[local_slice]), np.sum(bw[local_slice]**2)
+        local_sum_bw, local_sum_bw2 = np.sum(bw_local), np.sum(bw_local**2)
         local_values = np.array([local_sum_bw, local_sum_bw2, local_m_training])
         
         # Allreduce to get global stats
@@ -177,17 +176,15 @@ class SLATE(SlateValidation):
                 pt.debug_single_print(f"ARD: all features pruned at iteration {iteration}")
                 break
                         
-            # 1. PACK DATA (Distributed Write to Shared Memory)
-            # All ranks write their slice of active columns to the shared array 'aw'
-            aw[local_slice, :n_active] = local_w[:, np.newaxis] * a[local_slice, active_indices]
+            # active features this iteration; lambda for them.
             lambda_active = lambda_[active_indices].copy()
+            active_idx_i64 = np.ascontiguousarray(active_indices, dtype=np.int64)
 
-            # 2. NODE BARRIER (Crucial!)
-            # Wait for all workers to finish writing to 'aw' before Head Rank reads it.
-            pt._sub_comm.Barrier()
-            
             # --- HYBRID SOLVER CALL ---
-            
+            # No packing / node barrier: slate.cpp builds the weighted active design (a SLATE-owned
+            # 2D-cyclic matrix) directly from the pristine node-shared 'a', reading each rank's own
+            # rows via row_offset. 'a' is read-only, so nothing here writes shared memory first.
+
             # Allocate buffers on all ranks
             sigma_diag = np.zeros(n_active, dtype=np.float64)
             coef_active_ = np.zeros(n_active, dtype=np.float64)
@@ -199,10 +196,11 @@ class SLATE(SlateValidation):
             #else: comm = pt.MPI.COMM_SELF
             comm = pt._comm
 
-
-            # Call C++ Wrapper (SSE is computed in C++ from the QR residual)
+            # Call C++ wrapper: raw a, b (node-shared), per-rank effective weights local_w (testing
+            # rows already zeroed), and the active column indices. SSE is computed in C++ from the
+            # augmented-QR residual.
             s_d, c_a, sse_val, cn = slate_ard_update_cython(
-                aw, bw, lambda_active, alpha_,
+                a, b, local_w, active_idx_i64, lambda_active, alpha_,
                 m, n_active, lld, a_start_idx, m_local, comm, self.config.debug
             )
                 
@@ -273,9 +271,9 @@ class SLATE(SlateValidation):
                 pt.single_print(f"SLATE ARD: stopping... reached max_iter {self.max_iter}")
                 break
 
-            #if cond_number > 1e15:
-            #    pt.single_print(f"SLATE ARD: stopping... cond_number {cond_number:>8.3g} > 1e15")
-            #    break
+            if cond_number > 1e15:
+                pt.single_print(f"SLATE ARD: stopping... cond_number {cond_number:>8.3g} > 1e15")
+                break
 
             if coef_rel_converged:
                 pt.single_print(f"SLATE ARD: stopping... coef_rel_change {coef_rel_change} < {self.rtol}")
