@@ -164,6 +164,13 @@ class SLATE(SlateValidation):
         lambda_mask = np.ones(n, dtype=bool)
         coef_old_ = None
 
+        # Solver-method switch: default to the Cholesky normal-equations path (method=1: distributed
+        # herk + 2D Cholesky, ~2x fewer flops, no rank-0 serialization). When the PREVIOUS
+        # iteration's condition number exceeds this threshold, fall back to the augmented-QR path
+        # (method=0), which keeps kappa(X) instead of squaring it via the normal equations.
+        cond_switch_threshold = 1e7
+        last_cond = None
+
         iteration = 1
         start_time_iteration = time.time()
         
@@ -197,11 +204,14 @@ class SLATE(SlateValidation):
             comm = pt._comm
 
             # Call C++ wrapper: raw a, b (node-shared), per-rank effective weights local_w (testing
-            # rows already zeroed), and the active column indices. SSE is computed in C++ from the
-            # augmented-QR residual.
+            # rows already zeroed), and the active column indices. SSE and cond are computed in C++
+            # (Cholesky normal-equations by default, augmented-QR fallback -- see method below).
+            # Pick the path from the previous iteration's conditioning.
+            method = 0 if (last_cond is not None and last_cond > cond_switch_threshold) else 1
+
             s_d, c_a, sse_val, cn = slate_ard_update_cython(
                 a, b, local_w, active_idx_i64, lambda_active, alpha_,
-                m, n_active, lld, a_start_idx, m_local, comm, self.config.debug
+                m, n_active, lld, a_start_idx, m_local, method, comm, self.config.debug
             )
                 
             # Copy results to buffers
@@ -212,6 +222,7 @@ class SLATE(SlateValidation):
             
             cond_number = cond_box[0]
             sse_ = sse_box[0]
+            last_cond = cond_number
             
             # --- UPDATE STATE (All Ranks) ---
             

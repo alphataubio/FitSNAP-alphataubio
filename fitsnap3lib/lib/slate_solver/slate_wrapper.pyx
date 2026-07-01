@@ -27,6 +27,7 @@ cdef extern from *:
                                 int64_t m, int64_t n_active, int64_t lld,
                                 int64_t row_offset, int64_t m_local,
                                 double alpha, double* lambda_active, 
+                                int method,
                                 MPI_Comm comm, int debug);
 
         void slate_error_analysis(double* local_a, double* local_b, double* local_w, double* fit,
@@ -51,6 +52,7 @@ cdef extern from *:
                            int64_t m, int64_t n_active, int64_t lld,
                            int64_t row_offset, int64_t m_local,
                            double alpha, double* lambda_active, 
+                           int method,
                            MPI_Comm comm, int debug) except +
 
     void slate_error_analysis(double* local_a, double* local_b, double* local_w, double* fit,
@@ -83,6 +85,7 @@ def slate_ard_update_cython(double[::1, :] local_a, double[::1] local_b,
                            double[::1] lambda_active, double alpha,
                            int m, int n_active, int lld, 
                            int row_offset, int m_local,
+                           int method,
                            MPI.Comm comm_obj, 
                            int debug=0):
     
@@ -101,7 +104,7 @@ def slate_ard_update_cython(double[::1, :] local_a, double[::1] local_b,
                     &active_indices[0],
                     <double*>np.PyArray_DATA(sigma_diag), <double*>np.PyArray_DATA(coef_active),
                     &sse,
-                    m, n_active, lld, row_offset, m_local, alpha, &lambda_active[0], c_comm, debug)
+                    m, n_active, lld, row_offset, m_local, alpha, &lambda_active[0], method, c_comm, debug)
     
     return sigma_diag, coef_active, sse, cond_number
 

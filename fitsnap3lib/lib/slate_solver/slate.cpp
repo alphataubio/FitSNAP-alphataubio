@@ -17,11 +17,99 @@
 #include <unistd.h>
 #endif
 
+constexpr int64_t ceil_div64(int64_t a, int64_t b) { return (a + b - 1) / b; }
+
+namespace {  // ---- internal-linkage helpers shared by the ARD QR / Cholesky paths ----
+
+// Block-row map of the node-shared design across ranks, for a given m-tile height mb. Each rank
+// owns ceil(m_local/mb) consecutive mb-sized tile-rows (last one short) aliasing its own slice of
+// the node-shared buffer. Byte-identical on every rank (SLATE requires identical tile closures).
+struct BlockRowMap {
+  std::vector<int>     tile_owner;    // [mt] physical owner rank of each data tile-row
+  std::vector<int64_t> tile_height;   // [mt] rows in each data tile-row
+  std::vector<int64_t> tile_row0;     // [mt] global first row of each data tile-row
+  int64_t mt = 0;                     // total data tile-rows across all ranks
+  int64_t m_total = 0;                // total data rows across all ranks
+  int64_t my_first_tile = 0;          // this rank's first data tile-row
+  int64_t my_ntiles = 0;              // this rank's data tile-row count
+};
+
+BlockRowMap build_blockrow_map(int64_t mb, int mpi_rank, int mpi_size,
+                               int64_t m_local, const std::vector<int64_t>& rows_per_rank) {
+  BlockRowMap M;
+  std::vector<int64_t> blk_first_tile(mpi_size);
+  for (int r = 0; r < mpi_size; ++r) {
+    blk_first_tile[r] = M.mt;
+    M.mt      += ceil_div64(rows_per_rank[r], mb);
+    M.m_total += rows_per_rank[r];
+  }
+  M.tile_owner.resize(M.mt);
+  M.tile_height.resize(M.mt);
+  M.tile_row0.resize(M.mt);
+  int64_t row = 0;
+  for (int r = 0; r < mpi_size; ++r) {
+    int64_t mtr = ceil_div64(rows_per_rank[r], mb);
+    for (int64_t il = 0; il < mtr; ++il) {
+      int64_t i = blk_first_tile[r] + il;
+      M.tile_owner[i]  = r;
+      M.tile_height[i] = (il == mtr - 1) ? (rows_per_rank[r] - (mtr - 1) * mb) : mb;
+      M.tile_row0[i]   = row;
+      row += M.tile_height[i];
+    }
+  }
+  M.my_first_tile = blk_first_tile[mpi_rank];
+  M.my_ntiles     = (m_local > 0) ? ceil_div64(m_local, mb) : 0;
+  return M;
+}
+
+// Fill the data row-tiles [0,mt) of a block-row matrix M_ (m_total x n_active) with the weighted
+// active design gathered LOCALLY from the node-shared column-major buffer:
+//   M_(row, col) = w_eff[k] * a[ row_offset+k , active_indices[col] ]   (zero MPI, 'a' read-only).
+void fill_weighted_design(slate::Matrix<double>& M_, const BlockRowMap& map,
+                          int64_t mb, int64_t nb, int64_t nt,
+                          int64_t row_offset, int64_t lld,
+                          const double* local_a, const double* local_w_eff,
+                          const int64_t* active_indices,
+                          const std::function<int64_t(int64_t)>& tileNb) {
+  for (int64_t il = 0; il < map.my_ntiles; ++il) {
+    const int64_t i = map.my_first_tile + il;
+    const int64_t h = map.tile_height[i];
+    for (int64_t jt = 0; jt < nt; ++jt) {
+      if (!M_.tileIsLocal(i, jt)) continue;
+      auto tile = M_(i, jt);
+      const int64_t col0 = jt * nb;
+      const int64_t ncol = tileNb(jt);
+      for (int64_t r = 0; r < h; ++r) {
+        const int64_t k  = il * mb + r;
+        const int64_t br = row_offset + k;
+        const double  wk = local_w_eff[k];
+        for (int64_t c = 0; c < ncol; ++c)
+          tile.at(r, c) = wk * local_a[br + active_indices[col0 + c] * lld];
+      }
+    }
+  }
+}
+
+// Fill the data row-tiles [0,mt) of a block-row column vector v with w_eff .* b (local).
+void fill_weighted_rhs(slate::Matrix<double>& v, const BlockRowMap& map, int64_t mb,
+                       int64_t row_offset, const double* local_b, const double* local_w_eff) {
+  for (int64_t il = 0; il < map.my_ntiles; ++il) {
+    const int64_t i = map.my_first_tile + il;
+    if (!v.tileIsLocal(i, 0)) continue;
+    auto tile = v(i, 0);
+    const int64_t h = map.tile_height[i];
+    for (int64_t r = 0; r < h; ++r) {
+      const int64_t k = il * mb + r;
+      tile.at(r, 0) = local_w_eff[k] * local_b[row_offset + k];
+    }
+  }
+}
+
+}  // anonymous namespace
+
 extern "C" {
 
 using slate::func::ij_tuple;
-
-constexpr int64_t ceil_div64(int64_t a, int64_t b) { return (a + b - 1) / b; }
 
 // -----------------------------------------------------------------------------
 // SLATE Ridge Solver
@@ -166,6 +254,7 @@ double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
                      int64_t m, int64_t n_active, int64_t lld,
                      int64_t row_offset, int64_t m_local,
                      double alpha, double* lambda_active,
+                     int method,
                      MPI_Comm comm, int debug) {
 
   // INPUT (read-only, NEVER written): local_a is this rank's slice of the node-shared,
@@ -200,84 +289,200 @@ double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
     {slate::Option::PrintWidth, 4}
   };
 
-  // -------------------------------- TILE SIZE --------------------------------
-  // FIXME: find optimal tile size based on cache size
+  // -------------------------------- TILE SIZE (n-direction) --------------------------------
+  // nb = 256 is L2-cache-optimal on Zen4/5: a 256x256 double tile is 512 KiB = half the 1 MiB
+  // private L2, leaving the other half for the streaming operand panel, and it aligns with the
+  // AVX-512 8-double lane. nb tiles C and Xw's columns. The m-direction tile mb is chosen PER PATH
+  // below: fat for the Cholesky/herk default (mb only sets herk's contraction-loop length and the
+  // broadcast granularity -- BLIS blocks the contraction in cache itself), and 256 for the QR
+  // fallback (whose R factor needs SQUARE diagonal tiles).
+  const int64_t nb = 256;
+  const int64_t nt = ceil_div64(n_active, nb);
+  if (n_active == 0) return 1.0; // Perfect conditioning for empty matrix
 
-  int64_t mb = 256;
-  int64_t nb = 256;
-  int64_t nt = ceil_div64(n_active, nb);
-
-  // -------------------------------- GLOBAL BLOCK-ROW MAP (physical layout of 'a') --------------------------------
-  // Allgather each rank's true row count so the closures below are byte-identical on every rank
-  // (SLATE requires this). Each rank owns ceil(m_local/mb) consecutive mb-sized tile-rows (last
-  // one short) mapping to its own contiguous slice of the node-shared buffer. This map says WHERE
-  // THE DATA PHYSICALLY LIVES and drives only the LOCAL gather into the staging panels below; aw
-  // itself is 2D block-cyclic (next block), NOT distributed by this map.
+  // Per-rank row counts (identical on all ranks after Allgather) drive the block-row maps below.
   std::vector<int64_t> rows_per_rank(mpi_size);
   MPI_Allgather(&m_local, 1, MPI_INT64_T, rows_per_rank.data(), 1, MPI_INT64_T, comm);
 
-  std::vector<int64_t> blk_first_tile(mpi_size);
-  int64_t mt = 0, m_total = 0;
-  for (int r = 0; r < mpi_size; ++r) {
-    blk_first_tile[r] = mt;
-    mt      += ceil_div64(rows_per_rank[r], mb);
-    m_total += rows_per_rank[r];
-  }
-
-  // Per data tile-row: physical owner rank, tile height, and global first row.
-  std::vector<int>     tile_owner(mt);
-  std::vector<int64_t> tile_height(mt);
-  std::vector<int64_t> tile_row0(mt);
-  {
-    int64_t row = 0;
-    for (int r = 0; r < mpi_size; ++r) {
-      int64_t mtr = ceil_div64(rows_per_rank[r], mb);
-      for (int64_t il = 0; il < mtr; ++il) {
-        int64_t i = blk_first_tile[r] + il;
-        tile_owner[i]  = r;
-        tile_height[i] = (il == mtr - 1) ? (rows_per_rank[r] - (mtr - 1) * mb) : mb;
-        tile_row0[i]   = row;
-        row += tile_height[i];
-      }
-    }
-  }
-  const int64_t my_first_tile = blk_first_tile[mpi_rank];
-  const int64_t my_ntiles     = (m_local > 0) ? ceil_div64(m_local, mb) : 0;
-
-  // -------------------------------- 1D BLOCK-ROW DISTRIBUTION --------------------------------
-  // aw is distributed BLOCK-ROW: rank r owns its own contiguous physical rows (tile_owner), so it
-  // fills them LOCALLY from the node-shared 'a' with zero MPI -- no redistribution, no staging.
-  // For a tall-skinny matrix (m >> n_active) this is the right layout: SLATE's geqrf still spreads
-  // the O(m n^2) panel work across all ranks (every rank holds rows in every column), while the
-  // small O(n^3) R-space tail (trcondest, triangular_solve, R^-T sweep) lands on rank 0 -- which
-  // is exactly where the leading n_active rows live, since n_active <= rows-on-rank-0 (guarded
-  // below). A 2D block-cyclic layout was tried first, but its per-tile redistribution of the
-  // m x n_active design (~mt*nt point-to-point messages per iteration, mt ~ m/mb) dominated
-  // everything; block-row removes that entire communication phase.
+  // Shared closures.
   std::function<int64_t (int64_t)> tile1 = [](int64_t) { return 1; };
   std::function<int (slate::func::ij_tuple)> tileDevice =
     [](slate::func::ij_tuple) { return slate::HostNum; };
-  std::function<int (slate::func::ij_tuple)> tileRank0 =
-    [](slate::func::ij_tuple) { return 0; };
-
-  // Column tiling (shared by aw and the R-space matrices).
-  int64_t tile_col_last = nt - 1;
-  int64_t tile_col_remainder = n_active - (nt - 1) * nb;
+  const int64_t tile_col_last = nt - 1;
+  const int64_t tile_col_remainder = n_active - (nt - 1) * nb;
   std::function<int64_t (int64_t)> tileNb = [tile_col_last, tile_col_remainder, nb](int64_t j) {
     return (j == tile_col_last) ? tile_col_remainder : nb;
   };
 
-  // Augmented row tiling: data rows [0,mt) keep their physical mb-tiling; the n_active regularizer
-  // rows [mt,mt+nt) follow, tiled by nb.
+  // ======================= CHOLESKY on the normal equations (default) =======================
+  // C = Xw^T Xw + diag(lambda/alpha), Xw = w.X.  Formed by a distributed herk from a BLOCK-ROW Xw
+  // (each rank fills its own rows locally, zero MPI) into a 2D-block-cyclic Hermitian C, then
+  // chol_factor / chol_solve / chol_inverse run fully 2D-distributed -- no rank-0 serialization.
+  // Reports cond in kappa(X) units (sqrt of kappa(C)) so the QR<->Cholesky switch threshold in
+  // Python is consistent. 2x fewer flops than QR but squares the condition number, hence Python
+  // switches to QR when the previous iteration's cond exceeds the threshold.
+  if (method == 1) {
+
+    // Fat m-tile: from the SMALLEST rank's row count (so mb is identical on every rank), a handful
+    // of tiles per rank so the 8 threads stay fed while herk's contraction loop drops from
+    // thousands of steps (the mb=256 pathology) to a few dozen. mb is NOT a cache tile -- BLIS
+    // blocks the contraction internally -- so fat is strictly better here.
+    int64_t mb;
+    {
+      int64_t m_min = *std::min_element(rows_per_rank.begin(), rows_per_rank.end());
+      mb = m_min / (2 * (int64_t) num_threads);
+      if (mb < 256)  mb = 256;
+      if (mb > 8192) mb = 8192;
+    }
+    BlockRowMap map = build_blockrow_map(mb, mpi_rank, mpi_size, m_local, rows_per_rank);
+    const int64_t m_total = map.m_total;
+
+    std::function<int64_t (int64_t)> tileMb_data =
+      [tile_height = map.tile_height](int64_t i) { return tile_height[i]; };
+    std::function<int (slate::func::ij_tuple)> tileRank_phys =
+      [tile_owner = map.tile_owner](slate::func::ij_tuple ij) { return tile_owner[std::get<0>(ij)]; };
+
+    // Near-square 2D process grid for C (the small n x n matrix ONLY -- not the m x n data, so no
+    // redistribution storm). This is the canonical scalable dense-Cholesky layout.
+    int p = 1, q = mpi_size;
+    for (int pp = (int) std::floor(std::sqrt((double) mpi_size)); pp >= 1; --pp)
+      if (mpi_size % pp == 0) { p = pp; q = mpi_size / pp; break; }
+    auto tileRank2D = slate::func::process_2d_grid(slate::GridOrder::Col, p, q);
+
+    if (mpi_rank == 0 && debug)
+      std::fprintf(stderr, "\n=== slate_ard_update (Cholesky/herk, mb=%" PRId64 ", nb=%" PRId64
+                   ", C grid %dx%d, m=%" PRId64 ", n_active=%" PRId64 ") ===\n",
+                   mb, nb, p, q, m_total, n_active);
+
+    try {
+      // Xw = w . X[:,active]  (m_total x n_active), block-row, filled locally from 'a'.
+      slate::Matrix<double> Xw(m_total, n_active, tileMb_data, tileNb, tileRank_phys, tileDevice, comm);
+      Xw.insertLocalTiles();
+      fill_weighted_design(Xw, map, mb, nb, nt, row_offset, lld,
+                           local_a, local_w_eff, active_indices, tileNb);
+
+      // bw = w . y  (m_total x 1), block-row.
+      slate::Matrix<double> bw(m_total, 1, tileMb_data, tile1, tileRank_phys, tileDevice, comm);
+      bw.insertLocalTiles();
+      fill_weighted_rhs(bw, map, mb, row_offset, local_b, local_w_eff);
+
+      // C = Xw^T Xw  (herk: C = A A^H with A = Xw^T; broadcasts each block-row of Xw from its
+      // owner into the 2D C -- the big m x n data is never redistributed).
+      slate::HermitianMatrix<double> C(slate::Uplo::Lower, n_active, tileNb, tileRank2D, tileDevice, comm);
+      C.insertLocalTiles();
+      auto XwT = slate::transpose(Xw);
+      slate::rank_k_update(1.0, XwT, 0.0, C);
+
+      // C += diag(lambda/alpha)  (each diagonal entry on its 2D owner).
+      for (int64_t idx = 0; idx < n_active; ++idx) {
+        const int64_t it = idx / nb, loc = idx % nb;
+        if (C.tileIsLocal(it, it))
+          C(it, it).at(loc, loc) += lambda_active[idx] / alpha;
+      }
+
+      if (debug) slate::print("C", C, opts);
+
+      // cond(C) via pocondest: need ||C||_1 BEFORE factoring.
+      double Cnorm = slate::norm(slate::Norm::One, C);
+
+      int64_t info = slate::chol_factor(C);                 // C -> L (potrf)
+      if (info != 0) {
+        if (mpi_rank == 0)
+          std::fprintf(stderr, "slate_ard_update: chol_factor info=%" PRId64
+                       " (normal matrix not SPD -- raise alpha or use QR)\n", info);
+        MPI_Abort(comm, 3);
+      }
+
+      double rcond = slate::chol_rcondest_using_factor(slate::Norm::One, C, Cnorm);
+      double condC = (rcond > 1e-300) ? (1.0 / rcond) : 1e300;
+      double cond_number = std::sqrt(condC);                // kappa(X) units (C ~ X^T X)
+
+      // g = Xw^T bw  (n_active x 1, on C's 2D grid).
+      slate::Matrix<double> g(n_active, 1, tileNb, tile1, tileRank2D, tileDevice, comm);
+      g.insertLocalTiles();
+      auto XwT2 = slate::transpose(Xw);
+      slate::multiply(1.0, XwT2, bw, 0.0, g);               // gemm
+
+      // Snapshot g (= X^T y projection) before the solve overwrites it -- needed for SSE.
+      std::vector<double> g_host(n_active, 0.0);
+      for (int64_t it = 0; it < nt; ++it)
+        if (g.tileIsLocal(it, 0)) {
+          auto tile = g(it, 0);
+          const int64_t h = tileNb(it), base = it * nb;
+          for (int64_t r = 0; r < h; ++r) g_host[base + r] = tile.at(r, 0);
+        }
+      MPI_Allreduce(MPI_IN_PLACE, g_host.data(), n_active, MPI_DOUBLE, MPI_SUM, comm);
+
+      // coef = C^-1 g  (potrs; g overwritten with the solution).
+      slate::chol_solve_using_factor(C, g);
+      std::vector<double> coef_host(n_active, 0.0);
+      for (int64_t it = 0; it < nt; ++it)
+        if (g.tileIsLocal(it, 0)) {
+          auto tile = g(it, 0);
+          const int64_t h = tileNb(it), base = it * nb;
+          for (int64_t r = 0; r < h; ++r) coef_host[base + r] = tile.at(r, 0);
+        }
+      MPI_Allreduce(MPI_IN_PLACE, coef_host.data(), n_active, MPI_DOUBLE, MPI_SUM, comm);
+      for (int64_t i = 0; i < n_active; ++i) local_coef_active[i] = coef_host[i];
+
+      // sigma_diag = diag(C^-1) / alpha  (potri, then read the diagonal tiles).
+      slate::chol_inverse_using_factor(C);                  // C -> C^-1
+      std::vector<double> sig_host(n_active, 0.0);
+      for (int64_t it = 0; it < nt; ++it)
+        if (C.tileIsLocal(it, it)) {
+          auto tile = C(it, it);
+          const int64_t h = tileNb(it), base = it * nb;
+          for (int64_t loc = 0; loc < h; ++loc) sig_host[base + loc] = tile.at(loc, loc);
+        }
+      MPI_Allreduce(MPI_IN_PLACE, sig_host.data(), n_active, MPI_DOUBLE, MPI_SUM, comm);
+      for (int64_t i = 0; i < n_active; ++i) local_sigma_diag[i] = sig_host[i] / alpha;
+
+      // SSE = ||bw||^2 - coef.g - penalty ;  penalty = (1/alpha) sum lambda_i coef_i^2.
+      double bw_norm = slate::norm(slate::Norm::Fro, bw);
+      double bw_sq = bw_norm * bw_norm;
+      double coef_dot_g = 0.0, penalty = 0.0;
+      for (int64_t i = 0; i < n_active; ++i) {
+        coef_dot_g += coef_host[i] * g_host[i];
+        penalty    += lambda_active[i] * coef_host[i] * coef_host[i];
+      }
+      penalty /= alpha;
+      double sse = bw_sq - coef_dot_g - penalty;
+      *local_sse = (sse > 0.0) ? sse : 0.0;
+
+      return cond_number;
+
+    } catch (const std::exception& e) {
+      std::cerr << "[Rank " << mpi_rank << "] SLATE ARD (Cholesky) error: " << e.what() << std::endl;
+      MPI_Abort(comm, 1);
+      return std::numeric_limits<double>::infinity();
+    }
+  }
+
+  // ============================ QR (augmented) fallback ============================
+  // Used when the previous iteration's cond exceeded the switch threshold. Needs SQUARE R tiles,
+  // so mb == nb == 256 here. Accurate (kappa(R) = kappa(X)) but slower and rank-0-bound in its
+  // R-space tail, which is why it is the fallback rather than the default.
+  const int64_t mb = 256;
+  BlockRowMap map = build_blockrow_map(mb, mpi_rank, mpi_size, m_local, rows_per_rank);
+  const int64_t mt = map.mt, m_total = map.m_total;
+  const std::vector<int>&     tile_owner  = map.tile_owner;
+  const std::vector<int64_t>& tile_height = map.tile_height;
+  const std::vector<int64_t>& tile_row0   = map.tile_row0;
+  const int64_t my_first_tile = map.my_first_tile;
+  const int64_t my_ntiles     = map.my_ntiles;
+
+  std::function<int (slate::func::ij_tuple)> tileRank0 =
+    [](slate::func::ij_tuple) { return 0; };
+
+  // Augmented row tiling: data rows [0,mt) keep their mb-tiling; the n_active regularizer rows
+  // [mt,mt+nt) follow, tiled by nb.
   std::function<int64_t (int64_t)> tileMb_aug =
     [mt, tile_height, nt, n_active, nb](int64_t i) -> int64_t {
       if (i < mt) return tile_height[i];
       int64_t jt = i - mt;
       return (jt == nt - 1) ? (n_active - (nt - 1) * nb) : nb;
     };
-
-  // Augmented row OWNERSHIP: data rows -> their physical owner (block-row, so each rank fills its
-  // own rows locally); the n_active regularizer rows -> rank 0 (a tiny tail co-located with R).
+  // Augmented row OWNERSHIP: data rows -> physical owner (local fill); regularizer rows -> rank 0.
   std::function<int (slate::func::ij_tuple)> tileRank_aug =
     [mt, tile_owner](slate::func::ij_tuple ij) -> int {
       int64_t i = std::get<0>(ij);
@@ -285,12 +490,10 @@ double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
     };
 
   if (mpi_rank == 0 && debug) {
-    std::fprintf(stderr, "\n=== slate_ard_update (augmented-QR, 1D block-row, %d ranks) ===\n", mpi_size);
+    std::fprintf(stderr, "\n=== slate_ard_update (augmented-QR fallback, mb=nb=256, %d ranks) ===\n", mpi_size);
     std::fprintf(stderr, "  m=%" PRId64 ", n_active=%" PRId64 ", alpha=%.6e, data tile-rows=%"
                  PRId64 " (nt=%" PRId64 ")\n", m_total, n_active, alpha, mt, nt);
   }
-
-  if (n_active == 0) return 1.0; // Perfect conditioning for empty matrix
     
   try {
 
