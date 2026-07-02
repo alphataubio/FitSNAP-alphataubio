@@ -602,11 +602,10 @@ double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
     auto R_sq = aw.slice(0, n_active - 1, 0, n_active - 1);
     auto R = slate::TriangularMatrix<double>(slate::Uplo::Upper, slate::Diag::NonUnit, R_sq);
 
-    // ---- cond(R) ~ kappa(X)  (sqrt of the cond(C) a normal-equations path would report) ----
-    slate::Options cond_opts;
+    // ---- kappa_1(R) = ||R||_1 * ||R^-1||_1 = kappa(X). ||R||_1 here; ||R^-1||_1 is accumulated
+    //      from the R^-T sweep below (which we already run for sigma), so no trcondest/norm1est
+    //      estimator is used -- same reason the Cholesky path dropped pocondest. ----
     double R_norm = slate::norm(slate::Norm::One, R);
-    double rcond  = slate::trcondest(slate::Norm::One, R, R_norm, cond_opts);
-    double cond_number = (rcond > 1e-300) ? (1.0 / rcond) : 1e300;
 
     // ---- Q^T b_aug : tail d2 -> augmented residual ; head d1 -> coef = R^-1 d1 ----
     slate::qr_multiply_by_q(slate::Side::Left, slate::Op::ConjTrans, aw, T, b_aug);
@@ -640,6 +639,7 @@ double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
     Zp.insertLocalTiles();
 
     std::vector<double> sigma_acc(n_active, 0.0);
+    std::vector<double> rowabs(n_active, 0.0);      // row-1-norms of R^-T  ->  ||R^-1||_1 = max row
     for (int64_t bj = 0; bj < nt; ++bj) {
       const int64_t col0 = bj * nb;
       const int64_t ncol = tileNb(bj);              // 256, or the remainder on the last block
@@ -650,19 +650,31 @@ double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
         if (Zp.tileIsLocal(it, 0)) Zp(it, 0).at(li, c) = 1.0;
       }
       slate::triangular_solve(1.0, R_T, Zp);        // Zp[:, 0:ncol] = columns col0.. of R^-T
-      for (int64_t it = 0; it < nt; ++it)           // accumulate this block's column 2-norms
+      for (int64_t it = 0; it < nt; ++it)           // accumulate column 2-norms (sigma) + row 1-norms (cond)
         if (Zp.tileIsLocal(it, 0)) {
           auto tile = Zp(it, 0);
           const int64_t nrow = tileNb(it);
+          const int64_t row0 = it * nb;
           for (int64_t c = 0; c < ncol; ++c) {
             double s = 0.0;
-            for (int64_t r = 0; r < nrow; ++r) { const double v = tile.at(r, c); s += v * v; }
+            for (int64_t r = 0; r < nrow; ++r) {
+              const double v = tile.at(r, c);
+              s += v * v;
+              rowabs[row0 + r] += std::fabs(v);
+            }
             sigma_acc[col0 + c] += s;
           }
         }
     }
     MPI_Allreduce(MPI_IN_PLACE, sigma_acc.data(), n_active, MPI_DOUBLE, MPI_SUM, comm);
     for (int64_t i = 0; i < n_active; ++i) local_sigma_diag[i] = sigma_acc[i] / alpha;
+
+    // Exact kappa_1(R) = ||R||_1 * ||R^-1||_1, with ||R^-1||_1 = max_i (row-1-norm of R^-T) from
+    // the sweep above. No data-dependent estimator.
+    MPI_Allreduce(MPI_IN_PLACE, rowabs.data(), n_active, MPI_DOUBLE, MPI_SUM, comm);
+    double Rinv_1norm = 0.0;
+    for (int64_t i = 0; i < n_active; ++i) if (rowabs[i] > Rinv_1norm) Rinv_1norm = rowabs[i];
+    double cond_number = R_norm * Rinv_1norm;
 
     // -------------------------------- coef (local-tile read + Allreduce; global on all ranks) --------------------------------
     // coef occupies the leading n_active rows of b_aug, 2D-distributed. Each such tile has a
