@@ -14,8 +14,6 @@ class Eshift(Section):
             self.types = self.get_value("PYACE", "type", "H").split()
         elif config.has_section("CUSTOM"):
             self.types = self.get_value("CUSTOM", "type", "H").split()
-        elif config.has_section("UF3"):
-            self.types = self.get_value("UF3", "type", "H").split()
         else:
             self.types = []
 

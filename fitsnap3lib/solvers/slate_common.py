@@ -125,12 +125,6 @@ class SlateCommon(Solver):
                     stream.write_attribute('basis_ranks', ctilde_basis.basis_ranks)
                     stream.write_attribute('blist', ctilde_basis.blist)
         
-            # Get rank information from PYACE basis if available
-            if "UF3" in self.config.sections:
-                uf3_section = self.config.sections["UF3"]
-                stream.write_attribute('basis_ranks', uf3_section.basis_ranks)
-                stream.write_attribute('blist', uf3_section.blist)
-        
         if self.method.upper() == "ARD": self.perform_fit_ard()
         else: self.perform_fit_ridge()
 
@@ -209,55 +203,6 @@ class SlateCommon(Solver):
             if g < n:  # ridge rows: diagonal identity scaled by sqrt_alpha
                 aw[reg_row_idx+i, g] = sqrt_alpha
             bw[reg_row_idx+i] = 0.0
-
-        # Curvature (second-difference D2) regularization for UF3 2-body coefficients.
-        # The augmented matrix layout is: n ridge rows, then ncoeff_2b curvature rows.
-        # Column layout in A: [1-body (offset_2b cols)] [2-body (ncoeff_2b cols)] [3-body].
-        # offset_2b = numtypes = basis_ranks.count(0); independent of bzeroflag.
-        # D2 row c: off-diag neighbours +=1, centre -=2 (halved to -1 at boundaries).
-        is_slate_ridge_uf3 = pt.fitsnap_dict.get("is_slate_ridge_uf3", False)
-        if is_slate_ridge_uf3:
-            sqrt_alpha_curvature = np.sqrt(self.config.sections['SLATE'].alpha_curvature)
-            ncoeff_2b = pt.fitsnap_dict.get("ncoeff_2b", 0)
-            offset_2b = pt.fitsnap_dict.get("offset_2b", 0)
-            n_edges_3b = pt.fitsnap_dict.get("n_edges_3b", 0)
-            edges_3b = pt.fitsnap_dict.get("edges_3b", None)
-            g_3b_start = n + ncoeff_2b  # 3b curvature rows follow 2b curvature rows
-            ncoeff_2b_per_pair = pt.fitsnap_dict.get("ncoeff_2b_per_pair", None)
-            for i in range(reg_num_rows):
-                g = reg_col_idx + i
-                if n <= g < n + ncoeff_2b:
-                    # 2b second-difference curvature applied PER PAIR independently.
-                    # Treating the full ncoeff_2b chain as one couples adjacent pair
-                    # types at boundaries: wrong center weight (-2 instead of -1)
-                    # AND spurious off-diagonal entries into the adjacent pair's columns.
-                    c = g - n  # global 2b index [0, ncoeff_2b)
-                    # Walk the pair list to find which pair c belongs to
-                    pair_start = 0
-                    nc = ncoeff_2b  # fallback if ncoeff_2b_per_pair not available
-                    if ncoeff_2b_per_pair:
-                        for nc_pair in ncoeff_2b_per_pair:
-                            if c < pair_start + nc_pair:
-                                nc = nc_pair
-                                break
-                            pair_start += nc_pair
-                    local_c = c - pair_start
-                    # Per-pair boundary: half-weight at the two ends of each pair's chain
-                    diag_val = -1.0 if (local_c == 0 or local_c == nc - 1) else -2.0
-                    col_base = offset_2b + pair_start
-                    if local_c > 0:
-                        aw[reg_row_idx+i, col_base + local_c - 1] = sqrt_alpha_curvature
-                    aw[reg_row_idx+i, col_base + local_c]     = sqrt_alpha_curvature * diag_val
-                    if local_c < nc - 1:
-                        aw[reg_row_idx+i, col_base + local_c + 1] = sqrt_alpha_curvature
-                elif edges_3b is not None and g_3b_start <= g < g_3b_start + n_edges_3b:
-                    # 3b graph-Laplacian: one incidence row per edge (+1 at u, -1 at v)
-                    # D^T D = L3 (graph Laplacian), so augmented LS gives the correct penalty
-                    e = g - g_3b_start
-                    col_u = int(edges_3b[e, 0])
-                    col_v = int(edges_3b[e, 1])
-                    aw[reg_row_idx + i, col_u] =  sqrt_alpha_curvature
-                    aw[reg_row_idx + i, col_v] = -sqrt_alpha_curvature
 
         # -------- SLATE AUGMENTED QR --------
         pt.sub_barrier() # make sure all sub ranks done filling local tiles

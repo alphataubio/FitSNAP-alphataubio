@@ -309,28 +309,8 @@ class Calculator:
                 calculator_section = self.config.sections["CALCULATOR"]
 
                 if method == "RIDGE":
-                    if calculator_section.calculator.upper() == "LAMMPSUF3":
-                      pt.add_2_fitsnap("is_slate_ridge_uf3", True)
-                      basis_ranks = self.config.sections["UF3"].basis_ranks
-                      ncoeff_2b = basis_ranks.count(1)
-                      offset_2b = basis_ranks.count(0)  # 1-body cols precede 2b cols
-                      pt.add_2_fitsnap("ncoeff_2b", ncoeff_2b)
-                      pt.add_2_fitsnap("offset_2b", offset_2b)
-                      # Per-pair 2b sizes: stencil must be applied per-pair, not
-                      # across the full ncoeff_2b chain (which couples adjacent pairs).
-                      uf3_sec = self.config.sections["UF3"]
-                      n_2b_pairs = len(uf3_sec.chemical_system.interactions_map[2])
-                      ncoeff_2b_per_pair = list(uf3_sec.feature_partition_sizes[offset_2b : offset_2b + n_2b_pairs])
-                      pt.add_2_fitsnap("ncoeff_2b_per_pair", ncoeff_2b_per_pair)
-                      edges_3b = self.config.sections["UF3"].edges_3b
-                      n_edges_3b = len(edges_3b)
-                      pt.add_2_fitsnap("n_edges_3b", n_edges_3b)
-                      if n_edges_3b > 0:
-                        pt.add_2_fitsnap("edges_3b", edges_3b)
-                      extra_rows = a_width + ncoeff_2b + n_edges_3b
-                    else:
-                      pt.add_2_fitsnap("is_slate_ridge", True)
-                      extra_rows = a_width
+                    pt.add_2_fitsnap("is_slate_ridge", True)
+                    extra_rows = a_width
                 elif method == "ARD":
                     pt.add_2_fitsnap("is_slate_ard", True)
                     extra_rows = 0

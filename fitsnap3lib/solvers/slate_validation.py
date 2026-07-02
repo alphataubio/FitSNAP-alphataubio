@@ -69,7 +69,7 @@ class CompactJSONEncoder(json.JSONEncoder):
 
 
 def _notebook_config_key(k):
-  """JSON object keys must be strings; UF3 maps use tuple interaction keys."""
+  """JSON object keys must be strings"""
   if isinstance(k, str):
     return k
   if isinstance(k, tuple):
@@ -658,8 +658,7 @@ class SlateValidation(SlateCommon):
     blist_rank = defaultdict(list)
     rank_indices = defaultdict(list)
 
-    if "UF3" in self.config.sections: split_pattern = r"  "
-    else: split_pattern = r" ns \[|\] ls \[|\]| \[0\]$"
+    split_pattern = r" ns \[|\] ls \[|\]| \[0\]$"
 
     for i, (r, f) in enumerate(zip(basis_ranks, blist)):
       blist_rank[r].append(re.split(split_pattern, f))
