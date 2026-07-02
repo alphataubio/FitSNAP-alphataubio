@@ -393,53 +393,73 @@ double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
         MPI_Abort(comm, 3);
       }
 
-      // g = Xw^T bw  (n_active x 1, on C's 2D grid).
-      slate::Matrix<double> g(n_active, 1, tileNb, tile1, tileRank2D, tileDevice, comm);
-      g.insertLocalTiles();
-      auto XwT2 = slate::transpose(Xw);
-      slate::multiply(1.0, XwT2, bw, 0.0, g);               // gemm
-
-      // Snapshot g (= X^T y projection) before the solve overwrites it -- needed for SSE.
+      // g = Xw^T bw  (the n-vector X^T y projection). Computed as a LOCAL reduction over each
+      // rank's own block-row of Xw/bw + one Allreduce -- deliberately NOT a single-column
+      // distributed matrix, which is the shape (g here, X in pocondest) that tripped map::at inside
+      // SLATE's trsm/gemm at some process-grid shapes. The heavy ops (herk, potrf, potri) stay
+      // distributed; only these O(n) vectors are reduced explicitly.
       std::vector<double> g_host(n_active, 0.0);
-      for (int64_t it = 0; it < nt; ++it)
-        if (g.tileIsLocal(it, 0)) {
-          auto tile = g(it, 0);
-          const int64_t h = tileNb(it), base = it * nb;
-          for (int64_t r = 0; r < h; ++r) g_host[base + r] = tile.at(r, 0);
+      for (int64_t il = 0; il < map.my_ntiles; ++il) {
+        const int64_t i = map.my_first_tile + il;
+        if (!bw.tileIsLocal(i, 0)) continue;              // block-row: Xw(i,*) co-located with bw(i,0)
+        auto bwt = bw(i, 0);
+        const int64_t h = map.tile_height[i];
+        for (int64_t jt = 0; jt < nt; ++jt) {
+          auto xt = Xw(i, jt);
+          const int64_t col0 = jt * nb, ncol = tileNb(jt);
+          for (int64_t c = 0; c < ncol; ++c) {
+            double s = 0.0;
+            for (int64_t r = 0; r < h; ++r) s += xt.at(r, c) * bwt.at(r, 0);
+            g_host[col0 + c] += s;
+          }
         }
+      }
       MPI_Allreduce(MPI_IN_PLACE, g_host.data(), n_active, MPI_DOUBLE, MPI_SUM, comm);
 
-      // coef = C^-1 g  (potrs; g overwritten with the solution).
-      slate::chol_solve_using_factor(C, g);
-      std::vector<double> coef_host(n_active, 0.0);
-      for (int64_t it = 0; it < nt; ++it)
-        if (g.tileIsLocal(it, 0)) {
-          auto tile = g(it, 0);
-          const int64_t h = tileNb(it), base = it * nb;
-          for (int64_t r = 0; r < h; ++r) coef_host[base + r] = tile.at(r, 0);
-        }
-      MPI_Allreduce(MPI_IN_PLACE, coef_host.data(), n_active, MPI_DOUBLE, MPI_SUM, comm);
-      for (int64_t i = 0; i < n_active; ++i) local_coef_active[i] = coef_host[i];
+      // C -> C^-1  (potri, distributed). Feeds coef, sigma, and the exact condition number.
+      slate::chol_inverse_using_factor(C);
 
-      // sigma_diag = diag(C^-1) / alpha  (potri, then read the diagonal tiles).
-      slate::chol_inverse_using_factor(C);                  // C -> C^-1
-
-      // Exact 1-norm condition number kappa_1(C) = ||C||_1 * ||C^-1||_1, from the inverse we
-      // already form for sigma. Replaces SLATE's pocondest, whose iterative DATA-DEPENDENT 1-norm
-      // estimator (norm1est) tripped a map::at on the 2D-grid single-column workspace on later
-      // iterations. Reported in kappa(X) units as sqrt(kappa(C)) since C ~ X^T X.
+      // Exact 1-norm condition number kappa_1(C) = ||C||_1 * ||C^-1||_1 (report sqrt, kappa(X)
+      // units, since C ~ X^T X). No pocondest/norm1est estimator.
       double Cinv_norm = slate::norm(slate::Norm::One, C);
       double cond_number = std::sqrt(Cnorm * Cinv_norm);
 
-      std::vector<double> sig_host(n_active, 0.0);
+      // coef = C^-1 g  and  sigma_diag = diag(C^-1)/alpha, both from the distributed Hermitian
+      // inverse via a LOCAL symmetric mat-vec over each rank's LOWER tiles + Allreduce. An
+      // off-diagonal tile (it>jt) feeds both coef[row] and coef[col] (C^-1 symmetric); the diagonal
+      // block mirrors its lower half. Again avoids any single-column SLATE distributed op.
+      std::vector<double> coef_host(n_active, 0.0), sig_host(n_active, 0.0);
       for (int64_t it = 0; it < nt; ++it)
-        if (C.tileIsLocal(it, it)) {
-          auto tile = C(it, it);
-          const int64_t h = tileNb(it), base = it * nb;
-          for (int64_t loc = 0; loc < h; ++loc) sig_host[base + loc] = tile.at(loc, loc);
+        for (int64_t jt = 0; jt <= it; ++jt) {
+          if (!C.tileIsLocal(it, jt)) continue;
+          auto tile = C(it, jt);
+          const int64_t hrow = tileNb(it), hcol = tileNb(jt);
+          const int64_t row0 = it * nb, col0 = jt * nb;
+          if (it == jt) {                                  // symmetric diagonal block
+            for (int64_t r = 0; r < hrow; ++r) {
+              double acc = 0.0;
+              for (int64_t c = 0; c < hcol; ++c) {
+                const double v = (r >= c) ? tile.at(r, c) : tile.at(c, r);
+                acc += v * g_host[col0 + c];
+              }
+              coef_host[row0 + r] += acc;
+            }
+            for (int64_t d = 0; d < hrow; ++d) sig_host[row0 + d] = tile.at(d, d);
+          } else {                                         // off-diagonal block + its transpose
+            for (int64_t r = 0; r < hrow; ++r)
+              for (int64_t c = 0; c < hcol; ++c) {
+                const double v = tile.at(r, c);
+                coef_host[row0 + r] += v * g_host[col0 + c];
+                coef_host[col0 + c] += v * g_host[row0 + r];
+              }
+          }
         }
-      MPI_Allreduce(MPI_IN_PLACE, sig_host.data(), n_active, MPI_DOUBLE, MPI_SUM, comm);
-      for (int64_t i = 0; i < n_active; ++i) local_sigma_diag[i] = sig_host[i] / alpha;
+      MPI_Allreduce(MPI_IN_PLACE, coef_host.data(), n_active, MPI_DOUBLE, MPI_SUM, comm);
+      MPI_Allreduce(MPI_IN_PLACE, sig_host.data(),  n_active, MPI_DOUBLE, MPI_SUM, comm);
+      for (int64_t i = 0; i < n_active; ++i) {
+        local_coef_active[i] = coef_host[i];
+        local_sigma_diag[i]  = sig_host[i] / alpha;
+      }
 
       // SSE = ||bw||^2 - coef.g - penalty ;  penalty = (1/alpha) sum lambda_i coef_i^2.
       double bw_norm = slate::norm(slate::Norm::Fro, bw);
