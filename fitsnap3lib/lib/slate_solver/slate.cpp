@@ -323,14 +323,20 @@ double slate_ard_update(double* local_a, double* local_b, double* local_w_eff,
   // switches to QR when the previous iteration's cond exceeds the threshold.
   if (method == 1) {
 
-    // Fat m-tile: from the SMALLEST rank's row count (so mb is identical on every rank), a handful
-    // of tiles per rank so the 8 threads stay fed while herk's contraction loop drops from
-    // thousands of steps (the mb=256 pathology) to a few dozen. mb is NOT a cache tile -- BLIS
-    // blocks the contraction internally -- so fat is strictly better here.
+    // Fat m-tile, but bounded by a per-rank MEMORY budget, not just by "a few tiles per rank".
+    // mb sets two things: (1) herk's contraction-loop length (want few steps -> fat mb), and
+    // (2) the herk BROADCAST working set: each step broadcasts an mb-thick slab of Xw (~ n*mb*8
+    // bytes) into the 2D C, and those received tiles are held transiently. At large n a fat mb
+    // makes that slab multiple GB and the InfiniBand tile registration (ibv_reg_mr) runs the node
+    // out of RAM. So cap mb so one broadcast slab stays ~<= BCAST_SLAB_BYTES, while still keeping
+    // it fat enough (>= a couple tiles per rank) to feed the 8 threads and shorten herk's loop.
     int64_t mb;
     {
+      const int64_t BCAST_SLAB_BYTES = 256LL * 1024 * 1024;   // ~256 MB of received Xw per herk step
       int64_t m_min = *std::min_element(rows_per_rank.begin(), rows_per_rank.end());
-      mb = m_min / (2 * (int64_t) num_threads);
+      int64_t mb_threads = m_min / (2 * (int64_t) num_threads);       // keep 8 threads fed
+      int64_t mb_mem     = BCAST_SLAB_BYTES / (n_active * (int64_t) sizeof(double)); // memory cap
+      mb = std::min(mb_threads, mb_mem);
       if (mb < 256)  mb = 256;
       if (mb > 8192) mb = 8192;
     }
